@@ -1,6 +1,7 @@
 """Obsolete native selection cannot silently change a route or executable."""
 
 import importlib
+import os
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -231,3 +232,60 @@ def test_registration_reserves_pending_intent_without_resolving_old_value(
 )
 def test_native_transport_consumers_remain_importable(module):
     importlib.import_module(module)
+
+
+@pytest.fixture
+def owned_path(monkeypatch, tmp_path):
+    """A codex target with an owned PATH directory and working directory."""
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", TARGET)
+    monkeypatch.setenv(LEGACY, "private-unused-target")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "work").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    monkeypatch.chdir(tmp_path / "work")
+    return tmp_path
+
+
+def _executable(path):
+    path.write_text("owned executable stand-in")
+    path.chmod(0o755)
+    return path
+
+
+def test_a_bare_canonical_override_on_path_dominates_the_old_key(
+    owned_path, monkeypatch
+):
+    on_path = _executable(owned_path / "bin" / "native-codex")
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "native-codex")
+    assert provider._codex_migration_error("codex") is None
+    assert provider._resolve_cli_path("codex") == str(on_path)
+
+
+def test_a_working_directory_only_override_fails_closed(owned_path, monkeypatch):
+    # Launch would never run this file, so it cannot dominate the old key.
+    _executable(owned_path / "work" / "native-codex")
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "native-codex")
+    assert provider._resolve_cli_path("codex") is None
+    assert LEGACY in (provider._codex_migration_error("codex") or "")
+
+
+def test_windows_bare_names_resolve_only_through_path(owned_path, monkeypatch):
+    monkeypatch.setattr(provider, "_is_windows", lambda: True)
+    monkeypatch.setenv("PATHEXT", ".EXE;.CMD")
+    monkeypatch.delenv(LEGACY)
+    # Shims in the working directory, which Windows `shutil.which` searches first.
+    for name in ("claude.cmd", "claude.exe", "codex.cmd", "native-codex.cmd"):
+        _executable(owned_path / "work" / name)
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "native-codex")
+    assert provider._resolve_cli_override_path("native-codex") == "native-codex"
+    assert provider._resolve_cli_path("codex") is None
+    assert provider._resolve_cli_path("claude-code") is None
+    # The same names on PATH are found there, extensionless name included.
+    on_path = _executable(owned_path / "bin" / "native-codex.cmd")
+    assert provider._resolve_cli_path("codex") == str(on_path)
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH")
+    claude = _executable(owned_path / "bin" / "claude.exe")
+    assert provider._resolve_cli_path("claude-code") == str(claude)
+    # An empty PATH entry is an implicit working-directory search.
+    monkeypatch.setenv("PATH", os.pathsep)
+    assert provider._resolve_cli_path("claude-code") is None

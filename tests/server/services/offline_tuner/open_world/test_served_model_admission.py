@@ -767,4 +767,91 @@ def test_claude_code_documented_aliases(monkeypatch, host, pin, stamp, admitted)
         _native_served_model_admitted,
     )
 
+    own_launch_environment(monkeypatch)
     assert _native_served_model_admitted(host=host, pin=pin, served=stamp) is admitted
+
+
+@pytest.mark.parametrize(
+    ("pin", "stamp", "admitted"),
+    [
+        # Bedrock (with or without a cross-region profile) and Vertex ids.
+        ("sonnet", "us.anthropic.claude-sonnet-4-6", True),
+        ("sonnet", "global.anthropic.claude-sonnet-4-5-20250929-v1:0", True),
+        ("sonnet", "anthropic.claude-sonnet-4-5-20250929-v1:0", True),
+        ("sonnet", "claude-sonnet-4-6@20250929", True),
+        ("opusplan", "eu.anthropic.claude-opus-4-1", True),
+        # Qualification never relaxes the family.
+        ("sonnet", "us.anthropic.claude-opus-4-1", False),
+        ("haiku", "anthropic.claude-sonnet-4-5", False),
+        ("sonnet", "claude-opus-4-1@20250805", False),
+        ("sonnet", "us.anthropic.claude-sonnetx-1", False),
+        ("sonnet", "us.notanthropic.claude-sonnet-4-6", False),
+        ("sonnet", "synthetic.claude-sonnet-4-6", False),
+    ],
+)
+def test_claude_code_alias_admits_cloud_qualified_ids(
+    monkeypatch, pin, stamp, admitted
+):
+    from reflexio.server.services.offline_tuner.open_world.analyst import (
+        _native_served_model_admitted,
+    )
+
+    own_launch_environment(monkeypatch)
+    assert (
+        _native_served_model_admitted(host="claude-code", pin=pin, served=stamp)
+        is admitted
+    )
+
+
+@pytest.mark.parametrize(
+    ("family", "pin", "configured", "stamp", "admitted"),
+    [
+        # The remapped id is exactly what the alias launches.
+        ("SONNET", "sonnet", "synthetic-model-a", "synthetic-model-a", True),
+        ("SONNET", "sonnet", "synthetic-model-a", "synthetic-model-a-20250929", True),
+        ("SONNET", "sonnet[1m]", "synthetic-model-a[1m]", "synthetic-model-a", True),
+        (
+            "OPUS",
+            "best",
+            "us.anthropic.claude-opus-4-1",
+            "us.anthropic.claude-opus-4-1",
+            True,
+        ),
+        # Once remapped, the family's other ids are not that configuration.
+        ("SONNET", "sonnet", "synthetic-model-a", "claude-sonnet-4-5", False),
+        ("SONNET", "sonnet", "synthetic-model-a", "synthetic-model-b", False),
+        ("HAIKU", "haiku", "claude-haiku-4-5", "us.anthropic.claude-haiku-4-5", False),
+        # A remap of one family leaves the others on their family rule.
+        ("SONNET", "opus", "synthetic-model-a", "claude-opus-4-1", True),
+        ("SONNET", "opus", "synthetic-model-a", "synthetic-model-a", False),
+        # opusplan: each family its own rule.
+        ("SONNET", "opusplan", "synthetic-model-a", "synthetic-model-a", True),
+        ("SONNET", "opusplan", "synthetic-model-a", "claude-opus-4-1", True),
+        ("SONNET", "opusplan", "synthetic-model-a", "claude-sonnet-4-5", False),
+    ],
+)
+def test_a_remapped_alias_admits_exactly_the_configured_id(
+    monkeypatch, family, pin, configured, stamp, admitted
+):
+    from reflexio.server.services.offline_tuner.open_world.analyst import (
+        _native_served_model_admitted,
+    )
+
+    own_launch_environment(monkeypatch)
+    monkeypatch.setenv(f"ANTHROPIC_DEFAULT_{family}_MODEL", configured)
+    assert (
+        _native_served_model_admitted(host="claude-code", pin=pin, served=stamp)
+        is admitted
+    )
+
+
+def test_a_blank_remap_keeps_the_family_rule(monkeypatch):
+    from reflexio.server.services.offline_tuner.open_world.analyst import (
+        _native_served_model_admitted,
+    )
+
+    own_launch_environment(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "  ")
+    assert _native_served_model_admitted(
+        host="claude-code", pin="sonnet", served="claude-sonnet-4-5"
+    )

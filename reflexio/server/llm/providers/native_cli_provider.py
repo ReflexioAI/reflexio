@@ -160,7 +160,9 @@ def _resolve_cli_override_path(cli_path: str) -> str:
     if not _is_windows():
         return cli_path
     path = Path(cli_path)
-    if path.suffix:
+    # A bare name is looked up on PATH (with these suffixes) by
+    # ``_which_on_path``; probing it here would test the working directory.
+    if path.suffix or path.name == cli_path:
         return cli_path
 
     # Windows package managers expose extensioned shims while users often
@@ -204,12 +206,41 @@ def _resolve_cli_path(host: str) -> str | None:
             "%s is not an executable file; falling back to PATH",
             _ENV_CLI_PATH,
         )
-    return _absolute(shutil.which("codex" if host == _HOST_CODEX else "claude"))
+    return _which_on_path("codex" if host == _HOST_CODEX else "claude")
 
 
 def _absolute(path: str | None) -> str | None:
     """Anchor a resolved executable without following symlinks."""
     return str(Path(path).absolute()) if path else None
+
+
+def _which_on_path(name: str) -> str | None:
+    """Look a bare executable name up on PATH only, never the working directory.
+
+    POSIX ``shutil.which`` searches exactly the PATH entries. On Windows it
+    also searches the current directory first (implicitly, even with an
+    explicit ``path=``), so there each PATH entry is probed by exact file
+    name, trying only the PATHEXT-derived shim suffixes for an extensionless
+    name (as ``shutil.which`` does there).
+    An entry that is itself relative is part of PATH and is anchored, as
+    before; an EMPTY entry is an implicit working-directory search and is
+    skipped.
+    """
+    if not _is_windows():
+        return _absolute(shutil.which(name))
+    names = (
+        (name,)
+        if Path(name).suffix
+        else tuple(name + suffix for suffix in _windows_cli_suffixes())
+    )
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory.strip():
+            continue
+        for candidate_name in names:
+            candidate = Path(directory, candidate_name)
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate.absolute())
+    return None
 
 
 def _anchored_override(override: str) -> str | None:
@@ -222,7 +253,7 @@ def _anchored_override(override: str) -> str | None:
     different files.
     """
     if Path(override).name == override:
-        return _absolute(shutil.which(override))
+        return _which_on_path(override)
     candidate = Path(override)
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return str(candidate.absolute())
@@ -243,10 +274,10 @@ def _codex_migration_error(host: str, explicit_path: str | None = None) -> str |
     # canonical env override also dominated the old key; preserve that choice.
     if explicit_path:
         return None
-    if canonical:
-        candidate = Path(_resolve_cli_override_path(canonical))
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return None
+    # Judge the canonical override with the very resolver launch uses: a bare
+    # name found only on PATH dominates, a working-directory file does not.
+    if canonical and _anchored_override(_resolve_cli_override_path(canonical)):
+        return None
     return (
         f"{_RETIRED_CODEX_PATH} no longer selects an executable. Preserve the "
         "intended path in CLAUDE_SMART_CLI_PATH before removing the old assignment, "

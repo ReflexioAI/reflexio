@@ -1779,9 +1779,12 @@ Requests must match that full reference before any native work. See the
 Set the existing
 `CLAUDE_SMART_CLI_PATH` to its native executable, or let PATH resolve `opencode`.
 Relative executable paths are anchored before entering the private workdir.
-A bare-name override is looked up on PATH, as the launcher would; the one
-absolute path that results is both launched and bound into the analyst's
-native launch identity.
+A bare-name override is looked up on PATH only, never the working directory
+(on Windows too); the one absolute path that results is launched, bound into
+the analyst's native launch identity, and decides whether the override
+supersedes the retired `CLAUDE_SMART_CODEX_PATH`. That identity binds
+credential-file variables by absolute path, secrets by nonempty presence only,
+and ignores the parent Codex session ids (`CODEX_THREAD_ID`, ...).
 Windows native execution requires the actual `.exe`; batch shims continue to
 use the existing plugin bridge. No shell is introduced.
 

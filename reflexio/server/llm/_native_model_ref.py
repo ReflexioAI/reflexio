@@ -190,9 +190,52 @@ _HOST_ENV_NAMESPACES: dict[str, tuple[str, ...]] = {
 # unrelated cloud setting cannot refuse a direct-API daemon.
 _CLAUDE_CODE_CLOUD_SWITCH = "CLAUDE_CODE_USE_"
 _CLAUDE_CODE_CLOUD_NAMESPACES = ("AWS_", "GOOGLE_", "CLOUD_ML_")
+# Per host: variables outside its namespaces that still select its account.
+# Claude Code's `CLAUDE_CODE_OAUTH_TOKEN` is a subscription credential (bound
+# by presence through the secret rule below, never by value).
+_HOST_ENV_NAMES: dict[str, tuple[str, ...]] = {
+    "claude-code": ("CLAUDE_CODE_OAUTH_TOKEN",),
+}
+# Codex injects these into every command it runs (codex-rs
+# `protocol/src/shell_environment.rs`, `core/src/exec_env.rs`): ids of the
+# PARENT Codex session, thread and tool call. A daemon started from inside a
+# Codex session inherits them; they select no model, endpoint or account, so a
+# restart from another session must not move the identity. Matched without
+# case, as Windows environment names are. Kept bound on purpose:
+# `CODEX_SANDBOX*` (changes how the launched CLI's HTTP client behaves) and
+# `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` (a stable wrapper label, not per
+# session).
+_PARENT_SESSION_ENVS = frozenset(
+    {"CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_TOOL_CALL_ID"}
+)
 # A credential's VALUE never enters an identity: rotating a key must not move
 # it. Only whether one is set (which selects the credential source) does.
 _SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "HEADERS")
+# Variables whose value is the PATH of a credential/config file, not a secret:
+# which file is read decides the account, so the resolved absolute path is
+# bound (the file is never opened). Checked before the secret rule, which
+# would otherwise reduce e.g. `GOOGLE_APPLICATION_CREDENTIALS` to presence.
+# Any `*_FILE` variable names a file the same way.
+_FILE_PATH_ENVS = frozenset({"GOOGLE_APPLICATION_CREDENTIALS"})
+_FILE_PATH_SUFFIX = "_FILE"
+
+
+def _file_path_env(name: str) -> bool:
+    upper = name.upper()
+    return upper in _FILE_PATH_ENVS or upper.endswith(_FILE_PATH_SUFFIX)
+
+
+def _bound_env_value(name: str, value: str) -> str | bool | None:
+    """How one host variable enters the identity: path, presence or value.
+
+    A secret binds only NONEMPTY presence: a blank one selects no credential
+    source, so it is omitted (``None``) exactly as if unset.
+    """
+    if _file_path_env(name):
+        return str(Path(value).expanduser().absolute()) if value else value
+    if any(part in name.upper() for part in _SECRET_NAME_PARTS):
+        return True if value else None
+    return value
 
 
 def _account_dir(host: str, name: str, default: tuple[str, ...]) -> str:
@@ -213,23 +256,26 @@ def _account_dir(host: str, name: str, default: tuple[str, ...]) -> str:
 
 
 def _host_environment(host: str) -> dict[str, str | bool]:
-    """The host's own namespace: values, except presence only for credentials."""
+    """The host's own namespace: values, file paths resolved, secrets by presence."""
     bound = {name for name, _ in _HOST_ACCOUNT_DIRS.get(host, ())}
     prefixes = _HOST_ENV_NAMESPACES.get(host, ())
+    names = _HOST_ENV_NAMES.get(host, ())
     if host == "claude-code" and any(
         name.upper().startswith(_CLAUDE_CODE_CLOUD_SWITCH) and value
         for name, value in os.environ.items()
     ):
         prefixes = (*prefixes, *_CLAUDE_CODE_CLOUD_NAMESPACES)
-    return {
-        name: (
-            bool(value)
-            if any(part in name.upper() for part in _SECRET_NAME_PARTS)
-            else value
-        )
-        for name, value in sorted(os.environ.items())
-        if name.upper().startswith(prefixes) and name not in bound
-    }
+    environment: dict[str, str | bool] = {}
+    for name, value in sorted(os.environ.items()):
+        if (
+            (name.upper().startswith(prefixes) or name.upper() in names)
+            and name not in bound
+            and name.upper() not in _PARENT_SESSION_ENVS
+        ):
+            bound_value = _bound_env_value(name, value)
+            if bound_value is not None:
+                environment[name] = bound_value
+    return environment
 
 
 def native_launch_identity_digest() -> str:
@@ -249,7 +295,9 @@ def native_launch_identity_digest() -> str:
       unset);
     * the executable override variables;
     * the host's own environment namespace (backend, endpoint, credential
-      source and model selection), with credentials bound by presence only.
+      source and model selection), with credentials bound by presence only,
+      credential/config FILE paths by their absolute location, and parent
+      Codex session ids excluded.
 
     Excluded: cwd, PATH, PATHEXT and the timeout, except through what they
     resolve to above.

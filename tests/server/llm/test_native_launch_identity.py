@@ -308,3 +308,69 @@ def test_a_relative_path_entry_resolves_to_one_absolute_executable(launch, monke
     resolved = _resolve_cli_path("claude-code")
     assert resolved == str((launch / "bin" / executable_name("claude")).absolute())
     assert resolved is not None and Path(resolved).is_absolute()
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_TOOL_CALL_ID", "Codex_Thread_Id"],
+)
+def test_a_parent_codex_session_id_does_not_move_the_codex_identity(
+    launch, monkeypatch, name
+):
+    # Codex injects these into every command it runs; restarting the daemon
+    # from another Codex session must keep the same identity.
+    monkeypatch.setenv(ENV_NATIVE_MODEL, "local-cli/codex")
+    monkeypatch.setenv(name, "synthetic-session-one")
+    before = native_launch_identity_digest()
+    monkeypatch.setenv(name, "synthetic-session-two")
+    assert native_launch_identity_digest() == before
+    monkeypatch.delenv(name)
+    assert native_launch_identity_digest() == before
+
+
+def test_codex_sandbox_settings_stay_bound(launch, monkeypatch):
+    monkeypatch.setenv(ENV_NATIVE_MODEL, "local-cli/codex")
+    before = native_launch_identity_digest()
+    monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
+    assert native_launch_identity_digest() != before
+
+
+def test_claude_code_oauth_token_binds_presence_not_value(launch, monkeypatch):
+    unset = native_launch_identity_digest()
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "synthetic-oauth-one")
+    present = native_launch_identity_digest()
+    assert present != unset, "a subscription token selects the credential source"
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "synthetic-oauth-two")
+    assert native_launch_identity_digest() == present, "rotation does not move it"
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+    assert native_launch_identity_digest() == unset
+
+
+@pytest.mark.parametrize(
+    ("switch", "name"),
+    [
+        ("CLAUDE_CODE_USE_VERTEX", "GOOGLE_APPLICATION_CREDENTIALS"),
+        ("CLAUDE_CODE_USE_BEDROCK", "AWS_SHARED_CREDENTIALS_FILE"),
+        ("CLAUDE_CODE_USE_BEDROCK", "AWS_CONFIG_FILE"),
+        ("CLAUDE_CODE_USE_BEDROCK", "AWS_WEB_IDENTITY_TOKEN_FILE"),
+    ],
+)
+def test_a_credential_file_variable_binds_its_absolute_path(
+    launch, monkeypatch, switch, name
+):
+    monkeypatch.setenv(switch, "1")
+    # The file is never opened: a path that does not exist binds the same way.
+    monkeypatch.setenv(name, str(launch / "account-a" / "credentials.json"))
+    absolute = native_launch_identity_digest()
+    monkeypatch.setenv(name, str(launch / "account-b" / "credentials.json"))
+    assert native_launch_identity_digest() != absolute, "another file, another account"
+    monkeypatch.setenv(name, str(Path("account-a") / "credentials.json"))
+    assert native_launch_identity_digest() == absolute, "same file, relative spelling"
+
+
+def test_cloud_secrets_stay_presence_only_beside_file_paths(launch, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "synthetic-secret-one")
+    before = native_launch_identity_digest()
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "synthetic-secret-two")
+    assert native_launch_identity_digest() == before

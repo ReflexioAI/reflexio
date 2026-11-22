@@ -21,6 +21,7 @@ from typing import Any, Literal, Protocol, cast
 from pydantic import ValidationError
 
 from reflexio.models.structured_output import StrictStructuredOutput
+from reflexio.server.env_utils import env_str
 from reflexio.server.llm import ProviderRequestGuardError
 from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
 from reflexio.server.llm._native_model_ref import PROVIDER_KEY as _NATIVE_CLI_ROUTE
@@ -2224,6 +2225,36 @@ _CLAUDE_CODE_DEFAULT_MODEL = "default"
 # "append the `[1m]` suffix to a model alias or a full model name" to select
 # the 1M-context variant; the reported id names the underlying model.
 _CLAUDE_CODE_EXTENDED_CONTEXT_SUFFIX = "[1m]"
+# "ANTHROPIC_DEFAULT_SONNET_MODEL" etc. remap what an alias of that family
+# resolves to; the launch identity binds them (the `ANTHROPIC_` namespace).
+_CLAUDE_CODE_FAMILY_MODEL_ENV = "ANTHROPIC_DEFAULT_{family}_MODEL"
+# Claude ids as a cloud provider reports them: Bedrock prefixes
+# `anthropic.` and optionally a cross-region inference profile (`us.`,
+# `eu.`, `apac.`, `global.`); Vertex appends `@<version>` to the bare id.
+_BEDROCK_CLAUDE_PREFIX = re.compile(r"^(?:[a-z]+\.)?anthropic\.", re.IGNORECASE)
+
+
+def _claude_family_served(*, family: str, served: str) -> bool:
+    """Whether ``served`` is a Claude id of ``family``, bare or cloud-qualified."""
+    bare = _BEDROCK_CLAUDE_PREFIX.sub("", served.casefold(), count=1)
+    return bare.startswith(f"claude-{family}-")
+
+
+def _claude_code_alias_admitted(*, family: str, served: str) -> bool:
+    """One alias family: the operator's remapped id if set, else the family.
+
+    A configured ``ANTHROPIC_DEFAULT_<FAMILY>_MODEL`` is the exact id that
+    alias launches, so only that id (with the same snapshot rule as any pin)
+    is admitted; without it the alias resolves to the account's model of the
+    family, possibly cloud-qualified.
+    """
+    configured = env_str(_CLAUDE_CODE_FAMILY_MODEL_ENV.format(family=family.upper()))
+    if configured:
+        suffix = _CLAUDE_CODE_EXTENDED_CONTEXT_SUFFIX
+        if configured.casefold().endswith(suffix):
+            configured = configured[: -len(suffix)]
+        return _served_model_admitted(configured_bare=configured, observed_bare=served)
+    return _claude_family_served(family=family, served=served)
 
 
 def _native_served_model_admitted(*, host: str | None, pin: str, served: str) -> bool:
@@ -2231,9 +2262,10 @@ def _native_served_model_admitted(*, host: str | None, pin: str, served: str) ->
 
     For Claude Code only: a ``[1m]`` extended-context suffix is not part of the
     compared id; ``default`` delegates to the account default and admits any
-    model; a documented alias (any case) names its families and admits
-    ``claude-<family>-...``. Every other pin, and every other host, uses
-    ``_served_model_admitted``.
+    model; a documented alias (any case) names its families and admits, per
+    family, the id ``ANTHROPIC_DEFAULT_<FAMILY>_MODEL`` configures, or else
+    ``claude-<family>-...`` bare or Bedrock/Vertex-qualified. Every other pin,
+    and every other host, uses ``_served_model_admitted``.
 
     Args:
         host (str | None): The native host of the configured reference.
@@ -2253,7 +2285,8 @@ def _native_served_model_admitted(*, host: str | None, pin: str, served: str) ->
         families = _CLAUDE_CODE_ALIAS_FAMILIES.get(alias)
         if families is not None:
             return any(
-                served.casefold().startswith(f"claude-{family}-") for family in families
+                _claude_code_alias_admitted(family=family, served=served)
+                for family in families
             )
     return _served_model_admitted(configured_bare=pin, observed_bare=served)
 
