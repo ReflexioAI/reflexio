@@ -158,10 +158,13 @@ def native_policy_digest() -> str:
 
 
 # Executable override variables: any of them can change which binary runs.
+# The retired `CLAUDE_SMART_CODEX_PATH` is not one: it never selects a binary,
+# it only refuses Codex selection until migrated (no launch, so no identity),
+# and is otherwise ignored. Its effect is already bound through the resolved
+# executable, so removing a stale assignment does not move the identity.
 _EXECUTABLE_OVERRIDE_ENVS = (
     "CLAUDE_SMART_CLI_PATH",
     PLUGIN_OPENCODE_EXECUTABLE_ENV,
-    "CLAUDE_SMART_CODEX_PATH",
 )
 # Per host: the account/configuration directories the CLI reads, each with its
 # documented default under HOME when unset.
@@ -195,6 +198,41 @@ _CLAUDE_CODE_CLOUD_NAMESPACES = ("AWS_", "GOOGLE_", "CLOUD_ML_")
 # by presence through the secret rule below, never by value).
 _HOST_ENV_NAMES: dict[str, tuple[str, ...]] = {
     "claude-code": ("CLAUDE_CODE_OAUTH_TOKEN",),
+    # OpenCode's own provider docs (opencode.ai/docs/providers) name these as
+    # what selects a provider's account, project, region or credential:
+    "opencode": (
+        # Google Vertex: "Point GOOGLE_APPLICATION_CREDENTIALS at the
+        # service-account JSON file" (a path); project from
+        # GOOGLE_VERTEX_PROJECT, GOOGLE_CLOUD_PROJECT, GCP_PROJECT or
+        # GCLOUD_PROJECT; location from GOOGLE_VERTEX_LOCATION,
+        # GOOGLE_CLOUD_LOCATION or VERTEX_LOCATION.
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_VERTEX_PROJECT",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCP_PROJECT",
+        "GCLOUD_PROJECT",
+        "GOOGLE_VERTEX_LOCATION",
+        "GOOGLE_CLOUD_LOCATION",
+        "VERTEX_LOCATION",
+        # Amazon Bedrock: "A configured profile, AWS_PROFILE, AWS_ACCESS_KEY_ID,
+        # web identity token file ... activates the provider"; region from
+        # AWS_REGION then AWS_DEFAULT_REGION; API keys in
+        # AWS_BEARER_TOKEN_BEDROCK. The profile and token FILES are paths.
+        "AWS_PROFILE",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_CONFIG_FILE",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        # Azure: AZURE_RESOURCE_NAME "supplies the resource name"; the legacy
+        # AZURE_COGNITIVE_SERVICES_RESOURCE_NAME "also works".
+        "AZURE_RESOURCE_NAME",
+        "AZURE_COGNITIVE_SERVICES_RESOURCE_NAME",
+        # OpenRouter: "Provide OPENROUTER_API_KEY to the OpenCode server".
+        "OPENROUTER_API_KEY",
+    ),
 }
 # Codex injects these into every command it runs (codex-rs
 # `protocol/src/shell_environment.rs`, `core/src/exec_env.rs`): ids of the

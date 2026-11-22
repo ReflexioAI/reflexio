@@ -609,6 +609,8 @@ def test_a_long_running_client_keeps_answering_across_an_inert_env_change(
         ("sonnet", "sonnet", False),
         ("sonnet", "gpt-4o", False),
         ("sonnet", "claude-sonnetx-1", False),
+        # An explicit `/default` is a literal pin, not delegation.
+        ("default", "claude-haiku-4-5", False),
         # A full-id pin keeps the strict rule.
         ("claude-sonnet-4-5", "claude-sonnet-4-5-20250929", True),
         ("claude-sonnet-4-5", "claude-sonnet-4-6", False),
@@ -755,8 +757,12 @@ def test_an_admitted_invalid_answer_still_earns_its_retry(monkeypatch):
         ("claude-code", "opusplan", "claude-sonnet-4-5", True),
         ("claude-code", "opusplan[1m]", "claude-sonnet-4-5", True),
         ("claude-code", "opusplan", "claude-haiku-4-5", False),
-        # `default` reverts to the account default: the CLI chooses.
-        ("claude-code", "default", "claude-haiku-4-5", True),
+        # An explicit `/default` is the literal model ID `default`, held to
+        # the explicit-pin rule; only a host-only reference delegates.
+        ("claude-code", "default", "claude-haiku-4-5", False),
+        ("claude-code", "DEFAULT", "claude-haiku-4-5", False),
+        ("claude-code", "default[1m]", "claude-sonnet-4-5", False),
+        ("claude-code", "default", "default", True),
         # Only Claude Code has these aliases.
         ("codex", "sonnet[1m]", "claude-sonnet-4-5", False),
         ("codex", "default", "synthetic-model", False),

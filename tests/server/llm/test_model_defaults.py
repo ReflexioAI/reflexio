@@ -100,11 +100,15 @@ class TestDetectAvailableProviders:
         from reflexio.server.llm.providers import native_cli_provider
 
         monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
-        monkeypatch.setattr(native_cli_provider.shutil, "which", lambda _: None)
+        monkeypatch.setattr(
+            native_cli_provider.shutil, "which", lambda _, **_kwargs: None
+        )
         assert detect_available_providers() == ["local-cli"]
 
         monkeypatch.setattr(
-            native_cli_provider.shutil, "which", lambda _: "/usr/local/bin/claude"
+            native_cli_provider.shutil,
+            "which",
+            lambda _, **_kwargs: "/usr/local/bin/claude",
         )
         assert detect_available_providers() == ["local-cli"]
 
@@ -115,7 +119,9 @@ class TestDetectAvailableProviders:
         from reflexio.server.llm.providers import native_cli_provider
 
         monkeypatch.setattr(
-            native_cli_provider.shutil, "which", lambda _: "/usr/local/bin/claude"
+            native_cli_provider.shutil,
+            "which",
+            lambda _, **_kwargs: "/usr/local/bin/claude",
         )
         assert detect_available_providers() == []
 
@@ -127,7 +133,9 @@ class TestDetectAvailableProviders:
         monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
         monkeypatch.setattr(
-            native_cli_provider.shutil, "which", lambda _: "/usr/local/bin/claude"
+            native_cli_provider.shutil,
+            "which",
+            lambda _, **_kwargs: "/usr/local/bin/claude",
         )
         providers = detect_available_providers()
         assert providers[0] == "local-cli"
@@ -144,7 +152,9 @@ class TestDetectAvailableProviders:
         fake_cli.chmod(0o755)
         monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
         monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", str(fake_cli))
-        monkeypatch.setattr(native_cli_provider.shutil, "which", lambda _: None)
+        monkeypatch.setattr(
+            native_cli_provider.shutil, "which", lambda _, **_kwargs: None
+        )
         assert "local-cli" in detect_available_providers()
 
 

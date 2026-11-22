@@ -2219,9 +2219,6 @@ _CLAUDE_CODE_ALIAS_FAMILIES: dict[str, tuple[str, ...]] = {
     "fable": ("fable",),
     "opusplan": ("opus", "sonnet"),
 }
-# "Special value that clears any model override and reverts to the runtime
-# default for your account. Not itself a model alias" -- the CLI chooses.
-_CLAUDE_CODE_DEFAULT_MODEL = "default"
 # "append the `[1m]` suffix to a model alias or a full model name" to select
 # the 1M-context variant; the reported id names the underlying model.
 _CLAUDE_CODE_EXTENDED_CONTEXT_SUFFIX = "[1m]"
@@ -2261,8 +2258,7 @@ def _native_served_model_admitted(*, host: str | None, pin: str, served: str) ->
     """Decide whether a CLI-reported served model honours an explicit pin.
 
     For Claude Code only: a ``[1m]`` extended-context suffix is not part of the
-    compared id; ``default`` delegates to the account default and admits any
-    model; a documented alias (any case) names its families and admits, per
+    compared id; a documented alias (any case) names its families and admits, per
     family, the id ``ANTHROPIC_DEFAULT_<FAMILY>_MODEL`` configures, or else
     ``claude-<family>-...`` bare or Bedrock/Vertex-qualified. Every other pin,
     and every other host, uses ``_served_model_admitted``.
@@ -2280,8 +2276,10 @@ def _native_served_model_admitted(*, host: str | None, pin: str, served: str) ->
         if pin.casefold().endswith(suffix):
             pin = pin[: -len(suffix)]
         alias = pin.casefold()
-        if alias == _CLAUDE_CODE_DEFAULT_MODEL:
-            return True
+        # No `default` exemption: an explicit `/default` is the literal model
+        # ID `default` (docs/native-cli-model-selection.md), so it is held to
+        # the explicit-pin rule. Only a host-only reference delegates, and it
+        # never reaches here (it pins nothing).
         families = _CLAUDE_CODE_ALIAS_FAMILIES.get(alias)
         if families is not None:
             return any(

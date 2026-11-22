@@ -135,7 +135,6 @@ def test_environment_that_does_not_decide_who_answers_is_excluded(
     [
         "path-other-binary",
         "cli-path-override",
-        "codex-path-override",
         "opencode-executable-override",
         "home",
         "claude-config-dir",
@@ -156,8 +155,6 @@ def test_what_decides_who_answers_is_bound(launch, monkeypatch, change):
         monkeypatch.setenv(
             "CLAUDE_SMART_CLI_PATH", str(stub_executable(launch / "override"))
         )
-    elif change == "codex-path-override":
-        monkeypatch.setenv("CLAUDE_SMART_CODEX_PATH", "/synthetic/codex")
     elif change == "opencode-executable-override":
         monkeypatch.setenv(PLUGIN_OPENCODE_EXECUTABLE_ENV, "/synthetic/opencode")
     elif change == "home":
@@ -373,4 +370,92 @@ def test_cloud_secrets_stay_presence_only_beside_file_paths(launch, monkeypatch)
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "synthetic-secret-one")
     before = native_launch_identity_digest()
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "synthetic-secret-two")
+    assert native_launch_identity_digest() == before
+
+
+@pytest.mark.parametrize("host", ["claude-code", "opencode", "codex"])
+def test_an_ignored_retired_codex_path_is_not_bound(launch, monkeypatch, host):
+    # Ignored for every host but Codex, and for Codex once a valid canonical
+    # override dominates it: removing the stale assignment changes nothing.
+    monkeypatch.setenv(ENV_NATIVE_MODEL, f"local-cli/{host}")
+    if host == "codex":
+        monkeypatch.setenv(
+            "CLAUDE_SMART_CLI_PATH",
+            str(stub_executable(launch / "override", "codex")),
+        )
+    monkeypatch.setenv("CLAUDE_SMART_CODEX_PATH", "/synthetic/retired-codex")
+    before = native_launch_identity_digest()
+    monkeypatch.setenv("CLAUDE_SMART_CODEX_PATH", "/synthetic/other-retired-codex")
+    assert native_launch_identity_digest() == before
+    monkeypatch.delenv("CLAUDE_SMART_CODEX_PATH")
+    assert native_launch_identity_digest() == before
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_CONFIG_FILE",
+    ],
+)
+def test_opencode_binds_provider_credential_files_by_absolute_path(
+    launch, monkeypatch, name
+):
+    monkeypatch.setenv(ENV_NATIVE_MODEL, "local-cli/opencode")
+    unset = native_launch_identity_digest()
+    monkeypatch.setenv(name, str(launch / "account-a" / "credentials.json"))
+    absolute = native_launch_identity_digest()
+    assert absolute != unset
+    monkeypatch.setenv(name, str(launch / "account-b" / "credentials.json"))
+    assert native_launch_identity_digest() != absolute, "another file, another account"
+    monkeypatch.setenv(name, str(Path("account-a") / "credentials.json"))
+    assert native_launch_identity_digest() == absolute, "same file, relative spelling"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "GOOGLE_VERTEX_PROJECT",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCP_PROJECT",
+        "GCLOUD_PROJECT",
+        "GOOGLE_VERTEX_LOCATION",
+        "GOOGLE_CLOUD_LOCATION",
+        "VERTEX_LOCATION",
+        "AWS_PROFILE",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AZURE_RESOURCE_NAME",
+        "AZURE_COGNITIVE_SERVICES_RESOURCE_NAME",
+    ],
+)
+def test_opencode_binds_documented_provider_selectors(launch, monkeypatch, name):
+    monkeypatch.setenv(ENV_NATIVE_MODEL, "local-cli/opencode")
+    monkeypatch.setenv(name, "synthetic-a")
+    before = native_launch_identity_digest()
+    monkeypatch.setenv(name, "synthetic-b")
+    assert native_launch_identity_digest() != before
+
+
+@pytest.mark.parametrize(
+    "name", ["AWS_ACCESS_KEY_ID", "AWS_BEARER_TOKEN_BEDROCK", "OPENROUTER_API_KEY"]
+)
+def test_opencode_binds_provider_secrets_by_presence_only(launch, monkeypatch, name):
+    monkeypatch.setenv(ENV_NATIVE_MODEL, "local-cli/opencode")
+    unset = native_launch_identity_digest()
+    monkeypatch.setenv(name, "synthetic-secret-one")
+    present = native_launch_identity_digest()
+    assert present != unset
+    monkeypatch.setenv(name, "synthetic-secret-two")
+    assert native_launch_identity_digest() == present
+
+
+def test_opencode_ignores_undocumented_provider_variables(launch, monkeypatch):
+    monkeypatch.setenv(ENV_NATIVE_MODEL, "local-cli/opencode")
+    before = native_launch_identity_digest()
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "synthetic-secret")
+    monkeypatch.setenv("GOOGLE_SYNTHETIC_SETTING", "synthetic")
+    monkeypatch.setenv("SYNTHETIC_FILE", str(launch / "elsewhere.json"))
     assert native_launch_identity_digest() == before

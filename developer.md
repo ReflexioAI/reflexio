@@ -1783,8 +1783,11 @@ A bare-name override is looked up on PATH only, never the working directory
 (on Windows too); the one absolute path that results is launched, bound into
 the analyst's native launch identity, and decides whether the override
 supersedes the retired `CLAUDE_SMART_CODEX_PATH`. That identity binds
-credential-file variables by absolute path, secrets by nonempty presence only,
-and ignores the parent Codex session ids (`CODEX_THREAD_ID`, ...).
+credential-file variables by absolute path (OpenCode: the provider variables
+its provider docs name), secrets by nonempty presence only, and ignores the
+parent Codex session ids (`CODEX_THREAD_ID`, ...) and the retired, ignored
+`CLAUDE_SMART_CODEX_PATH`. An empty PATH entry never searches the working
+directory.
 Windows native execution requires the actual `.exe`; batch shims continue to
 use the existing plugin bridge. No shell is introduced.
 

@@ -801,7 +801,9 @@ class TestExecutableResolution:
 
     def test_explicit_host_resolves_matching_binary(self, monkeypatch):
         monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
-        monkeypatch.setattr(ccp.shutil, "which", lambda name: f"/owned/{name}")
+        monkeypatch.setattr(
+            ccp.shutil, "which", lambda name, **_kwargs: f"/owned/{name}"
+        )
         assert ccp._resolve_cli_path("codex") == "/owned/codex"
         assert ccp._resolve_cli_path("claude-code") == "/owned/claude"
 

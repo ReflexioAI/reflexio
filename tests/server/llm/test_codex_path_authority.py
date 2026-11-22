@@ -36,7 +36,7 @@ def client_transport(monkeypatch):
     monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", TARGET)
     monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
-    monkeypatch.setattr(provider.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(provider.shutil, "which", lambda _name, **_kwargs: None)
     monkeypatch.setattr(provider.litellm, "custom_provider_map", [])
     client = LiteLLMClient(
         LiteLLMConfig(model=TARGET, timeout=2, max_tokens=32, fallback_models=[])
@@ -252,10 +252,15 @@ def _executable(path):
     return path
 
 
+def _native_name(name):
+    """The file a bare ``name`` resolves to on this platform's PATH."""
+    return f"{name}.exe" if os.name == "nt" else name
+
+
 def test_a_bare_canonical_override_on_path_dominates_the_old_key(
     owned_path, monkeypatch
 ):
-    on_path = _executable(owned_path / "bin" / "native-codex")
+    on_path = _executable(owned_path / "bin" / _native_name("native-codex"))
     monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "native-codex")
     assert provider._codex_migration_error("codex") is None
     assert provider._resolve_cli_path("codex") == str(on_path)
@@ -263,7 +268,7 @@ def test_a_bare_canonical_override_on_path_dominates_the_old_key(
 
 def test_a_working_directory_only_override_fails_closed(owned_path, monkeypatch):
     # Launch would never run this file, so it cannot dominate the old key.
-    _executable(owned_path / "work" / "native-codex")
+    _executable(owned_path / "work" / _native_name("native-codex"))
     monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "native-codex")
     assert provider._resolve_cli_path("codex") is None
     assert LEGACY in (provider._codex_migration_error("codex") or "")
@@ -289,3 +294,34 @@ def test_windows_bare_names_resolve_only_through_path(owned_path, monkeypatch):
     # An empty PATH entry is an implicit working-directory search.
     monkeypatch.setenv("PATH", os.pathsep)
     assert provider._resolve_cli_path("claude-code") is None
+
+
+def test_windows_explicit_relative_override_stays_in_its_directory(
+    owned_path, monkeypatch
+):
+    # `.\\native-codex` names the working directory; suffix probing must not
+    # turn it into the bare `native-codex.exe` and search PATH instead.
+    monkeypatch.setattr(provider, "_is_windows", lambda: True)
+    monkeypatch.setenv("PATHEXT", ".EXE;.CMD")
+    monkeypatch.delenv(LEGACY)
+    local = _executable(owned_path / "work" / "native-codex.exe")
+    _executable(owned_path / "bin" / "native-codex.exe")
+    override = "." + os.sep + "native-codex"
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", override)
+    assert provider._resolve_cli_override_path(override) == str(local.absolute())
+    assert provider._resolve_cli_path("codex") == str(local.absolute())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX PATH semantics")
+@pytest.mark.parametrize("path", ["{bin}:", ":{bin}", "{bin}::", ":"])
+def test_an_empty_posix_path_entry_never_searches_the_working_directory(
+    owned_path, monkeypatch, path
+):
+    monkeypatch.delenv(LEGACY)
+    monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+    _executable(owned_path / "work" / "codex")
+    monkeypatch.setenv("PATH", path.format(bin=owned_path / "bin"))
+    assert provider._resolve_cli_path("codex") is None
+    on_path = _executable(owned_path / "bin" / "codex")
+    if path != ":":
+        assert provider._resolve_cli_path("codex") == str(on_path)

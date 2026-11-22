@@ -170,7 +170,9 @@ def _resolve_cli_override_path(cli_path: str) -> str:
     for suffix in _windows_cli_suffixes():
         candidate = path.with_suffix(suffix)
         if candidate.exists():
-            return str(candidate)
+            # pathlib drops a leading `.\`, so `.\tool` would come back as the
+            # bare `tool.exe` and be looked up on PATH instead; anchor it.
+            return str(candidate.absolute())
     return cli_path
 
 
@@ -217,17 +219,19 @@ def _absolute(path: str | None) -> str | None:
 def _which_on_path(name: str) -> str | None:
     """Look a bare executable name up on PATH only, never the working directory.
 
-    POSIX ``shutil.which`` searches exactly the PATH entries. On Windows it
+    POSIX ``shutil.which`` searches the given PATH entries. On Windows it
     also searches the current directory first (implicitly, even with an
     explicit ``path=``), so there each PATH entry is probed by exact file
     name, trying only the PATHEXT-derived shim suffixes for an extensionless
     name (as ``shutil.which`` does there).
     An entry that is itself relative is part of PATH and is anchored, as
-    before; an EMPTY entry is an implicit working-directory search and is
-    skipped.
+    before; an EMPTY entry (e.g. a trailing separator) is an implicit
+    working-directory search on every platform and is skipped.
     """
     if not _is_windows():
-        return _absolute(shutil.which(name))
+        entries = [entry for entry in os.get_exec_path() if entry.strip()]
+        # An empty `path=` searches nothing (``shutil.which`` returns None).
+        return _absolute(shutil.which(name, path=os.pathsep.join(entries)))
     names = (
         (name,)
         if Path(name).suffix
