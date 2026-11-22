@@ -244,12 +244,15 @@ class SQLiteConnectionMixin:
                 with publish_timing.phase("scope_commit"):
                     self.conn.commit()
                 ops, self._deferred_index_ops = self._deferred_index_ops, []
-                try:
-                    # Vector ops rebuild the sidecar row from the CURRENT primary
-                    # row, once per row: an older flush must not write a stale
-                    # in-memory embedding over a newer commit, or clear its marker.
-                    reconciled: set[tuple[str, int]] = set()
-                    for kind, args in ops:
+                # Every op is attempted: one failure must not skip the ops after
+                # it, since only vector ops are replayed (from vec_pending).
+                failures: list[Exception] = []
+                # Vector ops rebuild the sidecar row from the CURRENT primary
+                # row, once per row: an older flush must not write a stale
+                # in-memory embedding over a newer commit, or clear its marker.
+                reconciled: set[tuple[str, int]] = set()
+                for kind, args in ops:
+                    try:
                         if kind in _VEC_OP_KINDS:
                             key = (args[0], args[1])
                             if key not in reconciled:
@@ -257,12 +260,15 @@ class SQLiteConnectionMixin:
                                 self._reconcile_pending_vector(*key)
                         else:
                             self._flush_index_op(kind, args)
-                except Exception as error:
-                    # Ops not flushed stay in vec_pending; the next open
+                    except Exception as error:
+                        failures.append(error)
+                if failures:
+                    # A failed vector op stays in vec_pending; the next open
                     # rebuilds exactly those sidecar rows.
                     raise PostCommitStorageError(
-                        "Primary rows committed; deferred index update failed"
-                    ) from error
+                        "Primary rows committed; "
+                        f"{len(failures)} of {len(ops)} deferred index updates failed"
+                    ) from failures[0]
             except BaseException:
                 try:
                     self.conn.rollback()

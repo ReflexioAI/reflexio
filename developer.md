@@ -329,6 +329,13 @@ stamp again, and an embedding changed in fallback mode keeps its old vector.
 Running native and fallback processes against one file is not a supported steady
 state.
 
+The backfill walks fixed rowid ranges, so a sparse table with a large deletion gap
+walks empty pages (each one cheap SELECT in a short transaction, a one-time upgrade
+cost), and its range arithmetic is not guarded against int64 overflow at the
+extremes. Every deferred op of a commit scope is attempted even if an earlier one
+failed; the scope then raises one `PostCommitStorageError`. Only vector ops are
+replayed after a failure (from `vec_pending`); a failed FTS op is not.
+
 
 ### Why this matters
 

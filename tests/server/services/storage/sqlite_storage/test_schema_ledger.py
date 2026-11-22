@@ -1079,3 +1079,41 @@ def test_backfill_examines_one_page_of_primary_rows_per_transaction(
         if (m := re.search(r"t\.rowid > (-?\d+) AND t\.rowid <= (-?\d+)", q))
     ]
     assert len(spans) == 4 and all(hi - lo == 3 for lo, hi in spans)
+
+
+@requires_vec
+def test_every_deferred_op_is_attempted_after_one_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+    from reflexio.server.services.storage.error import PostCommitStorageError
+    from reflexio.server.services.storage.sqlite_storage.migrations._steps import (
+        SQLiteSchemaMigrationsMixin,
+    )
+
+    path = tmp_path / "all-ops.db"
+    storage = _open(path)
+    real = SQLiteSchemaMigrationsMixin._reconcile_pending_vector
+    calls: list[int] = []
+
+    def reconcile(self, table, row):
+        calls.append(row)
+        if len(calls) == 2:
+            raise RuntimeError("second op failed")
+        return real(self, table, row)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_reconcile_pending_vector", reconcile)
+        with (
+            pytest.raises(PostCommitStorageError, match="1 of 3"),
+            storage.commit_scope(),
+        ):
+            first = _queue_profile(storage, "a", [0.5] * EMBEDDING_DIMENSIONS)
+            second = _queue_profile(storage, "b", [0.25] * EMBEDDING_DIMENSIONS)
+            third = _queue_profile(storage, "c", [0.125] * EMBEDDING_DIMENSIONS)
+    assert len(calls) == 3  # the third was attempted after the second failed
+    storage.conn.close()
+
+    assert _pending(path) == [("profiles_vec", second)]
+    assert _sidecar(path, first) == pytest.approx((0.5,) * EMBEDDING_DIMENSIONS)
+    assert _sidecar(path, third) == pytest.approx((0.125,) * EMBEDDING_DIMENSIONS)
