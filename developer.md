@@ -291,6 +291,55 @@ helpers still install indexes/triggers and upgrade older or partial database
 files. The fresh-schema regression checks real SQLite authorization events;
 legacy-schema tests continue exercising the upgrade paths.
 
+SQLite schema upgrades run once per database behind `PRAGMA user_version`. The
+ordered, append-only step list is `MIGRATION_STEPS` in
+`reflexio/server/services/storage/sqlite_storage/migrations/__init__.py`; the
+step bodies are in `migrations/_steps.py`. A database at version 0 (every database
+created before the ledger) runs the whole sequence once and is stamped; a later
+open reads the version and returns. To change the schema, append a step; never
+reorder or edit the meaning of a numbered step, because stamped databases skip
+it. A step that derives its target from code (such as the optimizer job `CHECK`
+literals) no longer re-runs when that code changes, so widening that input needs a
+new step. A test that fabricates a legacy schema and reopens it must reset
+`PRAGMA user_version = 0`. `test_schema_ledger.py` upgrades databases built from
+historical DDL through the ledger.
+
+The whole ledger run (every step and its stamp) is serialised across processes by an
+exclusive lock on `<db_path>.migrate.lock` (not taken for `:memory:`). A process
+that waited re-reads the stored version before planning, so it never runs a step
+plan computed before another process finished; otherwise a late process could run
+an older step, such as the `requests` rebuild whose fixed column set predates a
+later step's column, after the database was already stamped current.
+
+The vector sidecar (`*_vec` tables) has two repair paths.
+
+Every vector write runs inside a `commit_scope` (`_vec_upsert` and `_vec_delete` refuse to run outside one, so a new call site that forgets fails loudly instead of losing crash safety); the primary row and its queued vector write commit together. Native processes record every queued sidecar write (table and rowid) in
+`vec_pending` inside the same transaction as the primary rows, and clear that row
+right after the sidecar write succeeds. The write after a commit rebuilds the sidecar row from the current primary row rather than from the in-memory embedding, once per row, so a flush that finishes late can never overwrite or un-mark a newer commit's embedding. A crash between the commit and the flush,
+or a flush that fails part-way, leaves exactly the unfinished rowids pending. Each
+native open reads `vec_pending` (one SELECT when empty) and, per row, deletes the
+sidecar row, re-inserts it from the stored embedding if the primary row still
+exists and the embedding is indexable, and clears the pending row, in one write
+transaction. Cost: one extra insert and one delete per queued sidecar write.
+
+On a fallback connection the sidecar tracker is an authorizer chained in front of any authorizer the caller installs with `set_authorizer`, so callers keep their own policy. The backfill pages over existing primary rowids (keyset, one write transaction per page of `_VEC_BACKFILL_PAGE` rows), so sparse or huge rowids cost nothing extra.
+
+Processes that cannot load sqlite-vec write embeddings without touching
+`vec_pending`; they take the schema stamp back to just before the vec step at open
+and inside any commit that wrote an embedding table (their connection re-arms its
+authorizer after each commit or rollback because the statement cache outlives it).
+The next native open then reruns the vec step, which adds missing sidecar rows and
+drops orphans. Known limits: a fallback process that commits an embedding between
+two batches of a native opener's reconciliation (after that table was scanned,
+before the step is stamped) is missed until the next fallback write lowers the
+stamp again, and an embedding changed in fallback mode keeps its old vector.
+Running native and fallback processes against one file is not a supported steady
+state.
+
+Every deferred op of a commit scope is attempted even if an earlier one
+failed; the scope then raises one `PostCommitStorageError`. Only vector ops are
+replayed after a failure (from `vec_pending`); a failed FTS op is not.
+
 
 ### Why this matters
 

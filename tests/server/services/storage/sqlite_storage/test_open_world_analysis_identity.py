@@ -187,6 +187,7 @@ def test_legacy_optimizer_kind_allowlist_is_rebuilt_for_open_world_job(
         "SELECT sql FROM sqlite_master "
         "WHERE type = 'table' AND name = 'playbook_optimization_jobs'"
     ).fetchone()[0]
+    initial.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     initial.conn.close()
 
     legacy_table_sql = table_sql.replace("'offline_tuner_open_world',", "")

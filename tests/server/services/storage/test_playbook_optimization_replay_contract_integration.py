@@ -577,6 +577,9 @@ def test_previous_artifact_schema_is_upgraded_without_losing_constraints(
     initial_store = SQLiteStorage(
         org_id="previous-artifact-schema", db_path=str(db_path)
     )
+    initial_store.conn.execute(
+        "PRAGMA user_version = 0"
+    )  # emulate a pre-ledger database
     initial_store.conn.close()
 
     legacy_content = '{"source":"legacy"}'

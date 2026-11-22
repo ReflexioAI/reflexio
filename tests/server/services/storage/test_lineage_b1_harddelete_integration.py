@@ -27,6 +27,18 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 pytestmark = pytest.mark.integration
 
 
+def _seed_vec(storage, table, rowid, vector):
+    """Seed a sidecar row directly; vector writes through the API need a commit scope."""
+    import json
+
+    storage.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
+    storage.conn.execute(
+        f"INSERT INTO {table}(rowid, embedding) VALUES (?, ?)",  # noqa: S608
+        (rowid, json.dumps(vector)),
+    )
+    storage.conn.commit()
+
+
 def _store(tmp_path):
     s = SQLiteStorage(org_id="org-1", db_path=str(tmp_path / "t.db"))
     s.migrate()
@@ -489,7 +501,7 @@ def test_delete_profiles_by_ids_cleans_vec(tmp_path):
         "SELECT rowid FROM profiles WHERE profile_id = ?", ("vec-pr1",)
     ).fetchone()
     # Seed a vec row keyed on the profile's implicit sqlite rowid.
-    s._vec_upsert("profiles_vec", rowid_row["rowid"], [0.1] * s.embedding_dimensions)
+    _seed_vec(s, "profiles_vec", rowid_row["rowid"], [0.1] * s.embedding_dimensions)
     assert rowid_row["rowid"] in _vec_rowids(s, "profiles_vec")
     s.delete_profiles_by_ids(["vec-pr1"])
     assert rowid_row["rowid"] not in _vec_rowids(s, "profiles_vec")
@@ -501,8 +513,8 @@ def test_delete_all_user_playbooks_cleans_vec(tmp_path):
         pytest.skip("sqlite-vec extension not loaded")
     pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="c")
     s.save_user_playbooks([pb])
-    s._vec_upsert(
-        "user_playbooks_vec", pb.user_playbook_id, [0.2] * s.embedding_dimensions
+    _seed_vec(
+        s, "user_playbooks_vec", pb.user_playbook_id, [0.2] * s.embedding_dimensions
     )
     assert pb.user_playbook_id in _vec_rowids(s, "user_playbooks_vec")
     s.delete_all_user_playbooks()
@@ -515,7 +527,7 @@ def test_delete_agent_playbooks_by_ids_cleans_vec(tmp_path):
         pytest.skip("sqlite-vec extension not loaded")
     saved = s.save_agent_playbooks([_make_agent_playbook()])
     apid = saved[0].agent_playbook_id
-    s._vec_upsert("agent_playbooks_vec", apid, [0.3] * s.embedding_dimensions)
+    _seed_vec(s, "agent_playbooks_vec", apid, [0.3] * s.embedding_dimensions)
     assert apid in _vec_rowids(s, "agent_playbooks_vec")
     s.delete_agent_playbooks_by_ids([apid])
     assert apid not in _vec_rowids(s, "agent_playbooks_vec")

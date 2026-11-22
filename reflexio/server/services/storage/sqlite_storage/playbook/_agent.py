@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from typing import Any
 
+from reflexio.server.services.storage.error import PostCommitStorageError
+
 logger = logging.getLogger(__name__)
 
 from reflexio.models.api_schema.common import BlockingIssue
@@ -102,9 +104,9 @@ class AgentPlaybookStoreMixin:
     def _index_agent_playbook_fts_vec(self, ap: AgentPlaybook) -> None:
         """Update the FTS and vector indexes for a single agent playbook row.
 
-        Must be called AFTER the row's transaction has been committed.  The FTS
-        and vec helpers self-commit, so they must never be interleaved inside a
-        transaction that still has pending mutations.
+        Must be called inside the commit scope that inserted the row: the FTS and
+        vec writes are queued and run after that commit, and the vector is
+        recorded in ``vec_pending`` in the same transaction.
 
         Args:
             ap (AgentPlaybook): The already-saved playbook (``agent_playbook_id``
@@ -273,36 +275,42 @@ class AgentPlaybookStoreMixin:
         for ap, context in zip(agent_playbooks, contexts, strict=True):
             rows.append((ap, context, _epoch_to_iso(ap.created_at)))
 
-        with self.commit_scope():
-            for ap, context, created_at_iso in rows:
-                with self._lock:
-                    self._insert_agent_playbook_row(self.conn, ap, created_at_iso)
-                    is_aggregate = context.op_kind == "aggregate"
-                    _append_event_stmt(
-                        self.conn,
-                        org_id=self.org_id,
-                        entity_type="agent_playbook",
-                        entity_id=str(ap.agent_playbook_id),
-                        op=context.op_kind,
-                        prov="wasDerivedFrom" if is_aggregate else "wasGeneratedBy",
-                        source_ids=context.source_ids,
-                        actor=context.actor,
-                        request_id=context.request_id
-                        or f"{context.op_kind}_{ap.agent_playbook_id}",
-                        reason=context.reason,
-                        model_name=context.model_name,
-                        provider=context.provider,
-                    )
+        try:
+            with self.commit_scope():
+                for ap, context, created_at_iso in rows:
+                    with self._lock:
+                        self._insert_agent_playbook_row(self.conn, ap, created_at_iso)
+                        is_aggregate = context.op_kind == "aggregate"
+                        _append_event_stmt(
+                            self.conn,
+                            org_id=self.org_id,
+                            entity_type="agent_playbook",
+                            entity_id=str(ap.agent_playbook_id),
+                            op=context.op_kind,
+                            prov="wasDerivedFrom" if is_aggregate else "wasGeneratedBy",
+                            source_ids=context.source_ids,
+                            actor=context.actor,
+                            request_id=context.request_id
+                            or f"{context.op_kind}_{ap.agent_playbook_id}",
+                            reason=context.reason,
+                            model_name=context.model_name,
+                            provider=context.provider,
+                        )
 
-        for ap, _context, _created_at_iso in rows:
-            try:
-                self._index_agent_playbook_fts_vec(ap)
-            except Exception:
-                logger.exception(
-                    "FTS/vec indexing failed for agent_playbook %s "
-                    "(row committed, index skipped)",
-                    ap.agent_playbook_id,
-                )
+                for ap, _context, _created_at_iso in rows:
+                    try:
+                        self._index_agent_playbook_fts_vec(ap)
+                    except Exception:
+                        logger.exception(
+                            "FTS/vec indexing failed for agent_playbook %s "
+                            "(row committed, index skipped)",
+                            ap.agent_playbook_id,
+                        )
+        except PostCommitStorageError:
+            logger.exception(
+                "Deferred FTS/vec indexing failed for agent playbooks "
+                "(rows committed; the next open repairs vectors)"
+            )
         return agent_playbooks
 
     @SQLiteStorageBase.handle_exceptions

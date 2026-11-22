@@ -355,22 +355,22 @@ class ProfileStoreMixin:
                             provider=lineage_context.provider,
                         )
 
-        for profile, _lineage_context, _subject_ref in rows:
-            embedding = profile.embedding
-            fts_parts = [profile.content or ""]
-            fts_parts.extend(
-                str(v) for v in profile_semantic_features(profile).values() if v
-            )
-            if profile.expanded_terms:
-                fts_parts.append(profile.expanded_terms)
-            self._fts_upsert_profile(profile.profile_id, " ".join(fts_parts))
-            # Sync vec table — look up implicit rowid via primary key
-            row = self._fetchone(
-                "SELECT rowid FROM profiles WHERE profile_id = ?",
-                (profile.profile_id,),
-            )
-            if row and embedding:
-                self._vec_upsert("profiles_vec", row["rowid"], embedding)
+            for profile, _lineage_context, _subject_ref in rows:
+                embedding = profile.embedding
+                fts_parts = [profile.content or ""]
+                fts_parts.extend(
+                    str(v) for v in profile_semantic_features(profile).values() if v
+                )
+                if profile.expanded_terms:
+                    fts_parts.append(profile.expanded_terms)
+                self._fts_upsert_profile(profile.profile_id, " ".join(fts_parts))
+                # Sync vec table — look up implicit rowid via primary key
+                row = self._fetchone(
+                    "SELECT rowid FROM profiles WHERE profile_id = ?",
+                    (profile.profile_id,),
+                )
+                if row and embedding:
+                    self._vec_upsert("profiles_vec", row["rowid"], embedding)
 
     @SQLiteStorageBase.handle_exceptions
     def update_user_profile_by_id(
@@ -412,7 +412,8 @@ class ProfileStoreMixin:
                 return False
         embedding = self._get_embedding(embedding_text(new_profile))
         new_profile.embedding = embedding
-        with self.commit_scope() if expected_version is not None else self._lock:
+        # One scope either way: the row and its queued index writes commit together.
+        with self.commit_scope():
             if expected_version is not None:
                 stored = self.conn.execute(
                     select_live,
@@ -470,8 +471,6 @@ class ProfileStoreMixin:
                     request_id=uuid.uuid4().hex,
                     reason="in-place update",
                 )
-            if expected_version is None:
-                self.conn.commit()
             fts_parts = [new_profile.content or ""]
             fts_parts.extend(
                 str(v) for v in profile_semantic_features(new_profile).values() if v

@@ -458,6 +458,9 @@ def test_upgrade_from_pre_task_9_schema_installs_table_and_triggers(
             )
         )
     finally:
+        baseline.conn.execute(
+            "PRAGMA user_version = 0"
+        )  # emulate a pre-ledger database
         baseline.conn.close()
 
     raw = sqlite3.connect(db_path)

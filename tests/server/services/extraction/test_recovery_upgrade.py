@@ -25,6 +25,8 @@ def test_historical_rows_and_receipts_survive_reopen_upgrade(tmp_path):
         # recover the layout an existing pre-recovery database actually has.
         for name in _RECOVERY_COLUMNS:
             storage.conn.execute(f"ALTER TABLE _agent_runs DROP COLUMN {name}")
+        # The patched step above was still stamped; a pre-ledger database is not.
+        storage.conn.execute("PRAGMA user_version = 0")
         columns = [r[1] for r in storage.conn.execute("PRAGMA table_info(_agent_runs)")]
         assert not set(_RECOVERY_COLUMNS) & set(columns)
         for identifier, status in (

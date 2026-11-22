@@ -109,6 +109,7 @@ def _write_legacy_optimizer_tables(db_path: Path, org_id: str) -> None:
     conn.execute("DROP INDEX IF EXISTS uq_poj_active_target")
     conn.execute("DROP TABLE playbook_optimization_jobs")
     conn.execute(_LEGACY_JOBS_DDL)
+    conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     conn.execute(_LEGACY_ARTIFACTS_DDL)
     conn.execute(
         """INSERT INTO playbook_optimization_jobs (
@@ -357,7 +358,7 @@ def test_the_destroyed_replay_artifacts_are_logged_with_their_count(
 
     with caplog.at_level(
         logging.WARNING,
-        logger="reflexio.server.services.storage.sqlite_storage._base",
+        logger="reflexio.server.services.storage.sqlite_storage.migrations._steps",
     ):
         storage = SQLiteStorage(org_id="legacy-artifact-log", db_path=str(db_path))
         storage.conn.close()
@@ -488,6 +489,7 @@ def _write_gepa_less_optimizer_table(db_path: Path, org_id: str) -> None:
     conn.execute("DROP INDEX IF EXISTS uq_poj_active_target")
     conn.execute("DROP TABLE playbook_optimization_jobs")
     conn.execute(_GEPA_LESS_JOBS_DDL)
+    conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     conn.commit()
     conn.close()
 

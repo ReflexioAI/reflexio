@@ -273,6 +273,7 @@ def test_migration_preserves_populated_legacy_outcomes_with_unambiguous_ids(
             ),
         )
     storage.conn.commit()
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.conn.close()
 
     migrated = SQLiteStorage(org_id="legacy-session-outcomes", db_path=db_path)
@@ -363,6 +364,7 @@ def test_migration_defaults_null_legacy_outcome_revision_to_one(tmp_path) -> Non
     db_path = str(tmp_path / "legacy-null-revision.db")
     storage = SQLiteStorage(org_id="legacy-null-revision", db_path=db_path)
     _replace_session_outcomes_with_unconstrained_revision(storage, None)
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.conn.close()
 
     migrated = SQLiteStorage(org_id="legacy-null-revision", db_path=db_path)
@@ -379,6 +381,7 @@ def test_migration_rejects_zero_legacy_outcome_revision_atomically(tmp_path) -> 
     db_path = str(tmp_path / "legacy-zero-revision.db")
     storage = SQLiteStorage(org_id="legacy-zero-revision", db_path=db_path)
     _replace_session_outcomes_with_unconstrained_revision(storage, 0)
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.conn.close()
 
     with pytest.raises(sqlite3.IntegrityError, match="outcome_revision"):
@@ -631,6 +634,7 @@ def test_session_outcome_rebuild_failure_rolls_back_renamed_legacy_table(
         legacy_rows,
     )
     storage.conn.commit()
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.conn.close()
 
     with sqlite3.connect(db_path) as probe:
@@ -770,6 +774,7 @@ def test_migration_derives_missing_legacy_governance_subject_ref(
             values,
         )
     storage.conn.commit()
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.conn.close()
 
     migrated = SQLiteStorage(org_id="legacy-subject", db_path=db_path)
@@ -826,6 +831,7 @@ def test_identity_complete_migration_backfills_missing_governance_subject_ref(
             values,
         )
     storage.conn.commit()
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.conn.close()
 
     migrated = SQLiteStorage(org_id="complete-subject", db_path=db_path)
@@ -889,6 +895,7 @@ def test_upgrade_leaves_every_legacy_outcome_not_inferred(tmp_path) -> None:
         ),
     )
     storage.conn.commit()
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.conn.close()
 
     migrated = SQLiteStorage(org_id="legacy-inferred", db_path=db_path)

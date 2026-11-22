@@ -15,7 +15,6 @@ the ``_..._now`` variants always execute immediately and are called by
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from typing import Any
 
@@ -49,12 +48,6 @@ class SQLiteFtsVecMixin:
         elif kind == "fts_delete_profile":
             (profile_id,) = args
             self._fts_delete_profile_now(profile_id)
-        elif kind == "vec_upsert":
-            table, rowid, embedding = args
-            self._vec_upsert_now(table, rowid, embedding)
-        elif kind == "vec_delete":
-            table, rowid = args
-            self._vec_delete_now(table, rowid)
         else:
             raise ValueError(f"unknown index op kind: {kind!r}")
 
@@ -133,37 +126,23 @@ class SQLiteFtsVecMixin:
     # ------------------------------------------------------------------
 
     def _vec_upsert(self, table: str, rowid: int, embedding: list[float]) -> None:
-        """Insert or update a vec table row. No-op when sqlite-vec is unavailable."""
-        if not self._has_sqlite_vec:
-            return
-        if self._scope_depth > 0:
-            self._deferred_index_ops.append(("vec_upsert", (table, rowid, embedding)))
-            return
-        self._vec_upsert_now(table, rowid, embedding)
+        """Queue a vec table row for rebuild. No-op when sqlite-vec is unavailable.
 
-    def _vec_upsert_now(self, table: str, rowid: int, embedding: list[float]) -> None:
+        Runs only inside ``commit_scope``: the scope records the row in
+        ``vec_pending`` in the primary transaction, and rebuilds it from the
+        committed primary row afterwards. A write outside a scope would leave a
+        crash window with nothing pending, so it is refused.
+        """
         if not self._has_sqlite_vec:
             return
-        with self._lock, self.conn:
-            self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
-            self.conn.execute(
-                f"INSERT INTO {table}(rowid, embedding) VALUES (?, ?)",  # noqa: S608
-                (rowid, json.dumps(embedding)),
-            )
-            self.conn.commit()
+        if self._scope_depth == 0:
+            raise RuntimeError("vector writes must run inside commit_scope")
+        self._deferred_index_ops.append(("vec_upsert", (table, rowid, embedding)))
 
     def _vec_delete(self, table: str, rowid: int) -> None:
-        """Delete a vec table row. No-op when sqlite-vec is unavailable."""
+        """Queue a vec table row for removal; same scope rule as ``_vec_upsert``."""
         if not self._has_sqlite_vec:
             return
-        if self._scope_depth > 0:
-            self._deferred_index_ops.append(("vec_delete", (table, rowid)))
-            return
-        self._vec_delete_now(table, rowid)
-
-    def _vec_delete_now(self, table: str, rowid: int) -> None:
-        if not self._has_sqlite_vec:
-            return
-        with self._lock, self.conn:
-            self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
-            self.conn.commit()
+        if self._scope_depth == 0:
+            raise RuntimeError("vector writes must run inside commit_scope")
+        self._deferred_index_ops.append(("vec_delete", (table, rowid)))
