@@ -1763,25 +1763,19 @@ class ReflexioClient:
         """
         if isinstance(config, Config):
             llm = config.llm_config
-            reset_evaluator = (
-                llm is not None
-                and llm.evaluation_model_name is None
-                and "evaluation_model_name" in llm.model_fields_set
-            )
             validated = Config.model_validate(
                 config.model_dump(mode="python"),
                 extra="ignore",
             )
         else:
-            llm_payload = config.get("llm_config")
-            reset_evaluator = (
-                isinstance(llm_payload, dict)
-                and "evaluation_model_name" in llm_payload
-                and llm_payload["evaluation_model_name"] is None
-            )
             validated = self._convert_to_model(config, Config)
+            llm = validated.llm_config
         payload = validated.model_dump(mode="json")
-        if reset_evaluator:
+        if (
+            llm is not None
+            and llm.evaluation_model_name is None
+            and "evaluation_model_name" in llm.model_fields_set
+        ):
             # The schema omits inactive settings in reads and stored documents.
             # This is a write instruction, so preserve the intended reset.
             payload["llm_config"]["evaluation_model_name"] = None

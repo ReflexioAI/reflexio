@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reflexio.client import ConfigResponse, OfflineTunerConfigResponse, ReflexioClient
-from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.models.config_schema import Config, LLMConfig, StorageConfigSQLite
 
 
 def _json_response(payload: dict) -> MagicMock:
@@ -86,11 +86,11 @@ def test_client_set_config_does_not_send_response_overlay(mock_session_class) ->
     assert "offline_tuner_config" not in kwargs["json"]
 
 
-@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("shape", ["raw", "typed", "mixed"])
 @pytest.mark.parametrize("explicit", [False, True])
 @patch("reflexio.client.client.httpx.Client")
 def test_set_config_distinguishes_evaluator_reset_from_omission(
-    mock_session_class, typed, explicit
+    mock_session_class, shape, explicit
 ):
     client = ReflexioClient(api_key="test_key", url_endpoint="http://localhost:8000")
     session = mock_session_class.return_value
@@ -100,7 +100,9 @@ def test_set_config_distinguishes_evaluator_reset_from_omission(
         llm["evaluation_model_name"] = None
     raw = {"storage_config": None, "llm_config": llm}
 
-    client.set_config(Config.model_validate(raw) if typed else raw)
+    if shape == "mixed":
+        raw["llm_config"] = LLMConfig.model_validate(llm)
+    client.set_config(Config.model_validate(raw) if shape == "typed" else raw)
 
     sent = session.request.call_args.kwargs["json"]["llm_config"]
     assert ("evaluation_model_name" in sent) is explicit
