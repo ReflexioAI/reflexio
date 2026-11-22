@@ -127,6 +127,7 @@ class SQLiteConnectionMixin:
     _scope_rollback_only: bool
     _deferred_index_ops: list[tuple[str, Any]]
     _flush_index_op: Any
+    _reconcile_pending_vector: Any
 
     @staticmethod
     def handle_exceptions(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -234,10 +235,18 @@ class SQLiteConnectionMixin:
                     self.conn.commit()
                 ops, self._deferred_index_ops = self._deferred_index_ops, []
                 try:
+                    # Vector ops rebuild the sidecar row from the CURRENT primary
+                    # row, once per row: an older flush must not write a stale
+                    # in-memory embedding over a newer commit, or clear its marker.
+                    reconciled: set[tuple[str, int]] = set()
                     for kind, args in ops:
-                        self._flush_index_op(kind, args)
                         if kind in _VEC_OP_KINDS:
-                            self._clear_pending_vector_op(args[0], args[1])
+                            key = (args[0], args[1])
+                            if key not in reconciled:
+                                reconciled.add(key)
+                                self._reconcile_pending_vector(*key)
+                        else:
+                            self._flush_index_op(kind, args)
                 except Exception as error:
                     # Ops not flushed stay in vec_pending; the next open
                     # rebuilds exactly those sidecar rows.
@@ -262,14 +271,6 @@ class SQLiteConnectionMixin:
                     "INSERT OR IGNORE INTO vec_pending(table_name, row_id) VALUES (?, ?)",
                     (args[0], args[1]),
                 )
-
-    def _clear_pending_vector_op(self, table: str, rowid: int) -> None:
-        with self._lock:
-            self.conn.execute(
-                "DELETE FROM vec_pending WHERE table_name = ? AND row_id = ?",
-                (table, rowid),
-            )
-            self.conn.commit()
 
     def _try_load_sqlite_vec(self) -> bool:
         """Attempt to load the sqlite-vec extension for native KNN search.

@@ -88,37 +88,46 @@ class SQLiteSchemaMigrationsMixin:
                 "SELECT table_name, row_id FROM vec_pending"
             ).fetchall()
         for table_name, row_id in pending:
-            main_table = table_name.removesuffix("_vec")
-            if table_name not in _VEC_TABLES:
-                continue
-            with self._lock:
+            self._reconcile_pending_vector(table_name, row_id)
+
+    def _reconcile_pending_vector(self, table_name: str, row_id: int) -> None:
+        """Make one sidecar row match its primary row and clear its pending marker.
+
+        Deletes the sidecar row, re-inserts it from the stored embedding when the
+        primary row exists and the embedding is indexable, and clears the marker,
+        in one write transaction.
+        """
+        if table_name not in _VEC_TABLES:
+            return
+        main_table = table_name.removesuffix("_vec")
+        with self._lock:
+            self.conn.commit()
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute(
+                    f"DELETE FROM {table_name} WHERE rowid = ?",  # noqa: S608
+                    (row_id,),
+                )
+                row = self.conn.execute(
+                    "SELECT CAST(embedding AS BLOB) FROM "  # noqa: S608
+                    f"{main_table} WHERE rowid = ? AND embedding IS NOT NULL",
+                    (row_id,),
+                ).fetchone()
+                emb = self._indexable_embedding(row[0]) if row else None
+                if emb is not None:
+                    self.conn.execute(
+                        f"INSERT INTO {table_name}(rowid, embedding) "  # noqa: S608
+                        "VALUES (?, ?)",
+                        (row_id, json.dumps(emb)),
+                    )
+                self.conn.execute(
+                    "DELETE FROM vec_pending WHERE table_name = ? AND row_id = ?",
+                    (table_name, row_id),
+                )
                 self.conn.commit()
-                self.conn.execute("BEGIN IMMEDIATE")
-                try:
-                    self.conn.execute(
-                        f"DELETE FROM {table_name} WHERE rowid = ?",  # noqa: S608
-                        (row_id,),
-                    )
-                    row = self.conn.execute(
-                        "SELECT CAST(embedding AS BLOB) FROM "  # noqa: S608
-                        f"{main_table} WHERE rowid = ? AND embedding IS NOT NULL",
-                        (row_id,),
-                    ).fetchone()
-                    emb = self._indexable_embedding(row[0]) if row else None
-                    if emb is not None:
-                        self.conn.execute(
-                            f"INSERT INTO {table_name}(rowid, embedding) "  # noqa: S608
-                            "VALUES (?, ?)",
-                            (row_id, json.dumps(emb)),
-                        )
-                    self.conn.execute(
-                        "DELETE FROM vec_pending WHERE table_name = ? AND row_id = ?",
-                        (table_name, row_id),
-                    )
-                    self.conn.commit()
-                except BaseException:
-                    self.conn.rollback()
-                    raise
+            except BaseException:
+                self.conn.rollback()
+                raise
 
     def _backfill_columns_indexed_by_base_ddl(self) -> None:
         with self._lock:
@@ -433,7 +442,9 @@ class SQLiteSchemaMigrationsMixin:
         """Return the vector a sidecar row can hold, or None to skip the row."""
         try:
             emb = _json_loads(text)  # type: ignore[arg-type]
-        except ValueError:  # JSONDecodeError and UnicodeDecodeError
+        except (ValueError, RecursionError):
+            # JSONDecodeError, UnicodeDecodeError, or JSON nested past the
+            # interpreter's recursion limit.
             return None
         if not isinstance(emb, list) or len(emb) != self.embedding_dimensions:
             return None

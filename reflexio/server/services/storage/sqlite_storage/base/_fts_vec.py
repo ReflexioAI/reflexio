@@ -49,12 +49,6 @@ class SQLiteFtsVecMixin:
         elif kind == "fts_delete_profile":
             (profile_id,) = args
             self._fts_delete_profile_now(profile_id)
-        elif kind == "vec_upsert":
-            table, rowid, embedding = args
-            self._vec_upsert_now(table, rowid, embedding)
-        elif kind == "vec_delete":
-            table, rowid = args
-            self._vec_delete_now(table, rowid)
         else:
             raise ValueError(f"unknown index op kind: {kind!r}")
 

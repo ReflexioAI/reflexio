@@ -308,7 +308,7 @@ The vector sidecar (`*_vec` tables) has two repair paths.
 
 Native processes record every queued sidecar write (table and rowid) in
 `vec_pending` inside the same transaction as the primary rows, and clear that row
-right after the sidecar write succeeds. A crash between the commit and the flush,
+right after the sidecar write succeeds. The write after a commit rebuilds the sidecar row from the current primary row rather than from the in-memory embedding, once per row, so a flush that finishes late can never overwrite or un-mark a newer commit's embedding. A crash between the commit and the flush,
 or a flush that fails part-way, leaves exactly the unfinished rowids pending. Each
 native open reads `vec_pending` (one SELECT when empty) and, per row, deletes the
 sidecar row, re-inserts it from the stored embedding if the primary row still

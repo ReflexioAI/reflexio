@@ -771,11 +771,11 @@ def test_a_crash_between_commit_and_flush_is_repaired_for_an_insert(
     storage = _open(path)
     vector = [0.5] * EMBEDDING_DIMENSIONS
 
-    def crash(_self, _kind, _args):
+    def crash(_self, _table, _rowid):
         raise _Crash
 
     with monkeypatch.context() as patched:
-        patched.setattr(SQLiteStorage, "_flush_index_op", crash)
+        patched.setattr(SQLiteStorage, "_reconcile_pending_vector", crash)
         with pytest.raises(_Crash), storage.commit_scope():
             rowid = _queue_profile(storage, "p", vector)
     storage.conn.close()  # the process "dies"
@@ -799,11 +799,11 @@ def test_a_crash_between_commit_and_flush_is_repaired_for_a_replacement(
         rowid = _queue_profile(storage, "p", old)
     assert storage.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0] == 1
 
-    def crash(_self, _kind, _args):
+    def crash(_self, _table, _rowid):
         raise _Crash
 
     with monkeypatch.context() as patched:
-        patched.setattr(SQLiteStorage, "_flush_index_op", crash)
+        patched.setattr(SQLiteStorage, "_reconcile_pending_vector", crash)
         with pytest.raises(_Crash), storage.commit_scope():
             _queue_profile(storage, "p", new, replace=True)
     storage.conn.close()
@@ -817,18 +817,18 @@ def test_overlapping_scopes_on_two_instances_repair_only_the_crashed_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
-    from reflexio.server.services.storage.sqlite_storage.base._fts_vec import (
-        SQLiteFtsVecMixin,
+    from reflexio.server.services.storage.sqlite_storage.migrations._steps import (
+        SQLiteSchemaMigrationsMixin,
     )
 
     path = tmp_path / "two.db"
     first = _open(path, "one")
     second = _open(path, "two")
-    real_flush = SQLiteFtsVecMixin._flush_index_op
+    real_flush = SQLiteSchemaMigrationsMixin._reconcile_pending_vector
     other: dict[str, int] = {}
     crashed = False
 
-    def flush(self, kind, args):
+    def flush(self, table, rowid):
         nonlocal crashed
         if self is first and not crashed:
             crashed = True
@@ -838,10 +838,10 @@ def test_overlapping_scopes_on_two_instances_repair_only_the_crashed_row(
                     second, "q", [0.125] * EMBEDDING_DIMENSIONS
                 )
             raise _Crash
-        return real_flush(self, kind, args)
+        return real_flush(self, table, rowid)
 
     with monkeypatch.context() as patched:
-        patched.setattr(SQLiteStorage, "_flush_index_op", flush)
+        patched.setattr(SQLiteStorage, "_reconcile_pending_vector", flush)
         with pytest.raises(_Crash), first.commit_scope():
             crashed_rowid = _queue_profile(first, "p", [0.5] * EMBEDDING_DIMENSIONS)
     first.conn.close()
@@ -861,24 +861,24 @@ def test_a_flush_failing_on_the_second_op_leaves_only_that_op_pending(
 ) -> None:
     from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
     from reflexio.server.services.storage.error import PostCommitStorageError
-    from reflexio.server.services.storage.sqlite_storage.base._fts_vec import (
-        SQLiteFtsVecMixin,
+    from reflexio.server.services.storage.sqlite_storage.migrations._steps import (
+        SQLiteSchemaMigrationsMixin,
     )
 
     path = tmp_path / "second.db"
     storage = _open(path)
-    real_flush = SQLiteFtsVecMixin._flush_index_op
+    real_flush = SQLiteSchemaMigrationsMixin._reconcile_pending_vector
     calls = 0
 
-    def flush(self, kind, args):
+    def flush(self, table, rowid):
         nonlocal calls
         calls += 1
         if calls == 2:
             raise RuntimeError("index write failed")
-        return real_flush(self, kind, args)
+        return real_flush(self, table, rowid)
 
     with monkeypatch.context() as patched:
-        patched.setattr(SQLiteStorage, "_flush_index_op", flush)
+        patched.setattr(SQLiteStorage, "_reconcile_pending_vector", flush)
         with pytest.raises(PostCommitStorageError), storage.commit_scope():
             first = _queue_profile(storage, "a", [0.5] * EMBEDDING_DIMENSIONS)
             second = _queue_profile(storage, "b", [0.25] * EMBEDDING_DIMENSIONS)
@@ -888,3 +888,68 @@ def test_a_flush_failing_on_the_second_op_leaves_only_that_op_pending(
     assert _sidecar(path, first) == pytest.approx((0.5,) * EMBEDDING_DIMENSIONS)
     assert _pending(path) == []
     assert _sidecar(path, second) == pytest.approx((0.25,) * EMBEDDING_DIMENSIONS)
+
+
+@requires_vec
+def test_an_older_flush_cannot_erase_a_newer_rows_pending_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+    from reflexio.server.services.storage.sqlite_storage.migrations._steps import (
+        SQLiteSchemaMigrationsMixin,
+    )
+
+    path = tmp_path / "older.db"
+    a = _open(path, "a")
+    b = _open(path, "b")
+    e1 = [0.25] * EMBEDDING_DIMENSIONS
+    e2 = [0.75] * EMBEDDING_DIMENSIONS
+    with a.commit_scope():
+        rowid = _queue_profile(a, "p", [0.0] * EMBEDDING_DIMENSIONS)
+    real = SQLiteSchemaMigrationsMixin._reconcile_pending_vector
+    state = {"a_done": False}
+
+    def reconcile(self, table, row):
+        if self is a and not state["a_done"]:
+            state["a_done"] = True
+            # B commits its newer embedding for the same row while A is pending...
+            with pytest.raises(_Crash), b.commit_scope():
+                _queue_profile(b, "p", e2, replace=True)
+        if self is b:
+            raise _Crash  # ...and dies before its own flush
+        return real(self, table, row)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(SQLiteStorage, "_reconcile_pending_vector", reconcile)
+        with a.commit_scope():
+            _queue_profile(a, "p", e1, replace=True)
+    a.conn.close()
+    b.conn.close()
+
+    assert _sidecar(path, rowid) == pytest.approx(tuple(e2))
+    assert _pending(path) == []
+
+
+@requires_vec
+def test_a_deeply_nested_embedding_is_skipped_not_fatal(tmp_path: Path) -> None:
+    path = tmp_path / "nested.db"
+    storage = _open(path)
+    depth = 100_000
+    storage.conn.execute(
+        "INSERT INTO profiles (profile_id, user_id, last_modified_timestamp, "
+        "embedding) VALUES ('deep', 'u', 1, ?)",
+        ("[" * depth + "]" * depth,),
+    )
+    storage.conn.execute("PRAGMA user_version = 0")
+    storage.conn.commit()
+    storage.conn.close()
+
+    reopened = _open(path)
+    try:
+        assert stored_version(reopened) == LATEST_VERSION
+        assert (
+            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
+            == 0
+        )
+    finally:
+        reopened.conn.close()
