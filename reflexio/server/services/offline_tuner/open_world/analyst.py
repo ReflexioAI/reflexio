@@ -24,6 +24,7 @@ from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm import ProviderRequestGuardError
 from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
 from reflexio.server.llm._native_model_ref import PROVIDER_KEY as _NATIVE_CLI_ROUTE
+from reflexio.server.llm._native_model_ref import native_policy_digest
 from reflexio.server.llm.failure import (
     OutageWait,
     Transient,
@@ -1195,6 +1196,14 @@ def _strip_route_prefix(model: str, *, route: str) -> str:
     return model.removeprefix(prefix)
 
 
+def _ends_in_date_stamp(model: str) -> bool:
+    """Return whether ``model`` is an id followed by a real date stamp."""
+    return any(
+        len(model) > width and _is_provider_date_stamp(model[-width:])
+        for width in (len("-YYYY-MM-DD"), len("-YYYYMMDD"))
+    )
+
+
 def _served_model_admitted(*, configured_bare: str, observed_bare: str) -> bool:
     """Decide whether a served model is the configured revision.
 
@@ -1203,11 +1212,15 @@ def _served_model_admitted(*, configured_bare: str, observed_bare: str) -> bool:
         observed_bare (str): Served model id without its route prefix.
 
     Returns:
-        bool: True for an exact match, or for the configured id followed by
+        bool: True for an exact match, or -- only when the configured id is not
+            itself a dated snapshot -- for the configured id followed by
             exactly one ``-YYYY-MM-DD`` / ``-YYYYMMDD`` stamp of a real date.
+            A pinned snapshot needs an exact echo.
     """
     if observed_bare == configured_bare:
         return True
+    if _ends_in_date_stamp(configured_bare):
+        return False
     # An unchanged string means the configured id is not a prefix (or is empty).
     suffix = observed_bare.removeprefix(configured_bare)
     return suffix != observed_bare and _is_provider_date_stamp(suffix)
@@ -1256,7 +1269,10 @@ class _LiteLLMTransportIdentity:
     ``credential_fingerprint`` is NOT persisted and is not part of the digest.
     It exists only so dataclass equality still notices a credential that
     changed underneath a live composition; see
-    ``_credential_drift_fingerprint``.
+    ``_credential_drift_fingerprint``. ``native_launch_policy`` is the same
+    kind of drift-only state for the native ``local-cli`` route: the operator
+    launch-policy digest, so a CLI launch input changed after composition is
+    refused before dispatch rather than recorded under the composed identity.
     """
 
     provider: str
@@ -1266,6 +1282,7 @@ class _LiteLLMTransportIdentity:
     expected_observed_provider: str
     bare_model_revision: str
     credential_fingerprint: str | None
+    native_launch_policy: str | None
 
 
 def _litellm_transport_identity(client: LiteLLMClient) -> _LiteLLMTransportIdentity:
@@ -1377,6 +1394,16 @@ def _litellm_transport_identity(client: LiteLLMClient) -> _LiteLLMTransportIdent
         # Excluded from `digest` above by construction; see the dataclass
         # docstring for why this is drift-only state.
         credential_fingerprint=_credential_drift_fingerprint(credential),
+        # Drift-only, like the credential fingerprint and likewise kept out of
+        # `digest`. On the native route the CLI host re-resolves its
+        # executable and launch settings at every dispatch, so a launch input
+        # changed after composition (executable path, timeout, PATH, ...)
+        # would otherwise be recorded under the composed identity. The same
+        # operator-policy digest `PairwiseJudge` freezes is captured here and
+        # compared by the pre-dispatch drift check in `complete()`.
+        native_launch_policy=(
+            native_policy_digest() if route == _NATIVE_CLI_ROUTE else None
+        ),
     )
 
 

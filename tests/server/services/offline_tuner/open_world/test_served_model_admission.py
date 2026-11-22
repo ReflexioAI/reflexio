@@ -77,13 +77,14 @@ class _Answer(StrictStructuredOutput):
     answer: str
 
 
-def _complete(
+def _compose(
     monkeypatch,
     *,
     model: str,
     served: str,
     hidden: dict[str, str] | None = None,
     with_usage: bool = True,
+    dispatched: list[str] | None = None,
 ):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-synthetic-test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-synthetic-test")
@@ -92,7 +93,9 @@ def _complete(
         hidden = {"custom_llm_provider": route}
 
     def dispatch(self, params, deadline):
-        del self, params, deadline
+        del self, deadline
+        if dispatched is not None:
+            dispatched.append(params["model"])
         response = litellm.ModelResponse(
             model=served,
             choices=[
@@ -111,15 +114,23 @@ def _complete(
     # The lowest dispatch seam: the reviewed generate/completion methods that
     # the transport identity pins stay untouched.
     monkeypatch.setattr(LiteLLMClient, "_run_completion", dispatch)
-    client = _LiteLLMOpenWorldModelClient(
+    return _LiteLLMOpenWorldModelClient(
         LiteLLMClient(LiteLLMConfig(model=model, max_tokens=512, fallback_models=[]))
     )
+
+
+def _call(client, model: str):
     return client.complete(
         messages=[ChatMessage(role="user", content="synthetic evidence")],
         response_format=_Answer,
         model_revision=model,
         idempotency_key="synthetic-key",
     )
+
+
+def _complete(monkeypatch, *, model: str, served: str, **options):
+    client = _compose(monkeypatch, model=model, served=served, **options)
+    return _call(client, model)
 
 
 @pytest.mark.parametrize(
@@ -299,3 +310,54 @@ def test_date_stamp_must_name_a_real_ascii_calendar_date(served, admitted):
 def test_mixed_shape_stamp_is_refused():
     assert not _is_provider_date_stamp("-2024-0806")
     assert not _is_provider_date_stamp("-202408-06")
+
+
+@pytest.mark.parametrize(
+    ("configured", "served", "admitted"),
+    [
+        # A pinned snapshot needs an exact echo, in both stamp shapes.
+        ("gpt-4o-2024-08-06", "gpt-4o-2024-08-06", True),
+        ("gpt-4o-2024-08-06", "gpt-4o-2024-08-06-2024-11-20", False),
+        ("gpt-4o-2024-08-06", "gpt-4o-2024-08-06-20241120", False),
+        ("claude-x-20250101", "claude-x-20250101", True),
+        ("claude-x-20250101", "claude-x-20250101-20250601", False),
+        ("claude-x-20250101", "claude-x-20250101-2025-06-01", False),
+        # A trailing number that is not a real date is not a pin.
+        ("model-2025-02-31", "model-2025-02-31-2025-03-01", True),
+        ("model-99999999", "model-99999999-20250101", True),
+    ],
+)
+def test_pinned_snapshot_requires_an_exact_echo(configured, served, admitted):
+    assert (
+        _served_model_admitted(configured_bare=configured, observed_bare=served)
+        is admitted
+    )
+
+
+def test_native_launch_drift_after_composition_is_refused_before_dispatch(
+    monkeypatch,
+):
+    model = _native(monkeypatch, "claude-code")
+    dispatched: list[str] = []
+    hidden = {"reflexio_provider": "local-cli", "reflexio_served_model": "M-3"}
+    client = _compose(
+        monkeypatch, model=model, served=model, hidden=hidden, dispatched=dispatched
+    )
+    # Unchanged launch policy: admitted.
+    assert _call(client, model).observed_model_revision == model
+    assert dispatched == [model]
+    # A launch input the CLI host re-reads at dispatch changes underneath.
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/synthetic/other/claude")
+    with pytest.raises(ValueError, match="transport configuration changed"):
+        _call(client, model)
+    assert dispatched == [model]
+
+
+def test_non_native_transport_does_not_bind_native_launch_policy(monkeypatch):
+    dispatched: list[str] = []
+    client = _compose(
+        monkeypatch, model="gpt-4o", served="gpt-4o", dispatched=dispatched
+    )
+    monkeypatch.setenv("CLAUDE_SMART_CLI_PATH", "/synthetic/other/claude")
+    assert _call(client, "gpt-4o").observed_model_revision == "gpt-4o"
+    assert dispatched == ["gpt-4o"]
