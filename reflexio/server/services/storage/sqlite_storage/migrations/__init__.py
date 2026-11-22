@@ -31,6 +31,9 @@ Each step is the name of a ``SQLiteSchemaMigrationsMixin`` method taking no argu
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -120,7 +123,32 @@ def _stamp(
             raise
 
 
+@contextmanager
+def migration_lock(db_path: str) -> Iterator[None]:
+    """Serialise ledger runs on one database file across processes.
+
+    A process that waited here re-reads the stored version afterwards, so it
+    never runs a step plan computed before another process finished. In-memory
+    databases are private to their connection and take no lock.
+    """
+    if db_path == ":memory:":
+        yield
+        return
+    from reflexio.server.llm.providers.local_embedding_provider import (
+        _exclusive_file_lock,
+    )
+
+    with _exclusive_file_lock(Path(f"{db_path}.migrate.lock")):
+        yield
+
+
 def run_pending_migrations(storage: SQLiteSchemaMigrationsMixin) -> None:
+    """Run the ledger under the cross-process migration lock."""
+    with migration_lock(storage.db_path):
+        _run_pending_migrations(storage)
+
+
+def _run_pending_migrations(storage: SQLiteSchemaMigrationsMixin) -> None:
     """Apply every step above the stored version, stamping after each one.
 
     A step returning ``False`` could not run in this process (sqlite-vec is not

@@ -1069,16 +1069,9 @@ def test_backfill_examines_one_page_of_primary_rows_per_transaction(
         )
     finally:
         reopened.conn.close()
-    pages = [s for s in statements if "FROM profiles t" in s]
-    assert len(pages) == 4  # rowids 1-10 in ranges of 3: ceil(10 / 3)
-    import re
-
-    spans = [
-        (int(m.group(1)), int(m.group(2)))
-        for q in pages
-        if (m := re.search(r"t\.rowid > (-?\d+) AND t\.rowid <= (-?\d+)", q))
-    ]
-    assert len(spans) == 4 and all(hi - lo == 3 for lo, hi in spans)
+    pages = [q for q in statements if "AS indexed FROM profiles t" in q]
+    assert len(pages) == 4  # ceil(10 / 3): keyset pages, never more than 3 rows each
+    assert all("LIMIT 3" in q for q in pages)
 
 
 @requires_vec
@@ -1117,3 +1110,109 @@ def test_every_deferred_op_is_attempted_after_one_fails(
     assert _pending(path) == [("profiles_vec", second)]
     assert _sidecar(path, first) == pytest.approx((0.5,) * EMBEDDING_DIMENSIONS)
     assert _sidecar(path, third) == pytest.approx((0.125,) * EMBEDDING_DIMENSIONS)
+
+
+@requires_vec
+def test_backfill_pages_by_existing_rowids_across_a_huge_sparse_gap(
+    tmp_path: Path,
+) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    path = tmp_path / "sparse.db"
+    storage = _open(path)
+    vector = json.dumps([0.5] * EMBEDDING_DIMENSIONS)
+    rowids = (1, 2**40, 2**63 - 1)
+    for number, rowid in enumerate(rowids):
+        storage.conn.execute(
+            "INSERT INTO profiles (rowid, profile_id, user_id, "
+            "last_modified_timestamp, embedding) VALUES (?, ?, 'u', 1, ?)",
+            (rowid, f"p{number}", vector),
+        )
+    # Index everything except the last row.
+    storage.conn.execute(
+        "INSERT INTO profiles_vec(rowid, embedding) "
+        "SELECT rowid, embedding FROM profiles WHERE rowid < ?",
+        (2**63 - 1,),
+    )
+    storage.conn.execute("PRAGMA user_version = 0")
+    storage.conn.commit()
+    storage.conn.close()
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def tracing_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+
+        def trace(statement: str) -> None:
+            statements.append(statement)
+            if sum("FROM profiles t" in q for q in statements) > 10:
+                conn.interrupt()  # range paging would walk ~2**52 pages: fail fast
+
+        conn.set_trace_callback(trace)
+        return conn
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(sqlite3, "connect", tracing_connect)
+        reopened = _open(path)
+    try:
+        assert (
+            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
+            == 3
+        )
+    finally:
+        reopened.conn.close()
+    assert sum("FROM profiles t" in q for q in statements) == 1  # one keyset page
+
+
+def test_a_second_migrate_after_a_completed_one_runs_no_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.server.services.storage.sqlite_storage import migrations
+
+    storage = _open(tmp_path / "idempotent.db")
+    stamped: list[int] = []
+    real_stamp = migrations._stamp
+    monkeypatch.setattr(
+        migrations,
+        "_stamp",
+        lambda s, v, **k: (stamped.append(v), real_stamp(s, v, **k)),
+    )
+    try:
+        storage.migrate()
+        assert stamped == []
+    finally:
+        storage.conn.close()
+
+
+def test_the_ledger_run_waits_for_the_cross_process_migration_lock(
+    tmp_path: Path,
+) -> None:
+    import threading
+    import time
+
+    from reflexio.server.services.storage.sqlite_storage.migrations import (
+        migration_lock,
+    )
+
+    path = tmp_path / "locked.db"
+    storage = _open(path)
+    with closing(sqlite3.connect(path)) as raw:
+        raw.execute("PRAGMA user_version = 0")
+        raw.commit()
+
+    def version() -> int:
+        with closing(sqlite3.connect(path)) as raw:
+            return raw.execute("PRAGMA user_version").fetchone()[0]
+
+    worker = threading.Thread(target=storage.migrate)
+    try:
+        with migration_lock(str(path)):
+            worker.start()
+            time.sleep(0.5)
+            assert version() == 0  # blocked: nothing ran, nothing was stamped
+        worker.join(timeout=120)
+        assert not worker.is_alive()
+        assert version() == LATEST_VERSION
+    finally:
+        storage.conn.close()

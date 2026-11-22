@@ -304,6 +304,13 @@ new step. A test that fabricates a legacy schema and reopens it must reset
 `PRAGMA user_version = 0`. `test_schema_ledger.py` upgrades databases built from
 historical DDL through the ledger.
 
+The whole ledger run (every step and its stamp) is serialised across processes by an
+exclusive lock on `<db_path>.migrate.lock` (not taken for `:memory:`). A process
+that waited re-reads the stored version before planning, so it never runs a step
+plan computed before another process finished; otherwise a late process could run
+an older step, such as the `requests` rebuild whose fixed column set predates a
+later step's column, after the database was already stamped current.
+
 The vector sidecar (`*_vec` tables) has two repair paths.
 
 Every vector write runs inside a `commit_scope` (`_vec_upsert` and `_vec_delete` refuse to run outside one, so a new call site that forgets fails loudly instead of losing crash safety); the primary row and its queued vector write commit together. Native processes record every queued sidecar write (table and rowid) in
@@ -315,7 +322,7 @@ sidecar row, re-inserts it from the stored embedding if the primary row still
 exists and the embedding is indexable, and clears the pending row, in one write
 transaction. Cost: one extra insert and one delete per queued sidecar write.
 
-On a fallback connection the sidecar tracker is an authorizer chained in front of any authorizer the caller installs with `set_authorizer`, so callers keep their own policy. The backfill pages over fixed primary-rowid ranges, one write transaction per page.
+On a fallback connection the sidecar tracker is an authorizer chained in front of any authorizer the caller installs with `set_authorizer`, so callers keep their own policy. The backfill pages over existing primary rowids (keyset, one write transaction per page of `_VEC_BACKFILL_PAGE` rows), so sparse or huge rowids cost nothing extra.
 
 Processes that cannot load sqlite-vec write embeddings without touching
 `vec_pending`; they take the schema stamp back to just before the vec step at open
@@ -329,10 +336,7 @@ stamp again, and an embedding changed in fallback mode keeps its old vector.
 Running native and fallback processes against one file is not a supported steady
 state.
 
-The backfill walks fixed rowid ranges, so a sparse table with a large deletion gap
-walks empty pages (each one cheap SELECT in a short transaction, a one-time upgrade
-cost), and its range arithmetic is not guarded against int64 overflow at the
-extremes. Every deferred op of a commit scope is attempted even if an earlier one
+Every deferred op of a commit scope is attempted even if an earlier one
 failed; the scope then raises one `PostCommitStorageError`. Only vector ops are
 replayed after a failure (from `vec_pending`); a failed FTS op is not.
 

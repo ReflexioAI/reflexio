@@ -41,7 +41,7 @@ from ..migrations import run_pending_migrations
 
 logger = logging.getLogger(__name__)
 
-#: Primary rowids examined per write transaction when backfilling a sidecar.
+#: Primary rows examined per write transaction when backfilling a sidecar.
 _VEC_BACKFILL_PAGE = 2048
 
 _VEC_TABLES = frozenset(
@@ -58,6 +58,7 @@ class SQLiteSchemaMigrationsMixin:
     """The ordered schema steps of a local SQLite database."""
 
     conn: VecAwareConnection
+    db_path: str
     _lock: threading.RLock
     org_id: str
     _has_sqlite_vec: bool
@@ -494,35 +495,35 @@ class SQLiteSchemaMigrationsMixin:
                 except BaseException:
                     self.conn.rollback()
                     raise
-            bounds = self._fetchone(
-                f"SELECT MIN(rowid) AS lo, MAX(rowid) AS hi FROM {main_table}"  # noqa: S608
-            )
-            if bounds is None or bounds["lo"] is None:
-                continue
-            # Fixed rowid ranges, so one write transaction examines at most one
-            # page of primary rows however large the table or sparse the rowids.
-            page_start = bounds["lo"] - 1
-            while page_start < bounds["hi"]:
-                page_end = page_start + _VEC_BACKFILL_PAGE
+            # Keyset pages over EXISTING primary rowids: one write transaction
+            # examines at most _VEC_BACKFILL_PAGE rows however sparse or large
+            # the rowids are, and the cursor is only ever a bound parameter.
+            cursor = -(2**63)
+            while True:
                 with self._lock:
                     self.conn.commit()
                     self.conn.execute("BEGIN IMMEDIATE")
                     try:
-                        # CAST: text that is not valid UTF-8 comes back as bytes
-                        # instead of failing the whole read.
-                        rows = self.conn.execute(
+                        page = self.conn.execute(
                             "SELECT t.rowid AS rid, "
-                            "CAST(t.embedding AS BLOB) AS embedding "
-                            f"FROM {main_table} t "  # noqa: S608
-                            "WHERE t.embedding IS NOT NULL "
-                            "AND t.rowid > ? AND t.rowid <= ? "
-                            f"AND NOT EXISTS (SELECT 1 FROM {vec_table} v "
-                            "WHERE v.rowid = t.rowid) "
-                            "ORDER BY t.rowid",
-                            (page_start, page_end),
+                            "(t.embedding IS NOT NULL) AS has_embedding, "
+                            f"EXISTS (SELECT 1 FROM {vec_table} v "  # noqa: S608
+                            "WHERE v.rowid = t.rowid) AS indexed "
+                            f"FROM {main_table} t WHERE t.rowid > ? "
+                            "ORDER BY t.rowid LIMIT ?",
+                            (cursor, _VEC_BACKFILL_PAGE),
                         ).fetchall()
-                        for r in rows:
-                            emb = self._indexable_embedding(r["embedding"])
+                        for r in page:
+                            if not r["has_embedding"] or r["indexed"]:
+                                continue
+                            # CAST: text that is not valid UTF-8 comes back as
+                            # bytes instead of failing the whole read.
+                            stored = self.conn.execute(
+                                "SELECT CAST(embedding AS BLOB) "  # noqa: S608
+                                f"FROM {main_table} WHERE rowid = ?",
+                                (r["rid"],),
+                            ).fetchone()
+                            emb = self._indexable_embedding(stored[0])
                             if emb is not None:
                                 self.conn.execute(
                                     f"INSERT INTO {vec_table}(rowid, embedding) "  # noqa: S608
@@ -533,7 +534,9 @@ class SQLiteSchemaMigrationsMixin:
                     except BaseException:
                         self.conn.rollback()
                         raise
-                page_start = page_end
+                if len(page) < _VEC_BACKFILL_PAGE:
+                    break
+                cursor = page[-1]["rid"]
 
     def _session_outcomes_schema_is_canonical(self) -> bool:
         table_info = self.conn.execute("PRAGMA table_info(session_outcomes)").fetchall()
