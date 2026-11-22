@@ -155,7 +155,7 @@ from reflexio.models.api_schema.stall_state_schema import (
     MarkNotifiedResponse,
     StallStateResponse,
 )
-from reflexio.models.config_schema import Config
+from reflexio.models.config_schema import Config, LLMConfig
 
 from .cache import InMemoryCache
 
@@ -1762,20 +1762,28 @@ class ReflexioClient:
             dict: Response containing success status and message
         """
         if isinstance(config, Config):
-            config = Config.model_validate(
+            validated = Config.model_validate(
                 config.model_dump(mode="python"),
                 extra="ignore",
             )
-        else:
-            config = self._convert_to_model(  # type: ignore[reportAssignmentType]
-                config,
-                Config,
+            llm = (
+                config.llm_config
+                if isinstance(config.llm_config, LLMConfig)
+                else validated.llm_config
             )
-        return self._make_request(
-            "POST",
-            "/api/set_config",
-            json=config.model_dump(mode="json"),  # type: ignore[reportAttributeAccessIssue]
-        )
+        else:
+            validated = self._convert_to_model(config, Config)
+            llm = validated.llm_config
+        payload = validated.model_dump(mode="json")
+        if (
+            llm is not None
+            and llm.evaluation_model_name is None
+            and "evaluation_model_name" in llm.model_fields_set
+        ):
+            # The schema omits inactive settings in reads and stored documents.
+            # This is a write instruction, so preserve the intended reset.
+            payload["llm_config"]["evaluation_model_name"] = None
+        return self._make_request("POST", "/api/set_config", json=payload)
 
     def update_config(self, partial: dict) -> dict:
         """Apply a partial (PATCH-style) update to the org config.

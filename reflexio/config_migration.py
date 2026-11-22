@@ -141,7 +141,7 @@ def canonicalize_optimizer_assistant_command(data: Any) -> Any:
     legacy = {"assistant_script_path", "assistant_script_args"}
     if not legacy.intersection(data):
         return data
-    if "assistant_command" in data:
+    if data.get("assistant_command") is not None:
         raise ConfigurationMigrationError(
             "Optimizer assistant configuration contains both the old and new settings"
         )

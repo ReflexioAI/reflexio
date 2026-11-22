@@ -13,8 +13,10 @@ from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
 from reflexio.models.config_schema import StorageConfigSQLite, validate_stored_config
 
 
+@pytest.mark.parametrize("includes_empty_command", [False, True])
 def test_prepare_optimizer_command_preserves_exact_argv_without_runtime_aliases(
     tmp_path,
+    includes_empty_command,
 ):
     path = tmp_path / "config.json"
     optimizer = {
@@ -22,6 +24,8 @@ def test_prepare_optimizer_command_preserves_exact_argv_without_runtime_aliases(
         "assistant_script_args": ["--flag", "", "literal value"],
         "metric_call_budget": 5,
     }
+    if includes_empty_command:
+        optimizer["assistant_command"] = None
     original = encode_config_document(
         {
             "_reflexio_config_file": {"version": 15},

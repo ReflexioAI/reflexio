@@ -124,7 +124,7 @@ def _reject_ignored_optimizer_command(data: dict[str, Any], version: int) -> Non
     if (
         version < OPTIMIZER_ASSISTANT_COMMAND_VERSION
         and isinstance(optimizer, dict)
-        and "assistant_command" in optimizer
+        and optimizer.get("assistant_command") is not None
     ):
         raise StoredConfigurationError(
             "Older configuration contains assistant_command, which its schema ignored. "
