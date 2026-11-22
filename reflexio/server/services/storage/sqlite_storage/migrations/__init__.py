@@ -31,6 +31,7 @@ Each step is the name of a ``SQLiteSchemaMigrationsMixin`` method taking no argu
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -128,8 +129,9 @@ def migration_lock(db_path: str) -> Iterator[None]:
     """Serialise ledger runs on one database file across processes.
 
     A process that waited here re-reads the stored version afterwards, so it
-    never runs a step plan computed before another process finished. In-memory
-    databases are private to their connection and take no lock.
+    never runs a step plan computed before another process finished. Windows
+    openers wait for as long as the holder runs. In-memory databases are private
+    to their connection and take no lock.
     """
     if db_path == ":memory:":
         yield
@@ -138,7 +140,9 @@ def migration_lock(db_path: str) -> Iterator[None]:
         _exclusive_file_lock,
     )
 
-    with _exclusive_file_lock(Path(f"{db_path}.migrate.lock")):
+    # Key the lock by the resolved file, so a symlink and the real path share it.
+    lock_path = Path(f"{os.path.realpath(db_path)}.migrate.lock")
+    with _exclusive_file_lock(lock_path, wait_forever=True):
         yield
 
 

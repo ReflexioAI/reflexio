@@ -1,5 +1,6 @@
 """The SQLite schema ledger: ordering, historical upgrades and the warm open."""
 
+import errno
 import json
 import sqlite3
 from contextlib import closing
@@ -1069,6 +1070,23 @@ def test_backfill_examines_one_page_of_primary_rows_per_transaction(
         )
     finally:
         reopened.conn.close()
+    from reflexio.server.services.storage.sqlite_storage.migrations._steps import (
+        _backfill_page_sql,
+    )
+
+    check = _open(path)
+    try:
+        page_sql = _backfill_page_sql("profiles", "profiles_vec", after_cursor=True)
+        plan = " ".join(
+            row[3]
+            for row in check.conn.execute(
+                "EXPLAIN QUERY PLAN " + page_sql, (3,) * page_sql.count("?")
+            )
+        )
+    finally:
+        check.conn.close()
+    # Later pages must SEEK on the rowid, not scan from the start of the table.
+    assert "SEARCH" in plan and "SCAN t" not in plan, plan
     pages = [q for q in statements if "AS indexed FROM profiles t" in q]
     assert len(pages) == 4  # ceil(10 / 3): keyset pages, never more than 3 rows each
     assert all("LIMIT 3" in q for q in pages)
@@ -1197,6 +1215,7 @@ def test_the_ledger_run_waits_for_the_cross_process_migration_lock(
 
     path = tmp_path / "locked.db"
     storage = _open(path)
+    reachable = stored_version(storage)  # LATEST natively, VEC_STEP - 1 in fallback
     with closing(sqlite3.connect(path)) as raw:
         raw.execute("PRAGMA user_version = 0")
         raw.commit()
@@ -1213,6 +1232,128 @@ def test_the_ledger_run_waits_for_the_cross_process_migration_lock(
             assert version() == 0  # blocked: nothing ran, nothing was stamped
         worker.join(timeout=120)
         assert not worker.is_alive()
-        assert version() == LATEST_VERSION
+        assert version() == reachable
     finally:
         storage.conn.close()
+
+
+def test_a_symlink_and_the_real_path_share_one_migration_lock(tmp_path: Path) -> None:
+    import threading
+    import time
+
+    from reflexio.server.services.storage.sqlite_storage.migrations import (
+        migration_lock,
+    )
+
+    real = tmp_path / "real.db"
+    link = tmp_path / "link.db"
+    _open(real).conn.close()
+    try:
+        link.symlink_to(real)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:  # no symlink privilege on Windows
+            pytest.skip("creating symlinks needs Developer Mode or elevation")
+        raise
+    storage = _open(link)  # opened through the symlink
+    reachable = stored_version(storage)
+    with closing(sqlite3.connect(real)) as raw:
+        raw.execute("PRAGMA user_version = 0")
+        raw.commit()
+
+    def version() -> int:
+        with closing(sqlite3.connect(real)) as raw:
+            return raw.execute("PRAGMA user_version").fetchone()[0]
+
+    worker = threading.Thread(target=storage.migrate)
+    try:
+        with migration_lock(str(real)):  # held through the real path
+            worker.start()
+            time.sleep(0.5)
+            assert version() == 0  # the symlink opener is blocked on the same lock
+        worker.join(timeout=120)
+        assert not worker.is_alive()
+        assert version() == reachable
+    finally:
+        storage.conn.close()
+
+
+def _fake_msvcrt(calls: list[int], errors: list[int]):
+    """A fake msvcrt whose LK_NBLCK raises the queued errnos, then succeeds."""
+
+    class FakeMsvcrt:
+        LK_LOCK = 1
+        LK_NBLCK = 2
+        LK_UNLCK = 3
+
+        @staticmethod
+        def locking(_fd: int, mode: int, _length: int) -> None:
+            calls.append(mode)
+            if len(calls) > 5:
+                raise AssertionError("lock loop did not stop")
+            if mode == FakeMsvcrt.LK_LOCK:
+                raise OSError(errno.EDEADLK, "LK_LOCK gives up after about ten seconds")
+            if mode == FakeMsvcrt.LK_NBLCK and errors:
+                raise OSError(errors.pop(0), "refused")
+
+    return FakeMsvcrt
+
+
+def test_a_windows_opener_retries_contention_until_it_holds_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.server.llm.providers import local_embedding_provider as provider
+
+    calls: list[int] = []
+    monkeypatch.setattr(provider, "fcntl", None)
+    monkeypatch.setattr(
+        provider, "msvcrt", _fake_msvcrt(calls, [errno.EACCES, errno.EACCES])
+    )
+    monkeypatch.setattr(provider.time, "sleep", lambda _s: None)
+
+    with provider._exclusive_file_lock(tmp_path / "w.lock", wait_forever=True):
+        assert calls == [2, 2, 2]  # two contention refusals, then held; LK_LOCK unused
+    assert calls[-1] == 3
+
+
+def test_a_windows_opener_does_not_retry_a_non_contention_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reflexio.server.llm.providers import local_embedding_provider as provider
+
+    calls: list[int] = []
+    monkeypatch.setattr(provider, "fcntl", None)
+    monkeypatch.setattr(provider, "msvcrt", _fake_msvcrt(calls, [errno.EINVAL]))
+    monkeypatch.setattr(provider.time, "sleep", lambda _s: None)
+
+    with (
+        pytest.raises(OSError) as raised,
+        provider._exclusive_file_lock(tmp_path / "w.lock", wait_forever=True),
+    ):
+        pass
+    assert raised.value.errno == errno.EINVAL
+    assert calls == [2]  # failed on the first attempt
+
+
+@requires_vec
+def test_backfill_repairs_a_row_at_the_minimum_rowid(tmp_path: Path) -> None:
+    from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
+
+    path = tmp_path / "minrowid.db"
+    storage = _open(path)
+    storage.conn.execute(
+        "INSERT INTO profiles (rowid, profile_id, user_id, last_modified_timestamp, "
+        "embedding) VALUES (?, 'p', 'u', 1, ?)",
+        (-(2**63), json.dumps([0.5] * EMBEDDING_DIMENSIONS)),
+    )
+    storage.conn.execute("PRAGMA user_version = 0")
+    storage.conn.commit()
+    storage.conn.close()
+
+    reopened = _open(path)
+    try:
+        assert (
+            reopened.conn.execute("SELECT COUNT(*) FROM profiles_vec").fetchone()[0]
+            == 1
+        )
+    finally:
+        reopened.conn.close()
