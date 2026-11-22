@@ -13,7 +13,10 @@ from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
 from reflexio.models.config_schema import StorageConfigSQLite, validate_stored_config
 
 
-def test_saved_retired_optimizer_block_loads_and_is_dropped_on_preparation(tmp_path):
+@pytest.mark.parametrize("includes_empty_command", [False, True])
+def test_saved_retired_optimizer_block_loads_and_is_dropped_on_preparation(
+    tmp_path, includes_empty_command
+):
     """The retired GEPA optimizer block never blocks an image-only upgrade."""
     path = tmp_path / "config.json"
     optimizer = {
@@ -22,6 +25,8 @@ def test_saved_retired_optimizer_block_loads_and_is_dropped_on_preparation(tmp_p
         "metric_call_budget": 5,
         "webhook_url": "https://assistant.example.test",
     }
+    if includes_empty_command:
+        optimizer["assistant_command"] = None
     original = encode_config_document(
         {
             "_reflexio_config_file": {"version": 15},

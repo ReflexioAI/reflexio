@@ -4,7 +4,6 @@ Current schemas own canonical validation. Historical rewrite rules live here so
 explicit upgrades remain usable after runtime compatibility hooks are removed.
 """
 
-import threading
 from enum import StrEnum
 from typing import Annotated, Any
 
@@ -15,18 +14,10 @@ from reflexio.config_env import (
 )
 from reflexio.config_env import StoredConfigurationError as StoredConfigurationError
 
-_LEGACY_OPTIMIZER_BOOL = TypeAdapter(bool)
-_LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
-_LEGACY_METRIC_CALL_LIMIT = TypeAdapter(Annotated[int, Field(gt=0)])
+_LEGACY_POLICY_BOOL = TypeAdapter(bool)
 _LEGACY_RETRIEVAL_POOL = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_AUDIT_RETENTION_DAYS = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_PENDING_LIFETIME = TypeAdapter(Annotated[int, Field(gt=0)])
-_LEGACY_OPTIMIZER_JITTER = TypeAdapter(
-    Annotated[float, Field(ge=0, le=threading.TIMEOUT_MAX, allow_inf_nan=False)]
-)
-_LEGACY_STOP_SCORE = TypeAdapter(
-    Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
-)
 
 
 def retire_storage_queue_policy(storage: dict[str, Any]) -> dict[str, Any]:
@@ -82,7 +73,7 @@ def canonicalize_retrieval_floor_policy(data: Any) -> Any:
     if not isinstance(data, dict) or not {"enabled", "pool_size"}.intersection(data):
         return data
     try:
-        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
+        enabled = _LEGACY_POLICY_BOOL.validate_python(data.get("enabled", False))
         pool_size = _LEGACY_RETRIEVAL_POOL.validate_python(data.get("pool_size", 30))
     except ValidationError:
         raise ConfigurationMigrationError(
@@ -104,7 +95,7 @@ def canonicalize_pending_creation_policy(data: Any, *, historical: bool = False)
     if not isinstance(data, dict) or ("enabled" not in data and not historical):
         return data
     try:
-        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
+        enabled = _LEGACY_POLICY_BOOL.validate_python(data.get("enabled", False))
         # Frozen historical default, never a current runtime lifetime.
         lifetime = _LEGACY_PENDING_LIFETIME.validate_python(
             data.get("pending_ttl_seconds", 86_400)
@@ -130,7 +121,7 @@ def canonicalize_lineage_retention_policy(
     if not isinstance(data, dict) or ("enabled" not in data and not historical):
         return data
     try:
-        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", True))
+        enabled = _LEGACY_POLICY_BOOL.validate_python(data.get("enabled", True))
         # Frozen historical default, never a replacement for current policy.
         days = _LEGACY_AUDIT_RETENTION_DAYS.validate_python(
             data.get("tombstone_grace_window_days", 90)
@@ -158,7 +149,7 @@ def canonicalize_audit_retention_policy(data: Any) -> Any:
             "explicitly select one policy before conversion"
         )
     try:
-        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(
+        enabled = _LEGACY_POLICY_BOOL.validate_python(
             data.get("audit_events_retention_enabled", False)
         )
         # Historical default only; current runtime defaults to indefinite retention.

@@ -894,6 +894,30 @@ class TestUpdateConfigRoute:
         assert saved.profile_window_size == 27
         assert not hasattr(saved, "playbook_optimizer_config")
 
+    def test_retired_optimizer_defaults_are_discarded_without_changing_other_settings(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        existing.agent_context_prompt = "customer customization"
+        self._wire_mock(mock_reflexio, existing)
+
+        response = client.post(
+            "/api/update_config",
+            json={
+                "profile_window_size": 27,
+                "playbook_optimizer_config": {
+                    "assistant_script_path": None,
+                    "assistant_script_args": [],
+                },
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        [saved] = mock_reflexio.set_config.call_args.args
+        assert saved.profile_window_size == 27
+        assert saved.agent_context_prompt == "customer customization"
+        assert not hasattr(saved, "playbook_optimizer_config")
+
     def test_retired_shadow_patch_is_rejected_without_writing(
         self, client, patched_reflexio, mock_reflexio
     ):
