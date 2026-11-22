@@ -125,6 +125,8 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     optimizer.pop("scheduler_jitter_seconds")
     optimizer.pop("webhook_max_retries", None)
     optimizer.pop("webhook_backoff_base_seconds", None)
+    assert optimizer.pop("assistant_script_path") is None
+    assert optimizer.pop("assistant_script_args") == []
     expected["playbook_optimizer_config"] = optimizer
     floor = dict(expected["retrieval_floor"])
     assert floor.pop("enabled") is False

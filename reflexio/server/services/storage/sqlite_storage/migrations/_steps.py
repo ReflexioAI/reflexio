@@ -956,15 +956,13 @@ class SQLiteSchemaMigrationsMixin:
 
         for table, old_col, new_col in renames:
             with self._lock:
-                try:
-                    cols = {
-                        row[1]
-                        for row in self.conn.execute(
-                            f"PRAGMA table_info({table})"
-                        ).fetchall()  # noqa: S608
-                    }
-                except Exception:  # noqa: S112
-                    continue  # Table doesn't exist yet
+                # SQLite returns an empty result if the table does not exist.
+                cols = {
+                    row[1]
+                    for row in self.conn.execute(
+                        f"PRAGMA table_info({table})"
+                    ).fetchall()  # noqa: S608
+                }
 
                 if not cols:
                     continue  # Table doesn't exist
