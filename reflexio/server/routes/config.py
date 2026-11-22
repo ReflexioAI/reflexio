@@ -62,7 +62,10 @@ def _normalize_legacy_optimizer_write(
         return payload
     cleaned = {name: value for name, value in optimizer.items() if name not in inert}
     normalized = dict(payload)
-    if partial and not cleaned:
+    # An old client can echo empty local-assistant defaults without knowing
+    # a saved command exists. Otherwise retain normal shallow replacement,
+    # including a request to clear an existing webhook configuration.
+    if partial and not cleaned and existing.playbook_optimizer_config.assistant_command:
         del normalized["playbook_optimizer_config"]
         return normalized
     # An older full document cannot express the current command. Reject the
