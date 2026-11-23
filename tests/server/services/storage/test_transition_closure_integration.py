@@ -140,3 +140,199 @@ def test_cursor_completion_still_requires_exact_window_end(storage):
     result = derive(storage)
     assert not result.ready
     assert "cursor_completion_unproven" in result.blockers
+
+
+@pytest.mark.parametrize("inputs", [(), (None,), (None, None)])
+def test_unadmitted_request_and_unsequenced_inputs_are_not_durable_intake(
+    storage, inputs
+):
+    with storage.commit_scope(), storage._stream_sql() as db:
+        db.query(
+            f"INSERT INTO {db.table('requests')}(request_id,user_id,created_at,session_id) "
+            "VALUES('shell','user','2026-01-01','session')"
+        )
+        for index, sequence in enumerate(inputs, 1):
+            db.query(
+                f"INSERT INTO {db.table('interactions')}(interaction_id,user_id,created_at,request_id,ingestion_seq) "
+                "VALUES(?,'user','2026-01-01','shell',?)",
+                (index, sequence),
+            )
+        # Use the real execution selector, not just the closure implementation.
+        for kind in ("profile", "playbook"):
+            assert storage._inputs(db, "user", kind, 0, 10) == []
+    result = derive(storage)
+    assert result.ready, result.blockers
+    assert result.counts["admissions"] == 0
+    assert result.counts["queued_admissions"] == 0
+
+
+@pytest.mark.parametrize("admission", ["null", "{}", "[]", '"not-admission"'])
+def test_nonintake_does_not_accept_json_null_or_malformed_admission(storage, admission):
+    with storage.commit_scope(), storage._stream_sql() as db:
+        db.query(
+            f"INSERT INTO {db.table('requests')}(request_id,user_id,created_at,session_id,learning_admission) "
+            "VALUES('shell','user','2026-01-01','session',?)",
+            (admission,),
+        )
+    result = derive(storage)
+    assert not result.ready
+    assert "admission_authentication_unproven" in result.blockers
+
+
+@pytest.mark.parametrize("sequences", [(1,), (None, 1)])
+def test_unadmitted_request_with_any_sequenced_input_still_refuses(storage, sequences):
+    with storage.commit_scope(), storage._stream_sql() as db:
+        db.query(
+            f"INSERT INTO {db.table('requests')}(request_id,user_id,created_at,session_id) "
+            "VALUES('shell','user','2026-01-01','session')"
+        )
+        for index, sequence in enumerate(sequences, 1):
+            db.query(
+                f"INSERT INTO {db.table('interactions')}(interaction_id,user_id,created_at,request_id,ingestion_seq) "
+                "VALUES(?,'user','2026-01-01','shell',?)",
+                (index, sequence),
+            )
+    result = derive(storage)
+    assert not result.ready
+    assert "admission_authentication_unproven" in result.blockers
+
+
+def test_nonintake_does_not_hide_another_users_input(storage):
+    with storage.commit_scope(), storage._stream_sql() as db:
+        db.query(
+            f"INSERT INTO {db.table('requests')}(request_id,user_id,created_at,session_id) "
+            "VALUES('shell','user','2026-01-01','session')"
+        )
+        db.query(
+            f"INSERT INTO {db.table('interactions')}(interaction_id,user_id,created_at,request_id) "
+            "VALUES(1,'other','2026-01-01','shell')"
+        )
+    result = derive(storage)
+    assert not result.ready
+    assert "orphan_source_input" in result.blockers
+
+
+@pytest.mark.parametrize("source", ["running", "window", "terminal-history"])
+def test_nonintake_keeps_independent_execution_checks(storage, source):
+    with storage.commit_scope(), storage._stream_sql() as db:
+        db.query(
+            f"INSERT INTO {db.table('requests')}(request_id,user_id,created_at,session_id) "
+            "VALUES('shell','user','2026-01-01','session')"
+        )
+        if source == "window":
+            db.query(
+                f"INSERT INTO {db.table('extraction_windows')}(window_id,user_id,kind,org_id,project_id,predecessor,end_seq,manifest,policy) "
+                "VALUES('window','user','profile',?,'',0,1,'[]','{}')",
+                (storage.org_id,),
+            )
+        else:
+            db.query(
+                f"INSERT INTO {db.table('_agent_runs')}(id,org_id,user_id,extractor_kind,request_id,status) "
+                "VALUES('run',?,'user','profile','shell',?)",
+                (storage.org_id, "running" if source == "running" else "finalized"),
+            )
+    result = derive(storage)
+    assert "admission_authentication_unproven" not in result.blockers
+    if source == "terminal-history":
+        assert result.ready, result.blockers
+    else:
+        assert not result.ready
+        assert (
+            "runs_not_closed" if source == "running" else "windows_not_closed"
+        ) in result.blockers
+
+
+def test_deleted_allocation_tail_is_not_required_or_reused(storage):
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed(db, storage.org_id, "")
+    # Exercise the real deletion owner. It removes requests/inputs while the
+    # monotonic allocator and its virgin counters deliberately remain intact.
+    storage.delete_request("request")
+    result = derive(storage)
+    assert result.ready, result.blockers
+    with storage.commit_scope(), storage._stream_sql() as db:
+        assert (
+            db.query(f"SELECT highwater FROM {db.table('learning_work')}")[0][
+                "highwater"
+            ]
+            == 2
+        )
+        storage.lock_extraction_stream("user")
+        db.query(
+            f"INSERT INTO {db.table('requests')}(request_id,user_id,created_at,session_id) "
+            "VALUES('next','user','2026-01-01','session')"
+        )
+        db.query(
+            f"INSERT INTO {db.table('interactions')}(interaction_id,user_id,created_at,request_id) "
+            "VALUES(3,'user','2026-01-01','next')"
+        )
+        storage.admit_extraction(
+            "user",
+            "next",
+            [3],
+            {"profile": {"eligible": True}, "playbook": {"eligible": False}},
+        )
+        assert (
+            db.query(f"SELECT ingestion_seq FROM {db.table('interactions')}")[0][
+                "ingestion_seq"
+            ]
+            == 3
+        )
+    result = derive(storage)
+    assert result.ready, result.blockers
+    assert result.counts["queued_admissions"] == 1
+
+
+@pytest.mark.parametrize(
+    "case", ["negative", "below-input", "missing-owner", "below-cursor", "zero-input"]
+)
+def test_retained_source_and_cursor_still_require_allocation_bounds(storage, case):
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed(db, storage.org_id, "")
+        if case == "missing-owner":
+            db.query(f"DELETE FROM {db.table('learning_work')}")
+        elif case == "below-cursor":
+            db.query(
+                f"UPDATE {db.table('extraction_cursors')} SET completed_seq=3,started=1"
+            )
+        elif case == "zero-input":
+            db.query(
+                f"UPDATE {db.table('interactions')} SET ingestion_seq=0 WHERE interaction_id=1"
+            )
+        else:
+            db.query(
+                f"UPDATE {db.table('learning_work')} SET highwater=?",
+                (-1 if case == "negative" else 1,),
+            )
+    result = derive(storage)
+    assert not result.ready
+    assert (
+        "cursor_highwater_unproven"
+        if case == "below-cursor"
+        else "org_work_source_tail_unproven"
+    ) in result.blockers
+
+
+@pytest.mark.parametrize("nonintake", [True, False])
+def test_nonintake_is_excluded_before_the_unchanged_page_limit(
+    storage, monkeypatch, nonintake
+):
+    monkeypatch.setattr(
+        "reflexio.server.services.storage.storage_base.transition_closure._MAX_PAGES", 2
+    )
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed(db, storage.org_id, "")
+        for index in range(201):
+            db.query(
+                f"INSERT INTO {db.table('requests')}(request_id,user_id,created_at,session_id,learning_admission) "
+                "VALUES(?,'user','2026-01-01','session',?)",
+                (f"shell-{index:04}", None if nonintake else "{}"),
+            )
+    result = derive(storage)
+    if nonintake:
+        assert result.ready, result.blockers
+        assert result.counts["admissions"] == 1
+        assert result.counts["queued_admissions"] == 1
+    else:
+        assert not result.ready
+        assert "observation_limit_reached" in result.blockers

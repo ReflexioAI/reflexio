@@ -81,7 +81,7 @@ CASES = (
     "running",
     "held",
     "missing_completion",
-    "unproven_highwater",
+    "highwater_below_source",
 )
 
 
@@ -132,5 +132,5 @@ def mutate(db: StreamSQL, org: str, project: str, case: str) -> None:
         db.query(
             f"UPDATE {db.table('extraction_cursors')} SET completed_seq=1,started=1 WHERE kind='profile'"
         )
-    elif case == "unproven_highwater":
-        db.query(f"UPDATE {db.table('learning_work')} SET highwater=3")
+    elif case == "highwater_below_source":
+        db.query(f"UPDATE {db.table('learning_work')} SET highwater=1")
