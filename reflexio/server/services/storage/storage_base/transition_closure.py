@@ -308,6 +308,7 @@ def _admissions(
         db,
         "requests",
         f"r.user_id,r.request_id,r.learning_admission,{stats},"
+        "r.learning_admission IS NULL AS admission_absent,"
         f"(SELECT MAX(u.highwater) FROM {db.table('learning_work')} u WHERE u.org_id=? AND u.user_id=r.user_id) AS highwater",
         db.project_filter(),
         (project_id,),
@@ -315,6 +316,13 @@ def _admissions(
         prefix_params=(project_id,) * 4 + (org_id,),
     ):
         counts["admissions"] += 1
+        # A SQL-NULL admission with no sequenced inputs has never entered
+        # durable extraction. This also covers a newly created request shell;
+        # age/source version is irrelevant. This grants no execution/output
+        # authority: their independent source checks above remain unchanged.
+        # JSON null/malformed admission and foreign inputs remain strict.
+        if row["admission_absent"] and row["distinct_n"] == 0:
+            continue
         try:
             admission = decoded(row["learning_admission"])
         except (ValueError, TypeError):
@@ -387,8 +395,9 @@ def _source_sanity(
     if orphan:
         blockers.add("orphan_source_input")
 
-    # Org/user allocation spans projects. Do not certify global queue closure,
-    # but reject a counter whose actual retained source tail is absent anywhere.
+    # Allocation is monotonic across projects; retention/deletion can remove
+    # its former tail without reusing those sequence numbers. Prove bounds on
+    # retained inputs, never require a deleted tail or rewrite the counter.
     frontier = db.query(
         f"SELECT EXISTS(SELECT 1 FROM {db.table('extraction_cursors')} c WHERE c.project_id=? AND NOT EXISTS(SELECT 1 FROM {db.table('learning_work')} u WHERE u.org_id=? AND u.user_id=c.user_id AND u.highwater>=c.completed_seq)) AS present",
         (project_id, org_id),
@@ -396,9 +405,11 @@ def _source_sanity(
     if frontier:
         blockers.add("cursor_highwater_unproven")
     unknown = db.query(
-        f"SELECT EXISTS(SELECT 1 FROM {db.table('learning_work')} u WHERE u.org_id=? AND (u.highwater<0 OR (u.highwater>0 AND "
-        f"NOT EXISTS(SELECT 1 FROM {db.table('interactions')} i WHERE i.user_id=u.user_id AND i.ingestion_seq=u.highwater)))) AS present",
-        (org_id,),
+        f"SELECT (EXISTS(SELECT 1 FROM {db.table('learning_work')} u WHERE u.org_id=? AND u.highwater<0) OR "
+        f"EXISTS(SELECT 1 FROM {db.table('interactions')} i WHERE i.ingestion_seq IS NOT NULL AND "
+        f"(i.ingestion_seq<=0 OR NOT EXISTS(SELECT 1 FROM {db.table('learning_work')} u "
+        "WHERE u.org_id=? AND u.user_id=i.user_id AND u.highwater>=i.ingestion_seq)))) AS present",
+        (org_id, org_id),
     )[0]["present"]
     if unknown:
         blockers.add("org_work_source_tail_unproven")
