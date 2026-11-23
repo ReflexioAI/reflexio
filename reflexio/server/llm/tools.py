@@ -611,8 +611,16 @@ def _log_tool_loop_error(error: Exception) -> None:
         # These are admission, lease and suspension decisions, not model errors.
         raise error
     if isinstance(error, LiteLLMClientError):
+        from reflexio.server.llm.failure import OutageWait, classify_llm_failure
+
         error_type, error_detail = describe_tool_loop_error(error)
-        logger.warning(
+        # A refusal or failure while the provider's outage is already reported
+        # (open breaker, saturated local cap) is the outage, not this loop's
+        # failure: INFO, as the document expander logs it.
+        logger.log(
+            logging.INFO
+            if isinstance(classify_llm_failure(error), OutageWait)
+            else logging.WARNING,
             "event=tool_loop_llm_error error_type=%s error_detail=%s error=%s",
             error_type,
             error_detail,

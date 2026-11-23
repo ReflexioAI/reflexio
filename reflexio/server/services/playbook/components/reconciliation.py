@@ -901,8 +901,12 @@ def _run_audited(
     presentation_token = current_overflow_presentation.set(None)
     try:
         return engine.run(payload, references)
+    # Both abstention branches re-raise, and the caller that owns the failure
+    # logs it at WARNING or above (the durable worker's ``Extraction window
+    # failed``, the synchronous run's ``Failed to run``, the resume worker's
+    # finalization failure), so these lines are diagnostic detail: INFO.
     except AuditedConsolidationAbstainedError:
-        logger.warning(
+        logger.info(
             "event=audited_consolidation_abstained request_allowance_used=%d",
             engine.calls,
         )
@@ -912,7 +916,7 @@ def _run_audited(
         # They are control flow, not semantic rejection or a legacy fallback.
         raise
     except _DETERMINISTIC_REJECTIONS as exc:
-        logger.warning(
+        logger.info(
             "event=audited_consolidation_abstained error_type=%s request_allowance_used=%d",
             type(exc).__name__,
             engine.calls,
