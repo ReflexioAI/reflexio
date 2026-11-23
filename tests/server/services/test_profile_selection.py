@@ -159,3 +159,40 @@ def test_expiry_during_query_scan_or_after_retrieval_is_not_a_success(monkeypatc
     calls.clear()
     with pytest.raises(search_runtime.SearchDeadlineError):
         choose([profile("A")], [profile("B")])
+
+
+def test_empty_joint_user_recovery_is_opt_in_and_uses_original_instances():
+    secondary = [profile(key) for key in "ABCDEF"]
+    selected, fetch = choose([], secondary, recover_empty_for_joint_user=True)
+    assert selected == secondary[:5]
+    assert all(a is b for a, b in zip(selected, secondary[:5], strict=True))
+    fetch.assert_called_once_with(
+        query="Python payments", top_k=5, search_mode=SearchMode.HYBRID
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"degraded": True},
+        {"query_embedding": None},
+        {"floor_on": True},
+        {"temporal_reorder": True},
+        {"effective_mode": SearchMode.FTS},
+        {"request": UnifiedSearchRequest(query="q", user_id=None)},
+        {"request": UnifiedSearchRequest(query="q", user_id="u", threshold=0.0)},
+        {"request": UnifiedSearchRequest(query="q", user_id="u", top_k=10)},
+        {
+            "request": UnifiedSearchRequest(
+                query="q", user_id="u", entity_types=["user_playbooks"]
+            )
+        },
+    ],
+)
+def test_empty_recovery_keeps_all_existing_native_guards(changes):
+    primary = []
+    selected, fetch = choose(
+        primary, [profile("A")], recover_empty_for_joint_user=True, **changes
+    )
+    assert selected is primary
+    fetch.assert_not_called()

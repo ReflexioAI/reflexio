@@ -1053,8 +1053,14 @@ unique non-stop query words of length at least three joined by OR, in source
 order up to 2,000 characters. From a secondary pool larger than five, the first
 two identities outside the native top three precede that protected native prefix.
 Sparse nonempty results instead append unseen identities from one relaxed hybrid
-retrieval. Empty results and unqualified caller/model policies retain their
-existing behavior. No extra query embedding or selection model is created.
+retrieval. Empty results retain their existing behavior except for eligible
+Jev mixed requests selecting exactly PROFILE and USER: when primary retrieval
+succeeded and a native USER anchor remains, one bounded relaxed profile lookup
+may recover profiles for the joint judge to assess. No profile is force-added to
+the final result. PROFILE-only, other arm combinations, empty USER results and
+unqualified policies do not gain an empty-result lookup. This explicitly expands
+recall for that mixed policy and can add one same-scope native query. No extra
+query embedding or selection model is created.
 
 `retrieval.profile_selection` owns this policy; unified search keeps retrieval,
 recency, time/scope filters, session exclusions and accepted-response recording.

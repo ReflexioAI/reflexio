@@ -515,6 +515,14 @@ def _run_unified_search(
                 degraded=degraded,
                 floor_on=floor_on,
                 temporal_reorder=temporal_reorder,
+                # A retained USER anchor supports one bounded sparse-profile
+                # lookup for this exact mixed joint-selection policy only.
+                recover_empty_for_joint_user=(
+                    enhance
+                    and set(request.entity_types or _DEFAULT_ENTITY_TYPES)
+                    == {"profiles", "user_playbooks"}
+                    and bool(user_playbooks)
+                ),
                 retrieve=lambda **kwargs: _retrieve_profile_selection(
                     **kwargs,
                     request=request,
