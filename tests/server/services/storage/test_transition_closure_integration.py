@@ -336,3 +336,272 @@ def test_nonintake_is_excluded_before_the_unchanged_page_limit(
     else:
         assert not result.ready
         assert "observation_limit_reached" in result.blockers
+
+
+@pytest.mark.parametrize("erased", [False, True])
+@pytest.mark.parametrize("missing_date", [False, True])
+def test_closed_detached_history_proves_numeric_floor_not_publication(
+    storage, erased, missing_date
+):
+    from dataclasses import asdict
+
+    from reflexio.server.services.storage.storage_base.transition_inventory import (
+        _projection,
+    )
+    from reflexio.test_support.transition_closure import seed_closed_window_history
+
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed_closed_window_history(db, storage.org_id, "", erased=erased)
+        if missing_date:
+            db.query("UPDATE extraction_windows SET completed_at=NULL")
+        table, _keys, scope, columns = _projection(db, "runs", db.now())
+        row = db.query(
+            f"SELECT {columns} FROM {table} r WHERE {scope}", (storage.org_id,)
+        )[0]
+        assert row["inert_history"]
+        assert (
+            not row["published"]
+            and not row["legacy_published"]
+            and not row["window_published"]
+        )
+    result = derive(storage)
+    assert result.ready, result.blockers
+    assert result.counts["windows"] == 1
+    window = storage.transition_inventory_page("windows").items[0]
+    assert window.inert_history and window.execution_bearing is False
+    item = storage.transition_inventory_page("runs").items[0]
+    assert item.inert_history and item.execution_bearing is False
+    assert item.saved_output is not erased
+    assert "PRIVATE_SAVED_CANARY" not in json.dumps(asdict(item))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "UPDATE extraction_windows SET completed=0",
+        "UPDATE extraction_windows SET effects_done=0",
+        "UPDATE extraction_windows SET invalidated=1",
+        "UPDATE extraction_cursors SET window_id='closed'",
+        "UPDATE learning_work SET lease_until=9999999999",
+        "UPDATE _agent_runs SET status='agent_completed'",
+        "UPDATE _agent_runs SET extractor_kind='playbook'",
+        "UPDATE _agent_runs SET pending_tool_call_ids='[\"call\"]'",
+        'UPDATE _agent_runs SET generation_request_snapshot=\'{"overflow":{"checkpoint":{"active_child":"child"}}}\'',
+        'UPDATE extraction_windows SET effects=\'{"version":1,"skipped":true,"billing":null,"request_ids":[" \\t\\n"]}\'',
+        'UPDATE extraction_windows SET effects=\'{"version":1,"skipped":true,"billing":null,"request_ids":[],"acknowledged_window_run_id":"window:closed"}\'',
+    ],
+)
+def test_closed_history_never_hides_remaining_execution_or_new_formats(
+    storage, mutation
+):
+    from reflexio.test_support.transition_closure import seed_closed_window_history
+
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed_closed_window_history(db, storage.org_id, "")
+        db.query(mutation)
+    assert not derive(storage).ready
+    item = storage.transition_inventory_page("runs").items[0]
+    assert not item.inert_history
+
+
+@pytest.mark.parametrize("erased", [False, True])
+def test_closed_history_and_nonintake_agree_with_attributed_cursor_reader(
+    storage, erased
+):
+    from reflexio.server.services.storage.storage_base.transition_inventory import (
+        TransitionInventoryAttribution,
+    )
+    from reflexio.test_support.transition_closure import seed_closed_window_history
+
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed_closed_window_history(db, storage.org_id, "", erased=erased)
+        db.query(
+            "INSERT INTO requests(request_id,user_id,created_at,session_id) VALUES('shell','history-user','2026-01-01','session')"
+        )
+        db.query(
+            "INSERT INTO interactions(interaction_id,user_id,created_at,request_id) VALUES(1,'history-user','2026-01-01','shell')"
+        )
+    assert derive(storage).ready
+    page = storage.transition_inventory_page(
+        "cursors",
+        attribution=TransitionInventoryAttribution(
+            storage.org_id, "", storage._durable_work_route()
+        ),
+    )
+    assert page.items[0].execution_bearing is False, page.items[0].reasons
+
+
+def test_erased_numeric_floor_is_not_positive_processed_admission_coverage(storage):
+    from reflexio.test_support.transition_closure import seed_closed_window_history
+
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed_closed_window_history(db, storage.org_id, "", erased=True)
+        db.query(
+            "INSERT INTO requests(request_id,user_id,created_at,session_id,learning_admission) VALUES('live','history-user','2026-01-01','session',?)",
+            (
+                json.dumps(
+                    {
+                        "profile": {"eligible": True},
+                        "playbook": {"eligible": False},
+                        "min_seq": 1,
+                        "max_seq": 1,
+                        "admitted_at": 0,
+                    }
+                ),
+            ),
+        )
+        db.query(
+            "INSERT INTO interactions(interaction_id,user_id,created_at,request_id,ingestion_seq) VALUES(1,'history-user','2026-01-01','live',1)"
+        )
+    result = derive(storage)
+    assert not result.ready
+    assert "processed_admission_coverage_unproven" in result.blockers
+
+
+def test_closed_parent_lookup_uses_window_primary_key_and_unrelated_cursor_sets(
+    storage,
+):
+    from reflexio.server.services.storage.storage_base.transition_inventory import (
+        _projection,
+    )
+    from reflexio.test_support.transition_closure import seed_closed_window_history
+
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed_closed_window_history(db, storage.org_id, "")
+        table, _keys, scope, columns = _projection(db, "runs", db.now())
+        plan = db.query(
+            f"EXPLAIN QUERY PLAN SELECT {columns} FROM {table} r WHERE {scope}",
+            (storage.org_id,),
+        )
+    details = [row["detail"] for row in plan]
+    assert any(
+        "SEARCH w USING INDEX" in detail and "window_id=?" in detail
+        for detail in details
+    )
+    assert any("LIST SUBQUERY" in detail for detail in details)
+    assert not any("CORRELATED LIST SUBQUERY" in detail for detail in details)
+
+
+@pytest.mark.parametrize("history", [False, True])
+def test_original_clockless_admission_retains_native_queue_semantics(storage, history):
+    from reflexio.server.services.storage.storage_base.transition_inventory import (
+        TransitionInventoryAttribution,
+    )
+
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed(db, storage.org_id, "", history=history)
+        rows = db.query("SELECT request_id,learning_admission FROM requests")
+        for row in rows:
+            admission = json.loads(row["learning_admission"])
+            del admission["admitted_at"]
+            db.query(
+                "UPDATE requests SET learning_admission=? WHERE request_id=?",
+                (json.dumps(admission), row["request_id"]),
+            )
+    result = derive(storage)
+    assert result.ready, result.blockers
+    assert result.counts["queued_admissions"] == 1
+    page = storage.transition_inventory_page(
+        "cursors",
+        attribution=TransitionInventoryAttribution(
+            storage.org_id, "", storage._durable_work_route()
+        ),
+    )
+    assert all("cursor_source_unproven" not in item.reasons for item in page.items)
+    with storage._stream_sql() as db:
+        inputs = storage._inputs(db, "user", "profile", 0, 100)
+    assert [row["ingestion_seq"] for row in inputs] == [1, 2]
+    assert all(
+        "admitted_at" not in json.loads(row["learning_admission"]) for row in inputs
+    )
+
+
+@pytest.mark.parametrize("stamp", [None, True, -1, "old", float("inf")])
+def test_present_invalid_admission_clock_is_not_a_legacy_format(storage, stamp):
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed(db, storage.org_id, "")
+        admission = json.loads(
+            db.query("SELECT learning_admission FROM requests")[0]["learning_admission"]
+        )
+        admission["admitted_at"] = stamp
+        db.query("UPDATE requests SET learning_admission=?", (json.dumps(admission),))
+    assert "admission_authentication_unproven" in derive(storage).blockers
+
+
+@pytest.mark.parametrize("clockless", [False, True])
+def test_native_retention_hole_preserves_range_but_selects_only_retained_inputs(
+    storage, clockless
+):
+    from reflexio.models.api_schema.domain.entities import DeleteUserInteractionRequest
+    from tests.server.services.storage.test_storage_contract_extraction_stream import (
+        publish,
+    )
+
+    items = publish(storage, 3, width=2, stride=1)
+    storage.delete_user_interaction(
+        DeleteUserInteractionRequest(
+            user_id="u", interaction_id=items[1].interaction_id
+        )
+    )
+    if clockless:
+        with storage.commit_scope(), storage._stream_sql() as db:
+            admission = json.loads(
+                db.query("SELECT learning_admission FROM requests")[0][
+                    "learning_admission"
+                ]
+            )
+            del admission["admitted_at"]
+            db.query(
+                "UPDATE requests SET learning_admission=?", (json.dumps(admission),)
+            )
+    closure = derive(storage)
+    assert closure.ready, closure.blockers
+    user, token = storage.claim_extraction("retained-native-owner", 300)
+    window = storage.prepare_extraction(user, token)
+    assert window is not None
+    assert [item["seq"] for item in window.manifest] == [1, 3]
+    assert [item["interaction_id"] for item in window.manifest] == [
+        items[0].interaction_id,
+        items[2].interaction_id,
+    ]
+    assert window.predecessor == 0 and window.end_seq == 3
+    with storage._stream_sql() as db:
+        admission = json.loads(
+            db.query("SELECT learning_admission FROM requests")[0]["learning_admission"]
+        )
+        assert (admission["min_seq"], admission["max_seq"]) == (1, 3)
+        assert db.query("SELECT highwater FROM learning_work")[0]["highwater"] == 3
+
+
+@pytest.mark.parametrize("capped", [False, True])
+def test_source_inventory_uses_bounded_large_pages_without_raising_row_cap(
+    storage, monkeypatch, capped
+):
+    from reflexio.server.services.storage.storage_base import (
+        transition_closure as owner,
+    )
+
+    with storage.commit_scope():
+        storage.conn.executemany(
+            "INSERT INTO _agent_runs(id,org_id,extractor_kind,user_id,request_id,status,generation_request_snapshot,service_config_snapshot,agent_context_snapshot) VALUES(?,?,'profile','historical-user','request','finalized','{}','{}','')",
+            [(f"history-{i:04}", storage.org_id) for i in range(501)],
+        )
+    read = owner.read_transition_inventory_page_db
+    calls = []
+
+    def observe(db, source, **kwargs):
+        if source == "runs":
+            calls.append(kwargs["limit"])
+        return read(db, source, **kwargs)
+
+    monkeypatch.setattr(owner, "read_transition_inventory_page_db", observe)
+    if capped:
+        monkeypatch.setattr(owner, "_MAX_PAGES", 1)
+    result = derive(storage)
+    if capped:
+        assert result.blockers == ("observation_limit_reached",)
+        assert calls == [500]
+    else:
+        assert result.ready, result.blockers
+        assert result.counts["runs"] == 501
+        assert calls == [500, 500, 500]

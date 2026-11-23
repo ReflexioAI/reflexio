@@ -19,11 +19,13 @@ from typing import Any
 from reflexio.server.work_scope import current_project_id
 
 from ._extraction_stream import StreamSQL, decoded
+from .closed_window_history import closed_window_history_sql
 from .transition_inventory import (
     INVENTORY_SOURCES,
     TransitionInventoryScopeError,
     read_transition_inventory_page_db,
 )
+from .transition_sources import nonintake_request_sql
 
 
 @dataclass(frozen=True)
@@ -34,9 +36,10 @@ class ProjectTransitionClosure:
 
 
 _MAX_PAGES = 1000
+_INVENTORY_PAGE_SIZE = 500
 # Four bind parameters per check plus the shared scope and clock.
 _COVERAGE_BATCH_SIZE = 100
-_CoverageCheck = tuple[str, str, int, float]
+_CoverageCheck = tuple[str, str, int, float | None]
 
 
 class _ObservationRefusedError(Exception):
@@ -113,16 +116,30 @@ def _covered(
 ) -> bool:
     if not checks:
         return True
-    values = ",".join("(?,?,?,?)" for _ in checks)
+    # Clockless batches can contain only SQL NULL clocks; PostgreSQL would
+    # otherwise resolve the VALUES column as text before numeric comparison.
+    values = ",".join("(?,?,?,CAST(? AS DOUBLE PRECISION))" for _ in checks)
     end_match = "=" if exact else ">="
+    history = closed_window_history_sql(db, now=now)
+    routed = f"(w.org_id=scope.org_id AND w.invalidated=0 AND w.completed_at IS NOT NULL) OR ({history.queue_floor})"
+    if exact:
+        routed += f" OR ({history.erased_floor})"
+    # The original native admission format has no clock. Its numeric input
+    # range can prove queue consumption, never latency or publication timing.
+    timing = "((p.admitted_at IS NULL AND (w.completed_at IS NULL OR w.completed_at>=0)) OR w.completed_at>=p.admitted_at) AND (w.completed_at IS NULL OR w.completed_at<=?)"
+    if exact:
+        # An exact stored queue position has no publication-time claim.
+        # NULL dates enter only through the shared positive history routes.
+        timing = f"(w.completed_at IS NULL OR ({timing}))"
     rows = db.query(
-        f"WITH pending_coverage(user_id,kind,seq,admitted_at) AS (VALUES {values}) "
+        f"WITH pending_coverage(user_id,kind,seq,admitted_at) AS (VALUES {values}), "
+        "scope AS (SELECT ? AS org_id,? AS project_id) "
         "SELECT NOT EXISTS(SELECT 1 FROM pending_coverage p WHERE NOT EXISTS("
-        f"SELECT 1 FROM {db.table('extraction_windows')} w "
-        "WHERE w.org_id=? AND w.project_id=? AND w.user_id=p.user_id AND w.kind=p.kind "
-        "AND w.completed=1 AND w.invalidated=0 AND w.effects_done=1 "
+        f"SELECT 1 FROM {db.table('extraction_windows')} w CROSS JOIN scope "
+        f"WHERE ({routed}) AND w.project_id=scope.project_id AND w.user_id=p.user_id AND w.kind=p.kind "
+        "AND w.completed=1 AND w.effects_done=1 "
         f"AND w.predecessor>=0 AND w.predecessor<p.seq AND w.end_seq{end_match}p.seq "
-        "AND w.completed_at>=p.admitted_at AND w.completed_at<=?)) AS proven",
+        f"AND {timing})) AS proven",
         (*chain.from_iterable(checks), org, project, now),
     )
     return bool(rows[0]["proven"])
@@ -177,11 +194,16 @@ def _observe_sources(
                     org_id=org_id,
                     project_id=project_id,
                     after=after,
+                    limit=_INVENTORY_PAGE_SIZE,
                 )
             except TransitionInventoryScopeError:
                 blockers.add("source_attribution_unavailable")
                 break
             counts[source] += len(page.items)
+            # Preserve the former 100-row x page-limit inventory ceiling while
+            # using the native observer's existing larger bounded page.
+            if counts[source] > 100 * _MAX_PAGES:
+                raise _ObservationRefusedError("observation_limit_reached")
             for item in page.items:
                 if item.key in seen:
                     raise _ObservationRefusedError("observation_did_not_advance")
@@ -307,12 +329,7 @@ def _admissions(
     # Request shells never entered durable intake, even when created today.
     # Exclude them before keyset paging so non-intake cannot exhaust its cap.
     # Invalid keys stay visible to _pages; malformed JSON is not SQL NULL.
-    intake_scope = (
-        f"{db.project_filter()} AND (r.user_id IS NULL OR r.request_id IS NULL OR "
-        "r.learning_admission IS NOT NULL OR "
-        f"EXISTS(SELECT 1 FROM {db.table('interactions')} i WHERE {input_scope} "
-        "AND i.ingestion_seq IS NOT NULL))"
-    )
+    intake_scope = f"{db.project_filter()} AND NOT ({nonintake_request_sql(db, request_alias='r', project_sql='?')})"
     for row in _pages(
         db,
         "requests",
@@ -349,17 +366,28 @@ def _admissions(
             and lo > 0
             and hi >= 0
             and hi >= lo - 1
-            and type(stamp) in {int, float}
-            and math.isfinite(stamp)
-            and 0 <= stamp <= now
+            and (
+                "admitted_at" not in admission
+                or (
+                    type(stamp) in {int, float}
+                    and math.isfinite(stamp)
+                    and 0 <= stamp <= now
+                )
+            )
             and type(highwater) is int
             and hi <= highwater
         )
         if valid:
-            width = hi - lo + 1
-            valid = row["n"] == row["distinct_n"] == width and (
-                (width == 0 and row["lo"] is None and row["hi"] is None)
-                or (width > 0 and row["lo"] == lo and row["hi"] == hi)
+            # Native deletion/retention leaves the immutable allocation range
+            # intact. Authenticate every retained input, not erased content.
+            valid = row["n"] == row["distinct_n"] and (
+                (row["n"] == 0 and row["lo"] is None and row["hi"] is None)
+                or (
+                    row["n"] > 0
+                    and row["lo"] is not None
+                    and row["hi"] is not None
+                    and lo <= row["lo"] <= row["hi"] <= hi
+                )
             )
         if not valid:
             blockers.add("admission_authentication_unproven")

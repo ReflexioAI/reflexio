@@ -75,7 +75,7 @@ def derive(storage: Any, project: str = "") -> ProjectTransitionClosure:
 CASES = (
     "missing_boolean",
     "string_boolean",
-    "missing_source",
+    "source_outside_admission",
     "wrong_min",
     "unfinished_window",
     "running",
@@ -108,8 +108,10 @@ def mutate(db: StreamSQL, org: str, project: str, case: str) -> None:
             f"UPDATE {db.table('requests')} SET learning_admission=?",
             (json.dumps(admission),),
         )
-    elif case == "missing_source":
-        db.query(f"DELETE FROM {db.table('interactions')} WHERE interaction_id=1")
+    elif case == "source_outside_admission":
+        db.query(
+            f"UPDATE {db.table('interactions')} SET ingestion_seq=3 WHERE interaction_id=1"
+        )
     elif case == "unfinished_window":
         db.query(
             f"INSERT INTO {db.table('extraction_windows')}(window_id,user_id,kind,org_id,project_id,predecessor,end_seq,manifest,policy) VALUES('unfinished','user','profile',?,?,0,2,'[]','{{}}')",
@@ -134,3 +136,45 @@ def mutate(db: StreamSQL, org: str, project: str, case: str) -> None:
         )
     elif case == "highwater_below_source":
         db.query(f"UPDATE {db.table('learning_work')} SET highwater=1")
+
+
+def seed_closed_window_history(
+    db: StreamSQL, org: str, project: str, *, erased: bool = False
+) -> None:
+    """Actual compact C6 ACK shape, no publication or financial receipt."""
+    db.query(
+        f"INSERT INTO {db.table('learning_work')}(org_id,user_id,highwater) VALUES(?,'history-user',1)",
+        (org,),
+    )
+    db.query(
+        f"INSERT INTO {db.table('extraction_cursors')}(user_id,kind,project_id,completed_seq,started) VALUES('history-user','profile',?,1,1)",
+        (project,),
+    )
+    snapshot = {"overflow": {"checkpoint": {"stage": "invalidated"}}} if erased else {}
+    db.query(
+        f"INSERT INTO {db.table('_agent_runs')}(id,org_id,user_id,extractor_kind,request_id,status,committed_output,generation_request_snapshot,service_config_snapshot,agent_context_snapshot"
+        + (",project_id" if project else "")
+        + ") VALUES('window:closed',?,'history-user','profile','old-request',?,?,?,?,?"
+        + (",?" if project else "")
+        + ")",
+        (
+            org,
+            "cancelled" if erased else "failed",
+            None if erased else json.dumps({"output": "PRIVATE_SAVED_CANARY"}),
+            json.dumps(snapshot),
+            "{}",
+            "",
+            *((project,) if project else ()),
+        ),
+    )
+    db.query(
+        f"INSERT INTO {db.table('extraction_windows')}(window_id,user_id,kind,org_id,project_id,predecessor,end_seq,manifest,policy,completed,effects_done,completed_at,derived_claimed,invalidated,effects) "
+        "VALUES('closed','history-user','profile',NULL,?,0,1,'[]','{}',1,1,2,1,?,?)",
+        (
+            project,
+            int(erased),
+            json.dumps(
+                {"version": 1, "skipped": True, "billing": None, "request_ids": []}
+            ),
+        ),
+    )
