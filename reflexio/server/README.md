@@ -454,7 +454,7 @@ software default changes; explicit conflicting retry labels remain conflicts.
 
 - `base_generation_service.py`: Stable `BaseGenerationService` import surface plus service-specific orchestration hooks (parallel extractor execution via ThreadPoolExecutor, `EXTRACTOR_TIMEOUT_SECONDS = 300` per-extractor safety timeout)
 - `base_generation/`: Mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing that keep `base_generation_service.py` navigable without changing caller imports
-- `extractor_config_utils.py`: Shared utility for filtering extractor configs by source, `allow_manual_trigger`, and extractor names
+- `extractor_config_utils.py`: Shared utility for filtering extractor configs by request source
 - `extractor_interaction_utils.py`: Per-extractor utilities for stride_size checking and source filtering
 - `operation_state_utils.py`: Centralized `OperationStateManager` for all `_operation_state` table interactions (progress tracking, concurrency locks, extractor/aggregator bookmarks, simple locks)
 - `deduplication_utils.py`: Shared utilities for LLM-based deduplication (used by ProfileConsolidator and PlaybookConsolidator)
@@ -536,7 +536,7 @@ erasure clears it. No candidate/baseline router or alternate engine is retained.
 
 **Constructor Flags** (`ProfileGenerationService`):
 
-- `allow_manual_trigger`: Include `manual_trigger=True` extractors (default: False)
+- Manual generation and reruns use `auto_run=False`, independently of automatic cadence. Zero workspace `profile_stride_size` holds new automatic profile work.
 - `output_pending_status`: Set output profiles to PENDING status (default: False)
 
 **Profile Versioning Workflow**:
@@ -639,7 +639,7 @@ for storage contracts and failure dispositions.
 
 **Constructor Flags** (`PlaybookGenerationService`):
 
-- `allow_manual_trigger`: Include `manual_trigger=True` extractors (default: False)
+- Manual generation and reruns use `auto_run=False`, independently of automatic cadence. Zero workspace `profile_stride_size` holds new automatic profile work.
 - `output_pending_status`: Set output user playbooks to PENDING status (default: False)
 
 **User Playbook Versioning Workflow**:
@@ -964,7 +964,7 @@ waiting only observes committed cursor coverage.
 Generation services follow `BaseGenerationService`; focused search and read-side services have their own entry points:
 1. Load extractor configs from YAML
 2. Load generation service config from request (runtime parameters)
-3. Filter extractors by source, `allow_manual_trigger`, and extractor names (via `extractor_config_utils`)
+3. Filter extractors by request source, then admit automatic work through per-kind cadence (zero profile cadence selects manual-only)
 4. Create extractors with both configs
 5. Run extractors in parallel (ThreadPoolExecutor)
 6. Process and save results to storage

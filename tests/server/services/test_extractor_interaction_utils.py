@@ -70,10 +70,9 @@ class TestGetExtractorWindowParams:
         assert get_extractor_window_params(config, "profile") == (10, 8)
         assert get_extractor_window_params(config, "playbook") == (10, 8)
 
-    def test_zero_values_are_invalid(self):
+    def test_zero_widths_and_playbook_stride_are_invalid(self):
         for field in (
             "profile_window_size",
-            "profile_stride_size",
             "playbook_window_size",
             "playbook_stride_size",
         ):
@@ -229,19 +228,19 @@ def test_small_manual_window_does_not_authorize_automatic_admission():
     from reflexio.server.services.durable_learning.admission import extraction_admission
 
     # A small window remains readable for manual use. The larger retained
-    # stride must refuse at automatic admission, after eligibility is resolved.
+    # explicitly selected positive stride must refuse at automatic admission.
     config = Config.model_validate(
         {
             "storage_config": None,
             "profile_window_size": 2,
+            "profile_stride_size": 0,
             "profile_extractor_config": {
                 "extraction_definition_prompt": "Extract direct evidence",
-                "manual_trigger": True,
             },
         }
     )
     window = get_extractor_window_params(config, "profile")
-    assert window == (2, 8)
+    assert window == (2, 0)
     request = PublishUserInteractionRequest.model_validate(
         {
             "user_id": "user",
@@ -251,7 +250,7 @@ def test_small_manual_window_does_not_authorize_automatic_admission():
     )
     assert not extraction_admission(config, request)["profile"]["eligible"]
     automatic = config.model_dump()
-    automatic["profile_extractor_config"]["manual_trigger"] = False
+    automatic["profile_stride_size"] = 8
     automatic_config = Config.model_validate(automatic)
     with pytest.raises(ValueError, match="stride_size must be <= window_size"):
         extraction_admission(automatic_config, request)

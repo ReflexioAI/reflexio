@@ -8,6 +8,48 @@ from tests.server.services import test_durable_window_pipeline as durable
 pipeline = durable.pipeline
 
 
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("finished", [False, True])
+def test_manual_only_http_publish_persists_source_without_provider_or_eligible_window(
+    pipeline, monkeypatch, force, finished
+):
+    from unittest.mock import Mock
+
+    from reflexio.server.llm.litellm_client import LiteLLMClient
+
+    engine, worker, http = pipeline
+    forbidden = Mock(
+        side_effect=AssertionError("Manual-only publish dispatched a model")
+    )
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", forbidden)
+    configurator = engine.request_context.configurator
+    configurator.set_config_by_name("profile_stride_size", 0)
+    request = durable.payload("manual-only", count=4, force=force)
+    request["session_finished"] = finished
+    response = http.post("/api/publish_interaction", json=request)
+    assert response.status_code == 200 and response.json()["success"]
+    storage = engine.get_storage()
+    assert storage.get_request("manual-only") is not None
+    assert worker.drain_org("stream-test", 1, 300) == 0
+    forbidden.assert_not_called()
+
+    # Deliberate re-enablement admits new source only; the stored manual-only
+    # publication must not be enrolled into the later automatic window.
+    configurator.set_config_by_name("profile_stride_size", 3)
+    response = http.post(
+        "/api/publish_interaction",
+        json=durable.payload("explicitly-enabled", count=4, force=True),
+    )
+    assert response.status_code == 200 and response.json()["success"]
+    user, token = storage.claim_extraction("manual-policy-owner", 300)
+    assert user == "u" and token
+    window = storage.prepare_extraction(user, token)
+    assert window is not None and window.kind == "profile"
+    assert len(window.manifest) == 4
+    assert window.policy["stride_size"] == 3
+    forbidden.assert_not_called()
+
+
 @pytest.mark.parametrize("kind,width,stride", [("profile", 16, 4), ("playbook", 24, 2)])
 def test_per_kind_policy_drives_the_selected_window(pipeline, kind, width, stride):
     engine, _worker, http = pipeline
@@ -75,7 +117,6 @@ def test_excluded_source_can_publish_under_a_manual_usable_small_window(pipeline
         user_playbook_extractor_config=None,
     )
     policy["profile_extractor_config"]["request_sources_enabled"] = ["allowed"]
-    policy["profile_extractor_config"]["manual_trigger"] = False
     configurator.set_config(Config.model_validate(policy))
     response = http.post(
         "/api/publish_interaction",

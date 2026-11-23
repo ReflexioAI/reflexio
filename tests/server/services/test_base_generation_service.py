@@ -50,7 +50,6 @@ class MockExtractorConfig:
 
     extractor_name: str
     request_sources_enabled: list[str] | None = None
-    manual_trigger: bool = False
 
 
 @dataclass
@@ -61,7 +60,6 @@ class MockServiceConfig:
     request_id: str = "test_request"
     request_interaction_data_models: list | None = None
     source: str | None = None
-    allow_manual_trigger: bool = False
     auto_run: bool = True
     force_extraction: bool = False
 
@@ -284,39 +282,15 @@ class TestFilterExtractorConfigByServiceConfig:
 
         assert result is None
 
-    def test_filter_by_manual_trigger(self, base_service):
-        """Test filtering extractor by manual_trigger flag."""
-        config = MockExtractorConfig(extractor_name="extractor1", manual_trigger=True)
-
-        service_config = MockServiceConfig(allow_manual_trigger=False)
-        result = base_service._filter_extractor_config_by_service_config(
-            config, service_config
-        )
-
-        assert result is None
-
-    def test_manual_trigger_allowed_when_allow_manual_trigger_true(self, base_service):
-        """Test that manual_trigger extractor is allowed when requested."""
-        config = MockExtractorConfig(extractor_name="extractor1", manual_trigger=True)
-
-        service_config = MockServiceConfig(allow_manual_trigger=True)
-        result = base_service._filter_extractor_config_by_service_config(
-            config, service_config
-        )
-
-        assert result is config
-
     def test_combined_filtering(self, base_service):
         """Test that all filter conditions are applied together."""
         config = MockExtractorConfig(
             extractor_name="extractor1",
             request_sources_enabled=["api"],
-            manual_trigger=False,
         )
 
         service_config = MockServiceConfig(
             source="api",
-            allow_manual_trigger=False,
         )
         result = base_service._filter_extractor_config_by_service_config(
             config, service_config

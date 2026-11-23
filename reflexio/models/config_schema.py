@@ -443,7 +443,6 @@ class ProfileExtractorConfig(BaseModel):
     request_sources_enabled: list[str] | None = (
         None  # default enabled for all sources, if set, only extract profiles from the enabled request sources
     )
-    manual_trigger: bool = False  # require manual triggering (rerun) to run extraction and skip auto extraction if set to True
 
     @model_validator(mode="before")
     @classmethod
@@ -451,6 +450,7 @@ class ProfileExtractorConfig(BaseModel):
         return _reject_obsolete_fields(
             data,
             (
+                "manual_trigger",
                 "profile_content_definition_prompt",
                 "batch_size_override",
                 "batch_interval_override",
@@ -864,7 +864,11 @@ class Config(BaseModel):
     )
     # extraction parameters
     profile_window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
-    profile_stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
+    profile_stride_size: int = Field(
+        default=DEFAULT_STRIDE_SIZE,
+        ge=0,
+        description="New conversation turns between automatic profile extractions; zero selects manual-only extraction.",
+    )
     playbook_window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
     playbook_stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
     # Captured at admission; 0 disables idle finalization for new publications.

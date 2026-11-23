@@ -110,7 +110,6 @@ class PlaybookGenerationServiceConfig:
         agent_version: The agent version
         user_id: The user ID for per-user playbook extraction
         source: Source of the interactions
-        allow_manual_trigger: Whether to allow extractors with manual_trigger=True
         rerun_start_time: Optional start time filter for rerun flows (Unix timestamp)
         rerun_end_time: Optional end time filter for rerun flows (Unix timestamp)
         auto_run: True for regular flow (checks stride_size), False for rerun/manual (skips stride_size)
@@ -120,7 +119,6 @@ class PlaybookGenerationServiceConfig:
     agent_version: str
     user_id: str
     source: str | None = None
-    allow_manual_trigger: bool = False
     rerun_start_time: int | None = None
     rerun_end_time: int | None = None
     auto_run: bool = True
@@ -166,7 +164,7 @@ class PlaybookGenerationService(
         self,
         llm_client: LiteLLMClient,
         request_context: RequestContext,
-        allow_manual_trigger: bool = False,
+        *,
         output_pending_status: bool = False,
         skip_aggregation: bool = False,
     ) -> None:
@@ -176,12 +174,10 @@ class PlaybookGenerationService(
         Args:
             llm_client: Unified LLM client supporting both OpenAI and Claude
             request_context: Request context with storage, configurator, and org_id
-            allow_manual_trigger: Whether to allow extractors with manual_trigger=True
             output_pending_status: Whether to output entries with PENDING status (for rerun)
             skip_aggregation: Whether to skip playbook aggregation (extract only, no agent playbooks)
         """
         super().__init__(llm_client=llm_client, request_context=request_context)
-        self.allow_manual_trigger = allow_manual_trigger
         self.output_pending_status = output_pending_status
         self.skip_aggregation = skip_aggregation
         self._review_window_cache: list[RequestInteractionDataModel] | None = None
@@ -209,7 +205,6 @@ class PlaybookGenerationService(
             agent_version=request.agent_version,
             user_id=request.user_id,
             source=request.source,
-            allow_manual_trigger=self.allow_manual_trigger,
             rerun_start_time=request.rerun_start_time,
             rerun_end_time=request.rerun_end_time,
             auto_run=request.auto_run,

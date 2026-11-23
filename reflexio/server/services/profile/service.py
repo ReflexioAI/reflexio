@@ -72,7 +72,6 @@ class ProfileGenerationServiceConfig:
         request_id: The request ID
         source: Source of the interactions (triggering source)
         existing_data: Existing profiles for the user
-        allow_manual_trigger: Whether to allow extractors with manual_trigger=True
         output_pending_status: Whether to output profiles with PENDING status
         rerun_start_time: Optional start time filter for rerun flows (Unix timestamp)
         rerun_end_time: Optional end time filter for rerun flows (Unix timestamp)
@@ -83,7 +82,6 @@ class ProfileGenerationServiceConfig:
     request_id: str
     source: str | None = None
     existing_data: Any = None
-    allow_manual_trigger: bool = False
     output_pending_status: bool = False
     rerun_start_time: int | None = None
     rerun_end_time: int | None = None
@@ -111,7 +109,7 @@ class ProfileGenerationService(
         self,
         llm_client: LiteLLMClient,
         request_context: RequestContext,
-        allow_manual_trigger: bool = False,
+        *,
         output_pending_status: bool = False,
     ) -> None:
         """
@@ -120,11 +118,9 @@ class ProfileGenerationService(
         Args:
             llm_client: Unified LLM client supporting both OpenAI and Claude
             request_context: Request context with storage, configurator, and org_id
-            allow_manual_trigger: Whether to allow extractors with manual_trigger=True
             output_pending_status: Whether to output profiles with PENDING status (for rerun)
         """
         super().__init__(llm_client=llm_client, request_context=request_context)
-        self.allow_manual_trigger = allow_manual_trigger
         self.output_pending_status = output_pending_status
 
     def _load_generation_service_config(
@@ -155,7 +151,6 @@ class ProfileGenerationService(
             request_id=generation_request_id,
             source=request.source,
             existing_data=existing_profiles,
-            allow_manual_trigger=self.allow_manual_trigger,
             output_pending_status=self.output_pending_status,
             rerun_start_time=request.rerun_start_time,
             rerun_end_time=request.rerun_end_time,

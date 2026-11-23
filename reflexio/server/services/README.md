@@ -31,7 +31,7 @@ strings before deleting old import paths in the same PR.
 | `search_metering_worker.py` | Bounded process-local search-metering queue. Four daemon workers emit `search_request` and `learning_applied` after the response path, with fail-open drops, a five-second shutdown drain, and trace-linked `search.metering` transactions; persistence requires a registered usage recorder. |
 | `base_generation_service.py` + `base_generation/` | `BaseGenerationService` stable import surface plus mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing. Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
-| `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by source / `allow_manual_trigger` / names; per-extractor stride + window + bookmark handling. |
+| `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by request source; per-kind window, automatic cadence and bookmark handling. |
 | `deduplication_utils.py`, `service_utils.py`, `embedding_text.py` | LLM dedup helpers (used by `ProfileConsolidator` + `PlaybookConsolidator`), message construction / JSON extraction / response logging, embedding text builders. |
 
 ### Generation Services

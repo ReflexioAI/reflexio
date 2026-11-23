@@ -1,7 +1,9 @@
 """Current geometry selectors cannot rewrite frozen v1 job/hash identities."""
 
+import json
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +24,86 @@ from reflexio.server.services.storage.storage_base import (
     AgentRunStatus,
     build_scope_hash,
 )
+
+_PROFILE_V16 = json.loads(
+    (
+        Path(__file__).resolve().parents[2]
+        / "fixtures/profile_execution_v16_contract.json"
+    ).read_text()
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", _PROFILE_V16["cases"], ids=lambda case: case["id"])
+def test_retired_profile_admission_retains_actual_predecessor_snapshot_and_lookup(case):
+    assert _PROFILE_V16["source_commit"] == "d6b0091d27332d81d3edbeeaf7a314fb235edb81"
+    frozen = deepcopy(case["snapshot"])
+    before = deepcopy(frozen)
+    original_hash = case["original_sha256"]
+    assert build_scope_hash(frozen) == original_hash
+    parsed = ProfileExtractorConfig.model_validate(
+        effective_frozen_extractor_config(frozen, extractor_kind="profile")
+    )
+    continued = snapshot_extractor_config(parsed, frozen=frozen)
+    assert continued == before == frozen
+    assert matches_frozen_extractor_config(
+        frozen, continued, extractor_kind="profile", original_hash=original_hash
+    )
+    current = {
+        key: value for key, value in continued.items() if key != "manual_trigger"
+    }
+    assert matches_frozen_extractor_config(
+        frozen, current, extractor_kind="profile", original_hash=original_hash
+    )
+    assert (
+        frozen_extractor_config_identity(parsed, frozen)
+        == case["prior_answer_identity"]
+    )
+    assert "manual_trigger" not in snapshot_extractor_config(parsed)
+    manual = frozen["manual_trigger"]
+    assert not matches_frozen_extractor_config(
+        frozen,
+        {**continued, "manual_trigger": not manual},
+        extractor_kind="profile",
+        original_hash=original_hash,
+    )
+    assert not matches_frozen_extractor_config(
+        {**frozen, "manual_trigger": not manual},
+        continued,
+        extractor_kind="profile",
+        original_hash=original_hash,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("manual", [None, "false", 0, {}, []])
+def test_historical_profile_mode_projection_refuses_unwitnessed_shape(manual):
+    current = ProfileExtractorConfig(extraction_definition_prompt="Synthetic policy")
+    frozen = {**snapshot_extractor_config(current), "manual_trigger": manual}
+    with pytest.raises(ValueError, match="manual_trigger"):
+        effective_frozen_extractor_config(frozen, extractor_kind="profile")
+    with pytest.raises(ValueError, match="manual_trigger"):
+        snapshot_extractor_config(current, frozen=frozen)
+
+
+@pytest.mark.unit
+def test_profile_mode_retirement_does_not_hide_unknown_frozen_policy():
+    current = ProfileExtractorConfig(extraction_definition_prompt="Synthetic policy")
+    frozen = {
+        **snapshot_extractor_config(current),
+        "manual_trigger": False,
+        "unknown": "retain",
+    }
+    assert (
+        effective_frozen_extractor_config(frozen, extractor_kind="profile")["unknown"]
+        == "retain"
+    )
+    assert not matches_frozen_extractor_config(
+        frozen,
+        snapshot_extractor_config(current),
+        extractor_kind="profile",
+        original_hash=build_scope_hash(frozen),
+    )
 
 
 @pytest.mark.parametrize("kind", ["profile", "playbook"])

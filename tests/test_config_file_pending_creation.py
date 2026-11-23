@@ -9,6 +9,7 @@ from reflexio.config_env import StoredConfigurationError
 from reflexio.config_file import (
     EXTRACTION_WINDOW_POLICY_VERSION,
     FILE_FORMAT_VERSION,
+    PROFILE_EXECUTION_POLICY_VERSION,
     LocalConfigFile,
 )
 from reflexio.models.config_schema import validate_stored_config
@@ -99,6 +100,10 @@ def test_full_replacement_cannot_silently_relabel_supplied_historical_envelope(
         assert path.read_bytes() == original
     elif version < EXTRACTION_WINDOW_POLICY_VERSION:
         with pytest.raises(StoredConfigurationError, match="generation15"):
+            owner.publish_document(document)
+        assert path.read_bytes() == original
+    elif version < PROFILE_EXECUTION_POLICY_VERSION:
+        with pytest.raises(StoredConfigurationError, match="generation17"):
             owner.publish_document(document)
         assert path.read_bytes() == original
     else:

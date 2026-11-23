@@ -4,6 +4,7 @@ from copy import deepcopy
 
 import pytest
 
+from reflexio.config_migration import canonicalize_config_document
 from reflexio.extraction_window_migration import (
     convert_canonical_legacy_extraction_windows,
 )
@@ -118,17 +119,16 @@ def test_persisted_policy_does_not_enroll_manual_or_filtered_work_in_automatic_c
         if manual_trigger is None
         else ProfileExtractorConfig(
             extraction_definition_prompt="Synthetic profile policy",
-            manual_trigger=manual_trigger,
         )
     )
     config = Config(
         storage_config=None,
         profile_extractor_config=extractor,
         profile_window_size=4,
-        profile_stride_size=8,
+        profile_stride_size=0 if manual_trigger else 8,
     )
     window = get_extractor_window_params(config, "profile")
-    assert window == (4, 8)
+    assert window == (4, 0 if manual_trigger else 8)
     with pytest.raises(ValueError):
         window.require_automatic()
 
@@ -149,14 +149,12 @@ def test_historical_small_override_remains_readable_and_persistable(tmp_path):
             "manual_trigger": False,
         },
     }
-    current = Config.model_validate(
-        convert_canonical_legacy_extraction_windows(historical)
-    )
+    current = Config.model_validate(canonicalize_config_document(historical))
     storage = LocalFileConfigStorage("small-window", base_dir=str(tmp_path))
     storage.save_config(current)
     loaded = storage.load_config()
     assert loaded is not None and loaded.profile_extractor_config is not None
-    assert loaded.profile_extractor_config.manual_trigger is False
+    assert "manual_trigger" not in loaded.profile_extractor_config.model_dump()
     assert get_extractor_window_params(loaded, "profile") == (2, 8)
     assert get_extractor_window_params(loaded, "playbook") == (42, 3)
     with pytest.raises(ValueError):

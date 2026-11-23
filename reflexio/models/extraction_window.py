@@ -20,6 +20,11 @@ class ExtractionWindow(NamedTuple):
     window_size: int
     stride_size: int
 
+    @property
+    def automatic(self) -> bool:
+        """Zero cadence admits no new automatic work; manual width is unchanged."""
+        return self.stride_size > 0
+
     def require_automatic(self) -> None:
         if not 1 <= self.stride_size <= self.window_size:
             raise ValueError(
