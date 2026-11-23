@@ -304,25 +304,26 @@ def _admissions(
             blockers.add("processed_admission_coverage_unproven")
         coverage.clear()
 
+    # Request shells never entered durable intake, even when created today.
+    # Exclude them before keyset paging so non-intake cannot exhaust its cap.
+    # Invalid keys stay visible to _pages; malformed JSON is not SQL NULL.
+    intake_scope = (
+        f"{db.project_filter()} AND (r.user_id IS NULL OR r.request_id IS NULL OR "
+        "r.learning_admission IS NOT NULL OR "
+        f"EXISTS(SELECT 1 FROM {db.table('interactions')} i WHERE {input_scope} "
+        "AND i.ingestion_seq IS NOT NULL))"
+    )
     for row in _pages(
         db,
         "requests",
         f"r.user_id,r.request_id,r.learning_admission,{stats},"
-        "r.learning_admission IS NULL AS admission_absent,"
         f"(SELECT MAX(u.highwater) FROM {db.table('learning_work')} u WHERE u.org_id=? AND u.user_id=r.user_id) AS highwater",
-        db.project_filter(),
-        (project_id,),
+        intake_scope,
+        (project_id, project_id),
         ("r.user_id", "r.request_id"),
         prefix_params=(project_id,) * 4 + (org_id,),
     ):
         counts["admissions"] += 1
-        # A SQL-NULL admission with no sequenced inputs has never entered
-        # durable extraction. This also covers a newly created request shell;
-        # age/source version is irrelevant. This grants no execution/output
-        # authority: their independent source checks above remain unchanged.
-        # JSON null/malformed admission and foreign inputs remain strict.
-        if row["admission_absent"] and row["distinct_n"] == 0:
-            continue
         try:
             admission = decoded(row["learning_admission"])
         except (ValueError, TypeError):

@@ -162,7 +162,7 @@ def test_unadmitted_request_and_unsequenced_inputs_are_not_durable_intake(
             assert storage._inputs(db, "user", kind, 0, 10) == []
     result = derive(storage)
     assert result.ready, result.blockers
-    assert result.counts["admissions"] == 1
+    assert result.counts["admissions"] == 0
     assert result.counts["queued_admissions"] == 0
 
 
@@ -311,3 +311,28 @@ def test_retained_source_and_cursor_still_require_allocation_bounds(storage, cas
         if case == "below-cursor"
         else "org_work_source_tail_unproven"
     ) in result.blockers
+
+
+@pytest.mark.parametrize("nonintake", [True, False])
+def test_nonintake_is_excluded_before_the_unchanged_page_limit(
+    storage, monkeypatch, nonintake
+):
+    monkeypatch.setattr(
+        "reflexio.server.services.storage.storage_base.transition_closure._MAX_PAGES", 2
+    )
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed(db, storage.org_id, "")
+        for index in range(201):
+            db.query(
+                f"INSERT INTO {db.table('requests')}(request_id,user_id,created_at,session_id,learning_admission) "
+                "VALUES(?,'user','2026-01-01','session',?)",
+                (f"shell-{index:04}", None if nonintake else "{}"),
+            )
+    result = derive(storage)
+    if nonintake:
+        assert result.ready, result.blockers
+        assert result.counts["admissions"] == 1
+        assert result.counts["queued_admissions"] == 1
+    else:
+        assert not result.ready
+        assert "observation_limit_reached" in result.blockers
