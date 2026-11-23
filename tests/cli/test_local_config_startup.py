@@ -15,6 +15,10 @@ from reflexio.config_file import LocalConfigFile
 
 @pytest.fixture
 def saved_local_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    env_file = tmp_path / "launch.env"
+    env_file.touch()
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(env_file))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("REFLEXIO_LOG_DIR", str(tmp_path))
@@ -80,6 +84,7 @@ def test_occupied_backend_never_prepares_when_pid_tools_cannot_see_it(
     assert not (saved_local_config.parent / ".config-migrations").exists()
 
 
+@pytest.mark.parametrize("manual", [False, True])
 @pytest.mark.parametrize("tagged_sqlite", [False, True])
 @pytest.mark.parametrize("explicit_storage", [None, "sqlite"])
 def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
@@ -87,11 +92,15 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     monkeypatch,
     explicit_storage,
     tagged_sqlite,
+    manual,
 ):
+    original = json.loads(saved_local_config.read_text())
+    # Keep the frozen generation-zero corpus literal; exercise its old mode
+    # through the real CLI owner before the process-launch stub.
+    original["profile_extractor_config"]["manual_trigger"] = manual
     if not tagged_sqlite:
-        original = json.loads(saved_local_config.read_text())
         original["storage_config"].pop("type")
-        saved_local_config.write_text(json.dumps(original))
+    saved_local_config.write_text(json.dumps(original))
     before = decode_config_document(saved_local_config.read_text())
     launches = []
     monkeypatch.setattr(
@@ -146,9 +155,10 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
         assert extractor.pop("window_size_override") is None
         assert extractor.pop("stride_size_override") is None
         expected[kind] = extractor
+    assert expected["profile_extractor_config"].pop("manual_trigger") is manual
     expected.update(
         profile_window_size=11,
-        profile_stride_size=3,
+        profile_stride_size=0 if manual else 3,
         playbook_window_size=11,
         playbook_stride_size=3,
     )
