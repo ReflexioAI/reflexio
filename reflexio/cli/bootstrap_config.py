@@ -17,6 +17,7 @@ from reflexio.config_env import (
     POSTGRES_POOL_ENV_FIELDS,
     PostgresPoolDefaults,
     reject_postgres_pool_conflicts,
+    reject_postgres_schema_conflict,
     resolve_data_db_url,
     resolve_postgres_pool_defaults,
 )
@@ -137,7 +138,8 @@ def save_storage_to_config(
     selections retain their historical environment policy once; current files
     own their canonical budgets. Selecting SQLite again preserves its database
     path. Re-selecting either remote adapter for the exact same primary DSN
-    retains its saved schema unless a nonblank namespace is explicitly selected.
+    retains its saved schema. A matching obsolete environment namespace only
+    verifies that selection; a conflicting assignment cannot replace it.
     Unrelated raw fields, including extension fields, are preserved.
 
     Args:
@@ -176,10 +178,8 @@ def save_storage_to_config(
                 )
         case "postgres":
             db_url = os.environ.get("DATA_DB_URL", "").strip()
-            schema = os.environ.get("REFLEXIO_POSTGRES_SCHEMA", "").strip()
             postgres_kwargs: dict[str, Any] = {
                 "db_url": db_url,
-                "schema": schema or None,
                 "read_db_url": os.environ.get(
                     "REFLEXIO_POSTGRES_READ_DB_URL", ""
                 ).strip()
@@ -222,6 +222,13 @@ def save_storage_to_config(
             # namespace. Do not carry it across an actual primary retarget.
             selected = selected.model_copy(update={"schema_name": existing.schema_name})
         if isinstance(selected, StorageConfigPostgres):
+            if reject_postgres_schema_conflict(
+                os.environ, schema_name=selected.schema_name
+            ):
+                logger.warning(
+                    "REFLEXIO_POSTGRES_SCHEMA no longer selects a namespace; "
+                    "the canonical storage_config.schema is unchanged."
+                )
             if (
                 isinstance(existing, StorageConfigPostgres)
                 and selected.db_url == existing.db_url

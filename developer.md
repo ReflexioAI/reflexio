@@ -77,12 +77,15 @@ uv run reflexio services start --storage sqlite    # local SQLite (default)
 uv run reflexio services start --storage supabase  # Supabase PostgreSQL
 ```
 
-Repeated remote backend selection preserves a saved `storage_config.schema` when
-`DATA_DB_URL` exactly matches the saved primary DSN and no nonblank namespace is
-explicitly supplied. This applies across the PostgreSQL adapters. An explicit
-`REFLEXIO_POSTGRES_SCHEMA` still selects the namespace for native PostgreSQL;
-selecting a different primary uses the new target's namespace/default instead of
-inheriting the former database's schema. Native PostgreSQL also retains its saved
+Repeated remote backend selection preserves the canonical
+`storage_config.schema` when `DATA_DB_URL` exactly matches the saved primary
+DSN, including when switching between the PostgreSQL adapters. Select a custom
+namespace through that typed field using the deployment's validated config
+writer. `REFLEXIO_POSTGRES_SCHEMA` no longer writes it: a nonblank matching
+legacy assignment only warns; a conflict refuses before publication. Selecting
+a different primary does not inherit the former database's schema. Existing
+custom namespaces remain supported, and no environment file is rewritten.
+Native PostgreSQL also retains its saved
 `storage_config.read_db_url` when the primary and effective namespace are unchanged
 and no nonblank replica override is supplied. An explicit namespace retarget does
 not inherit the former namespace's replica. Existing files use the normal locked
