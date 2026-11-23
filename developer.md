@@ -60,6 +60,22 @@ SQLite metadata imports use shared failure types without importing provider
 capacity dispatch. This separation does not grant retained datasets authority or
 make normal storage construction a maintenance upgrade operation.
 
+## Automatic profile admission
+
+`profile_stride_size=0` selects manual-only profile extraction. Positive cadence
+keeps its exact configured value. The separate extractor `manual_trigger` field
+is retired and rejected by current configuration. Manual generation and reruns
+use `auto_run=False`, retain their configured history width, and skip automatic
+cadence; force does not enable new automatic work while cadence is zero.
+
+Local generation17 preparation uses the existing lock, publication admission and
+private originals. Stop old writers before conversion. Historical manual-only
+policy maps to zero after window conversion; invalid dormant cadence refuses.
+Choose a positive cadence explicitly when re-enabling. Frozen snapshots retain
+their authenticated original representation, rather than accepting old fields
+in current runtime configuration. Incompatible image-only rollback is unsafe;
+use the existing unchanged-original recovery fences or forward repair.
+
 ## Services
 
 Two services, started together via `./run_services.sh`:

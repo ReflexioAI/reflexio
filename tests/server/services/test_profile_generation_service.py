@@ -607,7 +607,6 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         profile_generation_service_rerun = ProfileGenerationService(
             llm_client=profile_generation_service.client,
             request_context=profile_generation_service.request_context,
-            allow_manual_trigger=True,
             output_pending_status=True,
         )
 
@@ -654,7 +653,6 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
         profile_generation_service = ProfileGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -711,7 +709,6 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
         profile_generation_service = ProfileGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -753,7 +750,6 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         profile_generation_service = ProfileGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -769,6 +765,9 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         )
         profile_generation_service.configurator.set_config_by_name(
             "profile_window_size", 100
+        )
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_stride_size", 0
         )
 
         # First, add some interactions to storage
@@ -831,7 +830,6 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         profile_generation_service = ProfileGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 

@@ -4,6 +4,7 @@ Current schemas own canonical validation. Historical rewrite rules live here so
 explicit upgrades remain usable after runtime compatibility hooks are removed.
 """
 
+from copy import deepcopy
 from enum import StrEnum
 from typing import Annotated, Any
 
@@ -18,6 +19,43 @@ _LEGACY_POLICY_BOOL = TypeAdapter(bool)
 _LEGACY_RETRIEVAL_POOL = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_AUDIT_RETENTION_DAYS = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_PENDING_LIFETIME = TypeAdapter(Annotated[int, Field(gt=0)])
+_LEGACY_PROFILE_STRIDE = TypeAdapter(Annotated[int, Field(gt=0)])
+
+
+def retire_profile_manual_trigger(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project a source-qualified old workspace's automatic profile policy.
+
+    The storage owner supplies the historical generation and preserves the
+    original. This function never stamps, writes or admits a current document.
+    Manual extraction consumes the history width, not automatic cadence. A
+    historical manual-only workspace therefore maps to zero cadence, without
+    installing a replacement positive value or a hidden re-enable setting.
+    """
+    if "profile_stride_size" in payload:
+        try:
+            _LEGACY_PROFILE_STRIDE.validate_python(payload["profile_stride_size"])
+        except ValidationError:
+            raise ConfigurationMigrationError(
+                "Invalid historical profile_stride_size"
+            ) from None
+    extractor = payload.get("profile_extractor_config")
+    if extractor is not None and not isinstance(extractor, dict):
+        raise ConfigurationMigrationError("Invalid historical profile_extractor_config")
+    result = deepcopy(payload)
+    if extractor is None:
+        return result
+    try:
+        manual = _LEGACY_POLICY_BOOL.validate_python(
+            extractor.get("manual_trigger", False)
+        )
+    except ValidationError:
+        raise ConfigurationMigrationError(
+            "Invalid obsolete profile_extractor_config.manual_trigger"
+        ) from None
+    result["profile_extractor_config"].pop("manual_trigger", None)
+    if manual:
+        result["profile_stride_size"] = 0
+    return result
 
 
 def retire_storage_queue_policy(storage: dict[str, Any]) -> dict[str, Any]:
@@ -542,6 +580,9 @@ def canonicalize_config_document(payload: dict[str, Any]) -> dict[str, Any]:
                 )
         else:
             converted = convert_canonical_legacy_extraction_windows(converted)
+        profile = converted.get("profile_extractor_config")
+        if isinstance(profile, dict) and "manual_trigger" in profile:
+            converted = retire_profile_manual_trigger(converted)
         raw_storage = converted.get("storage_config")
         if isinstance(raw_storage, dict):
             storage = dict(raw_storage)

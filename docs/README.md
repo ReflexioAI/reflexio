@@ -7,7 +7,7 @@ Description: Interactive Next.js API explorer for the OSS server and Python SDK.
 - **Method pages**: `app/[group]/[method]/page.tsx` — grouped API/SDK method reference.
 - **Registry**: `lib/methods/registry.ts`, `lib/methods/` — method definitions and examples by domain.
 - **Execution**: `lib/execution/api-executor.ts`, `code-generator.ts`, `code-parser.ts`, `default-params.ts` — request execution and example conversion (all under `lib/execution/`).
-- **Configuration UI**: `app/configure/page.tsx`, `lib/config-schema.ts`.
+- **Configuration UI**: `app/configure/page.tsx`, `lib/config-schema.ts`. Per-extractor window pairs are explicit; profile cadence0 selects manual-only mode, and presets preserve that choice.
 - **Shared rendering**: `components/`, `app/layout.tsx`, `app/providers.tsx`.
 - **Backend routing**: `next.config.ts`, `lib/constants.ts`.
 

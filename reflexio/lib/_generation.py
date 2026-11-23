@@ -157,7 +157,6 @@ class GenerationMixin(ReflexioBase):
         service = service_cls(
             llm_client=self.llm_client,
             request_context=self.request_context,
-            allow_manual_trigger=True,
             output_pending_status=output_pending,
         )
         return getattr(service, run_method)(request)

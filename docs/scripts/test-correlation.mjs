@@ -55,20 +55,23 @@ config.agent_success_config = {
 };
 config.profile_extractor_config = configSchema.defaultProfileExtractor();
 config.profile_extractor_config.extraction_definition_prompt = "Keep";
-config.profile_extractor_config.window_size_override = 23;
+config.profile_window_size = 23;
+config.profile_stride_size = 0;
 const serialized = configSchema.serializeConfig(config);
 assert.equal("extraction_preset" in serialized, false);
 assert.equal("extraction_preset" in configSchema.defaultConfig(), false);
-for (const geometry of Object.values(configSchema.PRESET_VALUES)) {
+for (const [preset, geometry] of Object.entries(configSchema.PRESET_VALUES)) {
 	const edited = configSchema.hydrateConfig({
 		...config,
 		extraction_preset: "stale-browser-state",
 	});
-	[edited.window_size, edited.stride_size] = geometry;
+	Object.assign(edited, configSchema.applyExtractionPreset(edited, preset));
 	const saved = configSchema.serializeConfig(edited);
 	assert.equal("extraction_preset" in saved, false);
-	assert.equal(saved.window_size, geometry[0]);
-	assert.equal(saved.stride_size, geometry[1]);
+	assert.equal(saved.profile_window_size, geometry[0]);
+	assert.equal(saved.profile_stride_size, 0);
+	assert.equal(saved.playbook_window_size, geometry[0]);
+	assert.equal(saved.playbook_stride_size, geometry[1]);
 }
 
 for (const key of ["window_size_override", "stride_size_override", "batch_size_override"]) {
@@ -79,7 +82,19 @@ assert.equal(serialized.agent_success_config.sampling_rate, 0.25);
 assert.equal(serialized.agent_success_config.evaluation_only_sampling_rate, 0.75);
 assert.equal(serialized.agent_success_config.retrieved_learning_sampling_rate, 0.5);
 assert.equal(serialized.agent_success_config.request_sources_enabled[0], "api");
-assert.equal(serialized.profile_extractor_config.window_size_override, 23);
+assert.equal(serialized.profile_window_size, 23);
+assert.equal(serialized.profile_stride_size, 0);
+assert.equal("manual_trigger" in serialized.profile_extractor_config, false);
+for (const key of ["manual_trigger", "window_size_override", "stride_size_override"]) {
+	assert.throws(
+		() =>
+			configSchema.hydrateConfig({
+				...config,
+				profile_extractor_config: { ...config.profile_extractor_config, [key]: true },
+			}),
+		/retired extraction settings/,
+	);
+}
 
 // A subset editor must preserve the fetched snapshot through full replacement.
 const fetched = {

@@ -58,6 +58,15 @@ def test_explicit_upgrade_preserves_reviewed_policy(case):
         expected[f"{kind}_stride_size"] = (
             stride if child_stride is None else child_stride
         )
+    # The separate historical manual switch is admission policy, not a
+    # surviving runtime alias. Preserve the frozen corpus and derive its off
+    # cadence independently of the installed converter.
+    profile = expected.get("profile_extractor_config")
+    if isinstance(profile, dict) and "manual_trigger" in profile:
+        manual = profile.pop("manual_trigger")
+        assert type(manual) is bool
+        if manual:
+            expected["profile_stride_size"] = 0
     assert converted == expected
     assert source == case["input"]
     assert validate_stored_config(converted) == validate_stored_config(expected)

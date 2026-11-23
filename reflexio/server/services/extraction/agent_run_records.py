@@ -15,7 +15,10 @@ from reflexio.extraction_window_migration import (
 )
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction
-from reflexio.models.config_schema import UserPlaybookExtractorConfig
+from reflexio.models.config_schema import (
+    ProfileExtractorConfig,
+    UserPlaybookExtractorConfig,
+)
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
     AgentRunRecord,
@@ -96,6 +99,12 @@ def source_interaction_digest(interaction: Interaction) -> str:
     )
 
 
+def _validate_frozen_profile_admission(snapshot: dict[str, Any]) -> None:
+    """A saved typed profile snapshot materialized this retired switch as bool."""
+    if "manual_trigger" in snapshot and type(snapshot["manual_trigger"]) is not bool:
+        raise ValueError("Invalid historical profile manual_trigger")
+
+
 def snapshot_extractor_config(
     config: BaseModel, *, frozen: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -106,6 +115,11 @@ def snapshot_extractor_config(
     historical continuation retains its witnessed value for hashes/lookups.
     """
     snapshot = config.model_dump(mode="json")
+    if isinstance(config, ProfileExtractorConfig) and frozen is not None:
+        _validate_frozen_profile_admission(frozen)
+        if "manual_trigger" in frozen:
+            # Preserve witnessed v1 bytes only; new work has no separate mode.
+            snapshot["manual_trigger"] = frozen["manual_trigger"]
     # The deployed v1 job layout has these two inert slots. Current selection
     # lives in the separately recorded per-kind window policy; these nulls are
     # wire metadata, never a fallback value or a supported configuration alias.
@@ -133,6 +147,11 @@ def effective_frozen_extractor_config(
     """
     effective = project_legacy_extractor_window_metadata(frozen)
     effective.pop("extractor_name", None)
+    if extractor_kind == "profile":
+        _validate_frozen_profile_admission(effective)
+        # Admission mode never changes the prompt or authorizes new work.
+        # The caller authenticates the original snapshot and its source scope.
+        effective.pop("manual_trigger", None)
     if extractor_kind == "playbook":
         effective.pop("context_prompt", None)
     dedup = effective.get("deduplication_config")
@@ -158,6 +177,14 @@ def matches_frozen_extractor_config(
         comparison.pop("context_prompt", None)
     if build_scope_hash(frozen) != original_hash:
         return False
+    if extractor_kind == "profile" and "manual_trigger" in comparison:
+        if (
+            type(comparison["manual_trigger"]) is not bool
+            or "manual_trigger" not in frozen
+            or comparison["manual_trigger"] is not frozen["manual_trigger"]
+        ):
+            return False
+        comparison.pop("manual_trigger")
     for name in LEGACY_EXTRACTOR_WINDOW_FIELDS:
         if name in comparison:
             if name not in frozen or build_scope_hash(
@@ -214,6 +241,9 @@ def frozen_extractor_config_identity(config: BaseModel, frozen: dict[str, Any]) 
         ):
             # Reconstruct only the witnessed old lookup key, never live policy.
             fields.append(f"context_prompt={frozen['context_prompt']!r}")
+    if isinstance(config, ProfileExtractorConfig) and "manual_trigger" in frozen:
+        _validate_frozen_profile_admission(frozen)
+        fields.append(f"manual_trigger={frozen['manual_trigger']!r}")
     fields.extend(
         f"{name}={frozen[name]!r}"
         for name in LEGACY_EXTRACTOR_WINDOW_FIELDS
@@ -254,6 +284,12 @@ def matches_frozen_window_binding(
         projected = deepcopy(frozen_config)
         if "extractor_name" not in saved:
             projected.pop("extractor_name", None)
+        if prior.binding.extractor_kind == "profile" and "manual_trigger" not in saved:
+            try:
+                _validate_frozen_profile_admission(projected)
+            except ValueError:
+                return False
+            projected.pop("manual_trigger", None)
         if prior.binding.extractor_kind == "playbook":
             old_dedup = projected.get("deduplication_config")
             saved_dedup = saved.get("deduplication_config")

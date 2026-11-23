@@ -771,7 +771,7 @@ class TestLoadGenerationServiceConfig:
         assert config.user_id == "user_1"
         assert config.request_id == "req_1"
         assert config.source == "api"
-        assert config.allow_manual_trigger is False
+        assert config.auto_run is True
         assert config.output_pending_status is False
         request_context.storage.get_user_profile.assert_called_once_with("user_1")
 

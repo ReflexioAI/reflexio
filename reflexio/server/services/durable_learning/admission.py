@@ -39,15 +39,13 @@ def extraction_admission(
             admission[kind] = {"eligible": False}
             continue
         sources = extractor.request_sources_enabled
+        window = get_extractor_window_params(config, kind)
         eligible = (
-            eligible
-            and not getattr(extractor, "manual_trigger", False)
-            and (not sources or request.source in sources)
+            eligible and window.automatic and (not sources or request.source in sources)
         )
         if not eligible:
             admission[kind] = {"eligible": False}
             continue
-        window = get_extractor_window_params(config, kind)
         window.require_automatic()
         width, stride = window
         admission[kind] = {

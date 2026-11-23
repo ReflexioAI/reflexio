@@ -943,7 +943,6 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
         playbook_generation_service = PlaybookGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -1003,7 +1002,6 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
         playbook_generation_service = PlaybookGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -1050,7 +1048,6 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         playbook_generation_service = PlaybookGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -1115,7 +1112,6 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         playbook_generation_service = PlaybookGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -1207,7 +1203,6 @@ def test_run_manual_regular_output_pending_status_false(mock_chat_completion):
         playbook_generation_service = PlaybookGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 

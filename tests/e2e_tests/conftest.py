@@ -561,10 +561,10 @@ def reflexio_instance_manual_profile(
 
     This config has:
     - window_size set (required for manual generation)
-    - manual_trigger=True on the extractor
+    - profile_stride_size=0 keeps publishing manual-only
     """
     config = Config(
-        profile_stride_size=_E2E_STRIDE_SIZE,
+        profile_stride_size=0,
         playbook_stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
         storage_config=sqlite_storage_config,
@@ -573,7 +573,6 @@ def reflexio_instance_manual_profile(
         playbook_window_size=10,  # Required for manual generation
         profile_extractor_config=ProfileExtractorConfig.model_validate(
             {
-                "extractor_name": "manual_trigger_extractor",
                 "context_prompt": """
 Conversation between sales agent and user, extract any information from the interaction if contains any information listed under definition
 """,
@@ -583,7 +582,6 @@ name, age, intent of the conversations
                 "tagging_definition_prompt": """
 choice of ['basic_info', 'conversation_intent']
 """,
-                "manual_trigger": True,  # Required for manual generation
             }
         ),
     )

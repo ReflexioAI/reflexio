@@ -28,7 +28,8 @@ STORAGE_QUEUE_BUDGET_VERSION = 14
 EXTRACTION_WINDOW_POLICY_VERSION = 15
 # Generation 15 was written both before and after evaluator support.
 EVALUATION_MODEL_POLICY_VERSION = 16
-FILE_FORMAT_VERSION = EVALUATION_MODEL_POLICY_VERSION
+PROFILE_EXECUTION_POLICY_VERSION = 17
+FILE_FORMAT_VERSION = PROFILE_EXECUTION_POLICY_VERSION
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -115,6 +116,14 @@ def _require_prepared_extraction_windows(data: dict[str, Any], version: int) -> 
     ):
         raise StoredConfigurationError(
             "Current extraction-window files cannot contain historical selectors."
+        )
+
+
+def _require_prepared_profile_execution(version: int) -> None:
+    if version < PROFILE_EXECUTION_POLICY_VERSION:
+        raise StoredConfigurationError(
+            "Saved automatic-profile policy requires file generation17 preparation "
+            "with old writers stopped before runtime reads."
         )
 
 
@@ -247,6 +256,7 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
         canonicalize_lineage_retention_policy,
         canonicalize_retrieval_floor_policy,
         retire_playbook_consolidation_strategy,
+        retire_profile_manual_trigger,
     )
 
     if version == FILE_FORMAT_VERSION:
@@ -302,6 +312,8 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
         )
 
         canonical = convert_canonical_legacy_extraction_windows(canonical)
+    if version < PROFILE_EXECUTION_POLICY_VERSION:
+        canonical = retire_profile_manual_trigger(canonical)
     return canonical
 
 
@@ -370,6 +382,7 @@ class LocalConfigFile:
         _reject_ambiguous_output_policy(document, metadata.get("version", 0))
         _reject_ambiguous_evaluation_model(document, metadata.get("version", 0))
         _require_prepared_extraction_windows(document, metadata.get("version", 0))
+        _require_prepared_profile_execution(metadata.get("version", 0))
         return document
 
     def read_document_for_conversion(self) -> dict[str, Any]:
@@ -386,6 +399,13 @@ class LocalConfigFile:
             _require_prepared_extraction_windows(document, version)
         if version == FILE_FORMAT_VERSION:
             self._validate(document)
+        if version < PROFILE_EXECUTION_POLICY_VERSION:
+            from reflexio.config_migration import retire_profile_manual_trigger
+
+            # Validate dormant historical cadence before losing the physical
+            # generation. Logical conversion resolves old geometry before it
+            # projects the actual mode; do not install zero before that step.
+            retire_profile_manual_trigger(document)
         # A lifetime existed before consent became lifetime-owned. Preserve
         # its historical opt-out while physical generation is still available;
         # the subsequent logical canonicalizer cannot recover that evidence.
@@ -410,6 +430,9 @@ class LocalConfigFile:
         )
         _reject_ambiguous_evaluation_model(
             data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
+        )
+        _require_prepared_profile_execution(
+            supplied_metadata.get("version", FILE_FORMAT_VERSION)
         )
         self._validate(data)
         target = self._target()
@@ -444,7 +467,7 @@ class LocalConfigFile:
                     if previous is not None
                     else None,
                     data,
-                    incompatible=source_version < EXTRACTION_WINDOW_POLICY_VERSION,
+                    incompatible=source_version < PROFILE_EXECUTION_POLICY_VERSION,
                 )
             if (
                 self._target() != target
@@ -471,6 +494,7 @@ class LocalConfigFile:
             _require_prepared_pending_creation(data, metadata.get("version", 0))
             _reject_ambiguous_policy(data, metadata.get("version", 0))
             _require_prepared_extraction_windows(data, metadata.get("version", 0))
+            _require_prepared_profile_execution(metadata.get("version", 0))
             self._validate(data)
             edit(data)
             self._validate(data)
@@ -538,7 +562,7 @@ class LocalConfigFile:
                 canonical,
                 # This new file generation must admit the retained dataset
                 # before publishing, including already-prepared generation14.
-                incompatible=version < EXTRACTION_WINDOW_POLICY_VERSION,
+                incompatible=version < PROFILE_EXECUTION_POLICY_VERSION,
             )
             # A current-generation file that still carries the retired optimizer
             # block is rewritten through the backup path, so its saved policy
