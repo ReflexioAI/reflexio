@@ -15,6 +15,10 @@ from reflexio.config_file import LocalConfigFile
 
 @pytest.fixture
 def saved_local_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    env_file = tmp_path / "launch.env"
+    env_file.touch()
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(env_file))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("REFLEXIO_LOG_DIR", str(tmp_path))
