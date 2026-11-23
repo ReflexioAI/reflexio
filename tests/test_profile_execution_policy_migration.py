@@ -11,7 +11,7 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize("manual", [True, "true", 1])
-@pytest.mark.parametrize("stride", [None, 3, "11"])
+@pytest.mark.parametrize("stride", [3, "11"])
 def test_manual_only_remains_off_without_replacing_unrelated_policy(manual, stride):
     original = {
         "profile_stride_size": stride,
@@ -59,7 +59,7 @@ def test_auto_or_absent_extractor_preserves_sparse_custom_cadence(extractor):
 
 
 @pytest.mark.parametrize("manual", [True, False])
-@pytest.mark.parametrize("stride", [0, -1, "invalid", [], 1.5])
+@pytest.mark.parametrize("stride", [None, 0, -1, "invalid", [], 1.5])
 def test_invalid_dormant_stride_is_not_laundered_by_conversion(manual, stride):
     original = {
         "profile_stride_size": stride,

@@ -98,7 +98,7 @@ def test_current_zero_is_preserved_and_old_writer_envelopes_refuse(tmp_path):
 
 def test_old_zero_and_invalid_dormant_cadence_refuse_before_original_or_write(tmp_path):
     path = tmp_path / "config.json"
-    for stride in (0, -1, "invalid"):
+    for stride in (None, 0, -1, "invalid"):
         original = _historical(16, True)
         original["profile_stride_size"] = stride
         raw = encode_config_document(original).encode()

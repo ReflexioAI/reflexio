@@ -31,7 +31,7 @@ def retire_profile_manual_trigger(payload: dict[str, Any]) -> dict[str, Any]:
     historical manual-only workspace therefore maps to zero cadence, without
     installing a replacement positive value or a hidden re-enable setting.
     """
-    if payload.get("profile_stride_size") is not None:
+    if "profile_stride_size" in payload:
         try:
             _LEGACY_PROFILE_STRIDE.validate_python(payload["profile_stride_size"])
         except ValidationError:
