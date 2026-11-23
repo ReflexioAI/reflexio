@@ -28,6 +28,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import (
     Config,
+    LLMConfig,
     RetrievalExperimentConfig,
     RetrievalExperimentRecord,
     StorageConfigSQLite,
@@ -37,6 +38,7 @@ from reflexio.server.services.configurator.base_configurator import BaseConfigur
 from reflexio.server.services.configurator.config_storage import (
     ConfigWriteConflictError,
 )
+from reflexio.server.services.configurator.configurator import DefaultConfigurator
 
 
 class TestHealthEndpoints:
@@ -692,6 +694,21 @@ class TestUpdateUserProfileRoute:
         assert response.status_code == 422
 
 
+_OMIT = object()
+
+
+def _wire_real_configurator(
+    mock_reflexio: MagicMock, existing: Config, tmp_path: Path
+) -> None:
+    """Route config writes through the shared configurator normalization."""
+    mock_reflexio.request_context.configurator = DefaultConfigurator(
+        "evaluator-org", base_dir=str(tmp_path), config=existing
+    )
+    mock_reflexio.set_config.return_value = SetConfigResponse(
+        success=True, msg="Configuration set successfully"
+    )
+
+
 class TestSetConfigRoute:
     """Tests for POST /api/set_config (full replacement semantics)."""
 
@@ -804,6 +821,65 @@ class TestSetConfigRoute:
         assert (
             saved.retrieval_experiment_history == existing.retrieval_experiment_history
         )
+
+    @pytest.mark.parametrize(
+        ("evaluator_write", "expected"),
+        [
+            # An SDK released before the field drops it on the round trip.
+            pytest.param(_OMIT, "anthropic/evaluator", id="older-client-omits"),
+            pytest.param(None, None, id="current-client-clears"),
+            pytest.param("openai/judge", "openai/judge", id="current-client-changes"),
+        ],
+    )
+    def test_full_write_keeps_evaluator_unless_the_client_names_it(
+        self,
+        client,
+        patched_reflexio,
+        mock_reflexio,
+        tmp_path,
+        evaluator_write,
+        expected,
+    ):
+        existing = Config(
+            storage_config=StorageConfigSQLite(),
+            llm_config=LLMConfig(
+                generation_model_name="openai/gpt-4o",
+                evaluation_model_name="anthropic/evaluator",
+            ),
+        )
+        _wire_real_configurator(mock_reflexio, existing, tmp_path)
+        payload = existing.model_dump(mode="json")
+        payload["profile_window_size"] = 25
+        if evaluator_write is _OMIT:
+            del payload["llm_config"]["evaluation_model_name"]
+        else:
+            payload["llm_config"]["evaluation_model_name"] = evaluator_write
+
+        response = client.post("/api/set_config", json=payload)
+
+        assert response.status_code == 200, response.text
+        saved = Config.model_validate(mock_reflexio.set_config.call_args.args[0])
+        assert saved.profile_window_size == 25
+        assert saved.llm_config is not None
+        assert saved.llm_config.generation_model_name == "openai/gpt-4o"
+        assert saved.llm_config.evaluation_model_name == expected
+
+    def test_full_write_without_llm_block_does_not_invent_one(
+        self, client, patched_reflexio, mock_reflexio, tmp_path
+    ):
+        existing = Config(
+            storage_config=StorageConfigSQLite(),
+            llm_config=LLMConfig(evaluation_model_name="anthropic/evaluator"),
+        )
+        _wire_real_configurator(mock_reflexio, existing, tmp_path)
+        payload = existing.model_dump(mode="json")
+        payload["llm_config"] = None
+
+        response = client.post("/api/set_config", json=payload)
+
+        assert response.status_code == 200, response.text
+        saved = Config.model_validate(mock_reflexio.set_config.call_args.args[0])
+        assert saved.llm_config is None
 
 
 class TestUpdateConfigRoute:
@@ -1268,3 +1344,35 @@ class TestUpdateConfigRoute:
         assert agg is not None
         assert agg.min_cluster_size == 2
         assert agg.clustering_similarity == 0.45
+
+    @pytest.mark.parametrize(
+        ("evaluator_write", "expected"),
+        [
+            pytest.param(_OMIT, "anthropic/evaluator", id="older-client-omits"),
+            pytest.param(None, None, id="current-client-clears"),
+            pytest.param("openai/judge", "openai/judge", id="current-client-changes"),
+        ],
+    )
+    def test_llm_patch_keeps_evaluator_unless_the_client_names_it(
+        self,
+        client,
+        patched_reflexio,
+        mock_reflexio,
+        tmp_path,
+        evaluator_write,
+        expected,
+    ):
+        existing = self._existing_config()
+        existing.llm_config = LLMConfig(evaluation_model_name="anthropic/evaluator")
+        _wire_real_configurator(mock_reflexio, existing, tmp_path)
+        llm: dict[str, object] = {"generation_model_name": "openai/gpt-4o"}
+        if evaluator_write is not _OMIT:
+            llm["evaluation_model_name"] = evaluator_write
+
+        with patch("reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"):
+            response = client.post("/api/update_config", json={"llm_config": llm})
+
+        assert response.status_code == 200, response.text
+        merged = mock_reflexio.set_config.call_args.args[0]
+        assert merged.llm_config.generation_model_name == "openai/gpt-4o"
+        assert merged.llm_config.evaluation_model_name == expected

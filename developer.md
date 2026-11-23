@@ -567,6 +567,9 @@ When copying a custom generation default, also set
 `llm_config.evaluation_model_name` to the previously effective evaluation model
 if it was different. This includes a provider-selected evaluation default.
 Otherwise evaluation inherits the configured generation model as before.
+A configuration write whose `llm_config` object omits `evaluation_model_name`,
+such as a round trip through an SDK that predates the field, keeps the saved
+evaluator. Send `"evaluation_model_name": null` to restore inheritance.
 The shipped blank defaults require no migration. Source-package retries keep
 their saved model ladder.
 
