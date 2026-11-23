@@ -246,7 +246,7 @@ def assert_no_publication(native: SimpleNamespace) -> None:
     assert not session_seen_cache.seen("org", "s")
 
 
-def test_default_recency_one_native_snapshot_selectors_before_judge_and_one_final_dto(
+def test_default_recency_one_native_snapshot_keeps_user_anchors_for_joint_judge(
     native,
 ):
     native.agent_indices = [0, 2, 4]
@@ -256,12 +256,12 @@ def test_default_recency_one_native_snapshot_selectors_before_judge_and_one_fina
     native.phase_a.assert_called_once()
     native.phase_b.assert_called_once()
     native.agent.assert_called_once()
-    native.user.assert_called_once()
+    native.user.assert_not_called()
     native.profile.assert_called_once()
     native.dto.assert_called_once()
     assert native.rank.call_count == 3
     assert [c.kwargs["top_k"] for c in native.rank.call_args_list] == [20, 20, 20]
-    assert native.events == ["phase_a", "phase_b", "agent", "user", "profile", "judge"]
+    assert native.events == ["phase_a", "phase_b", "agent", "profile", "judge"]
     assert native.phase_b.call_args.kwargs["top_k"] == 20
     assert native.plan.call_args.args == ("Canonical task",)
     pools = native.plan.call_args.kwargs["pools"]
@@ -269,10 +269,10 @@ def test_default_recency_one_native_snapshot_selectors_before_judge_and_one_fina
         f"p{i}" for i in range(1, 20)
     ]
     assert [p["id"] for p in pools["agent_playbooks"]][:5] == [1, 3, 5, 2, 4]
-    assert [p["id"] for p in pools["user_playbooks"]][:5] == [105, 104, 103, 102, 101]
+    assert [p["id"] for p in pools["user_playbooks"]][:5] == [101, 102, 103, 104, 105]
     assert result.profiles[0] is native.extra_profile
     assert result.agent_playbooks[0] is native.banks["agent_playbooks"][0]
-    assert result.user_playbooks[0] is native.banks["user_playbooks"][4]
+    assert result.user_playbooks[0] is native.banks["user_playbooks"][0]
     wire = native.judge.call_args.args[0]
     assert wire["state"]["request"] == "Canonical task"
     assert "PRIVATE" not in str(wire)
@@ -301,6 +301,7 @@ def test_unsupported_result_caps_preserve_native_count_no_top5_truncation(
 ):
     result = run(native, top_k=top_k)
     assert all(len(getattr(result, kind)) == top_k for kind in KINDS)
+    native.user.assert_called_once()
     native.judge.assert_not_called()
     native.plan.assert_not_called()
 
@@ -318,6 +319,7 @@ def test_unsupported_result_caps_preserve_native_count_no_top5_truncation(
 )
 def test_unsupported_caller_shape_keeps_native_path_without_judge(native, change):
     result = run(native, **change)
+    native.user.assert_called_once()
     assert result.success
     native.judge.assert_not_called()
     native.plan.assert_not_called()
@@ -552,3 +554,12 @@ def test_partial_requested_native_arm_refuses_before_judge_or_publication(native
         run(native)
     native.judge.assert_not_called()
     assert_no_publication(native)
+
+
+def test_judge_off_keeps_registered_legacy_user_selection(native):
+    native.mode = "off"
+    native.user_reverse = True
+    result = run(native, entity_types=["user_playbooks"])
+    native.user.assert_called_once()
+    native.judge.assert_not_called()
+    assert result.user_playbooks[0] is native.banks["user_playbooks"][4]
