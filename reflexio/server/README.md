@@ -1187,3 +1187,9 @@ exclude the unshown expert field. Audited reconciliation renders every turn
 with its expert correction shown and bound as evidence, because it audits
 expert-derived candidates. Prepared overflow presentations keep their own exact
 source spans and bypass ordinary rendering as before.
+
+
+For an eligible Jev unified search, the shared joint selector consumes the native
+USER anchors directly; it does not compose the legacy USER ranking hook first.
+Jev-off and unsupported request/model/floor shapes retain that hook. Eligibility
+continues to use the shared search policy and immutable native retrieval scope.

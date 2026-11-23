@@ -479,19 +479,25 @@ def _run_unified_search(
         )
         selection_span.set_data("input_count", len(native_agents))
         selection_span.set_data("returned_count", len(agent_playbooks))
+    # The joint judge owns selection for its already-admitted native snapshot.
+    # A legacy USER ranking prepass would redefine the anchors it must preserve.
     with profile_step("search.user_selection") as selection_span:
         native_users = user_playbooks or []
-        user_playbooks = select_user_playbooks(
-            items=native_users,
-            storage=storage,
-            request=request,
-            org_id=org_id,
-            degraded=degraded,
-            created_after=window_start,
-            created_before=window_end,
-            excluded_ids=frozenset(
-                int(key) for kind, key in seen_keys if kind == "user_playbook"
-            ),
+        user_playbooks = (
+            native_users
+            if enhance
+            else select_user_playbooks(
+                items=native_users,
+                storage=storage,
+                request=request,
+                org_id=org_id,
+                degraded=degraded,
+                created_after=window_start,
+                created_before=window_end,
+                excluded_ids=frozenset(
+                    int(key) for kind, key in seen_keys if kind == "user_playbook"
+                ),
+            )
         )
         selection_span.set_data("input_count", len(native_users))
         selection_span.set_data("returned_count", len(user_playbooks))
