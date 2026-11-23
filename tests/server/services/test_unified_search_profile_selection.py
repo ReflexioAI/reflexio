@@ -214,3 +214,187 @@ def test_e5_sparse_secondary_preserves_resolved_time_window(native):
     assert second["start_time"] == first["start_time"]
     assert second["end_time"] == first["end_time"]
     assert second["query"] == first["query"]
+
+
+@pytest.fixture
+def empty_joint(native, monkeypatch):
+    native.primary = []
+    recovered = profile("native-location")
+    recovered.content = "The user lives in San Francisco."
+    native.secondary = [recovered]
+    native.scored = True
+    native.agents[0].trigger = "Dinner recommendations"
+    native.users[0].trigger = "User asks for dinner recommendations"
+    native.phase_a.return_value = (
+        ReformulationResult(standalone_query="Dinner recommendations"),
+        [0.1] * 512,
+        False,
+    )
+    native.mode = "jev"
+    monkeypatch.setattr(service, "judge_mode", lambda: native.mode)
+    original = service._run_phase_b
+
+    def scoped(**kwargs):
+        result = original(**kwargs)
+        wanted = set(
+            kwargs["request"].entity_types
+            or ("profiles", "agent_playbooks", "user_playbooks")
+        )
+        return tuple(
+            values if kind in wanted else []
+            for kind, values in zip(
+                ("profiles", "agent_playbooks", "user_playbooks"), result, strict=True
+            )
+        )
+
+    monkeypatch.setattr(service, "_run_phase_b", scoped)
+    native.prune_profiles = False
+
+    def judge(wire):
+        answers = {}
+        for key, question in wire["questions"].items():
+            if key.endswith("conflict"):
+                answers[key] = {"type": "noul", "noul": 0.0}
+            else:
+                rejected = (
+                    native.prune_profiles
+                    and question["instructions"]["candidate"]["type"] == "profile"
+                )
+                answers[key] = {
+                    "type": "score",
+                    "probabilities": {
+                        "0": float(rejected),
+                        "1": 0.0,
+                        "2": 0.0,
+                        "3": float(not rejected),
+                    },
+                }
+        return {"model": wire["model"], "answers": answers}
+
+    native.judge = Mock(side_effect=judge)
+    monkeypatch.setattr(service, "call_jev", native.judge)
+    return native
+
+
+def run_empty_joint(native, **changes):
+    request = UnifiedSearchRequest(
+        **{
+            "query": "Dinner recommendations",
+            "user_id": "u",
+            "entity_types": ["profiles", "user_playbooks"],
+            "agent_version": "v",
+            "tags": ["billing"],
+            "source": "authored-source",
+            **changes,
+        }
+    )
+    return service.run_unified_search(
+        request,
+        "org",
+        cast(BaseStorage, native.storage),
+        Mock(),
+        Mock(),
+        recency=RecencyConfig(),
+    )
+
+
+def test_empty_profile_with_native_user_reaches_actual_joint_judge(empty_joint):
+    result = run_empty_joint(empty_joint)
+    assert result.profiles == empty_joint.secondary
+    assert result.profiles[0] is empty_joint.secondary[0]
+    assert len(empty_joint.calls) == 2 and empty_joint.phase_a.call_count == 1
+    second = empty_joint.calls[1]
+    assert second["request"].entity_types == ["profiles"]
+    assert second["request"].user_id == "u" and second["request"].tags == ["billing"]
+    assert (
+        second["request"].source == "authored-source"
+        and second["request"].agent_version == "v"
+    )
+    assert second["storage"] is empty_joint.storage and second["org_id"] == "org"
+    assert second["embedding"] is empty_joint.phase_a.return_value[1]
+    assert second["threshold"] == 0 and second["search_mode"] == SearchMode.HYBRID
+    assert second["top_k"] == 20
+    empty_joint.judge.assert_called_once()
+    evidence = [
+        question["instructions"]["candidate"]
+        for key, question in empty_joint.judge.call_args.args[0]["questions"].items()
+        if key.endswith("usefulness")
+    ]
+    assert {"type": "profile", "text": empty_joint.secondary[0].content} in evidence
+
+
+def test_empty_recovery_is_candidate_recall_not_forced_final_membership(empty_joint):
+    empty_joint.prune_profiles = True
+    result = run_empty_joint(empty_joint)
+    assert result.profiles == [] and len(empty_joint.calls) == 2
+    empty_joint.judge.assert_called_once()
+    empty_joint.storage.record_served_profile_access.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "off",
+        "no-user-anchor",
+        "profiles-only",
+        "agent-mix",
+        "all-arms",
+        "threshold",
+        "top-k",
+        "session",
+        "embedding-failure",
+        "other-model",
+    ],
+)
+def test_empty_recall_does_not_expand_other_policy_shapes(empty_joint, case):
+    changes = {}
+    if case == "off":
+        empty_joint.mode = "off"
+    elif case == "no-user-anchor":
+        empty_joint.users.clear()
+    elif case == "profiles-only":
+        changes["entity_types"] = ["profiles"]
+    elif case == "agent-mix":
+        changes["entity_types"] = ["profiles", "agent_playbooks"]
+    elif case == "all-arms":
+        changes["entity_types"] = None
+    elif case == "threshold":
+        changes["threshold"] = 0.0
+    elif case == "top-k":
+        changes["top_k"] = 10
+    elif case == "session":
+        changes["session_id"] = "s"
+    elif case == "embedding-failure":
+        empty_joint.phase_a.return_value = (
+            empty_joint.phase_a.return_value[0],
+            None,
+            True,
+        )
+    else:
+        empty_joint.storage.embedding_model_name = "local/nomic-embed-text-v2-moe"
+    assert run_empty_joint(empty_joint, **changes).profiles == []
+    assert len(empty_joint.calls) == 1
+
+
+@pytest.mark.parametrize("case", ["primary-failure", "secondary-failure", "deadline"])
+def test_empty_recall_failure_never_accepts_results(empty_joint, case):
+    scope = search_runtime.SearchScope(deadline=time.monotonic() + 30)
+    if case == "primary-failure":
+        empty_joint.primary = None
+    elif case == "secondary-failure":
+        empty_joint.fail = True
+    else:
+        empty_joint.expire = scope
+    token = search_runtime._scope.set(scope)
+    try:
+        with pytest.raises(
+            search_runtime.SearchDeadlineError
+            if case == "deadline"
+            else ReadinessUnavailableError
+        ):
+            run_empty_joint(empty_joint)
+        assert not scope.success_callbacks
+        empty_joint.storage.record_served_profile_access.assert_not_called()
+        empty_joint.judge.assert_not_called()
+    finally:
+        search_runtime._scope.reset(token)
