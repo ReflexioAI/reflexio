@@ -309,6 +309,7 @@ def test_different_primary_does_not_inherit_old_namespace(tmp_path, selected_bac
     assert selected["schema"] is None
 
 
+@pytest.mark.unit
 def test_legacy_namespace_cannot_replace_the_selected_same_primary_target(
     tmp_path, monkeypatch
 ):
@@ -352,6 +353,7 @@ def test_native_selection_keeps_replica_only_with_its_saved_primary(
     "new_namespace,expected_reader",
     [("former_namespace", "postgresql://replica.invalid/old"), ("new_namespace", None)],
 )
+@pytest.mark.unit
 def test_canonical_namespace_retarget_owns_its_reader_route(
     tmp_path, monkeypatch, new_namespace, expected_reader
 ):

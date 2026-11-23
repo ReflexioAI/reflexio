@@ -427,6 +427,7 @@ class TestContainerSafety:
             assert resolve_storage(None) == "sqlite"
 
 
+@pytest.mark.unit
 class TestCanonicalPostgresNamespace:
     """A retired environment assignment must not rewrite the selected schema."""
 
