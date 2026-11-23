@@ -630,6 +630,64 @@ def test_deterministic_rejections_still_abstain():
         assert isinstance(raised.value.__cause__, ValueError | type(repair))
 
 
+def _repair_exhausted_engine() -> Reconciler:
+    from reflexio.server.llm.litellm_client import StructuredOutputRepairError
+
+    repair = StructuredOutputRepairError(
+        "exhausted", failure_kind="semantic", model="scripted"
+    )
+    return Reconciler(cast(LiteLLMClient, ScriptedClient([repair])), "scripted")
+
+
+def _abstaining_engine() -> Reconciler:
+    def _abstain(*_args):
+        raise AuditedConsolidationAbstainedError("No validated audited batch")
+
+    return cast(Reconciler, SimpleNamespace(calls=1, run=_abstain))
+
+
+@pytest.mark.parametrize(
+    "make_engine",
+    [_repair_exhausted_engine, _abstaining_engine],
+    ids=["deterministic_rejection", "engine_abstention"],
+)
+def test_abstention_logs_info_and_still_raises(caplog, make_engine):
+    """Both abstention branches log at INFO and re-raise for the owner to warn.
+
+    The durable worker logs ``Extraction window failed`` at WARNING for the
+    re-raised error, so a WARNING here counted every abstention twice.
+    """
+    import logging
+
+    from reflexio.server.services.playbook.components.reconciliation import (
+        _run_audited,
+    )
+
+    logger_name = "reflexio.server.services.playbook.components.reconciliation"
+    with (
+        caplog.at_level(logging.DEBUG, logger=logger_name),
+        pytest.raises(AuditedConsolidationAbstainedError),
+    ):
+        _run_audited(make_engine(), payload(), {("request", 17): object()})
+    records = [
+        r
+        for r in caplog.records
+        if "event=audited_consolidation_abstained" in r.getMessage()
+    ]
+    assert [r.levelno for r in records] == [logging.INFO]
+
+
+def test_abstention_reaches_the_workers_warning_owner():
+    """The worker retries an abstention, which it logs at WARNING."""
+    from reflexio.server.services.durable_learning.window_disposition import (
+        Retry,
+        classify_window_failure,
+    )
+
+    error = AuditedConsolidationAbstainedError("No validated audited batch")
+    assert isinstance(classify_window_failure(error), Retry)
+
+
 def test_execution_and_durable_binding_use_one_frozen_prompt_bundle(monkeypatch):
     from copy import deepcopy
     from pathlib import Path
