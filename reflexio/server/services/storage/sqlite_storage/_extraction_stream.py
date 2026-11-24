@@ -55,12 +55,19 @@ def register_window_delivery_validator(conn: sqlite3.Connection) -> None:
     """Install the inventory validator before the connection starts serving queries."""
     from reflexio.server.services.extraction.publication_receipts import (
         valid_window_delivery_payload,
+        window_delivery_ids_match,
     )
 
     conn.create_function(
         "reflexio_valid_window_delivery",
         2,
         valid_window_delivery_payload,
+        deterministic=True,
+    )
+    conn.create_function(
+        "reflexio_window_delivery_ids_match",
+        3,
+        window_delivery_ids_match,
         deterministic=True,
     )
 
@@ -311,6 +318,18 @@ class SQLiteStreamSQL:
             "CASE WHEN json_valid(w.effects) THEN reflexio_valid_window_delivery("
             "CASE w.kind WHEN 'profile' THEN 'profile' WHEN 'playbook' THEN 'playbook' END,"
             "CAST(w.effects -> '$.billing' AS BLOB))=1 ELSE 0 END"
+        )
+
+    def transition_window_history_publication_receipt(self) -> str:
+        return (
+            "EXISTS(SELECT 1 FROM _agent_run_finalization_receipts q "
+            "WHERE w.project_id='' AND q.run_id=h.id "
+            "AND q.entity_type=CASE w.kind WHEN 'profile' THEN 'profile' "
+            "WHEN 'playbook' THEN 'user_playbook' END "
+            "AND CASE WHEN json_valid(w.effects) THEN "
+            "reflexio_window_delivery_ids_match(w.kind, "
+            "CAST(w.effects -> '$.billing' AS BLOB),CAST(q.learning_ids AS BLOB))=1 "
+            "ELSE 0 END)"
         )
 
     def transition_window_history_parent_idle(self) -> str:

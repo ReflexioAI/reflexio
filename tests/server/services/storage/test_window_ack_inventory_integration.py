@@ -249,3 +249,39 @@ def test_window_inventory_preserves_open_read_cursor(storage):
         assert cursor.fetchone()[0] == 1
         storage.transition_inventory_page("runs")
         assert cursor.fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("encoding", ["UTF-8", "UTF-16le", "UTF-16be"])
+@pytest.mark.parametrize("ids", [["référence"], ["prefix\u0000suffix"]])
+def test_historical_publication_ids_match_full_native_sqlite_json(encoding, ids):
+    from reflexio.server.services.extraction.publication_receipts import (
+        window_delivery_ids_match,
+    )
+
+    billing = {
+        "ids": ids,
+        "created_at": 0,
+        "platform_llm": False,
+        "input_tokens": 1,
+        "prompt_tokens": 2,
+        "completion_tokens": 3,
+    }
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(f"PRAGMA encoding='{encoding}'")
+        conn.execute("CREATE TABLE fixture (id INTEGER)")
+        payload, receipt = conn.execute(
+            "SELECT CAST(? -> '$.billing' AS BLOB),CAST(? AS BLOB)",
+            (
+                json.dumps({"billing": billing}, ensure_ascii=False),
+                json.dumps(ids, ensure_ascii=False),
+            ),
+        ).fetchone()
+    assert window_delivery_ids_match("profile", payload, receipt) == 1
+    assert window_delivery_ids_match("profile", payload, b'["different"]') == 0
+    assert window_delivery_ids_match("profile", b"{}", receipt) == 0
+    assert (
+        window_delivery_ids_match(
+            "playbook", json.dumps({**billing, "pipeline": "profile"}).encode(), receipt
+        )
+        == 0
+    )

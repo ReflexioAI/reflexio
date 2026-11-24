@@ -750,3 +750,63 @@ def test_first_native_admission_does_not_confuse_generic_history_with_window_lin
     assert result.ready is (status == "finalized"), result.blockers
     if status != "finalized":
         assert "cursor_completion_unproven" in result.blockers
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "UPDATE _agent_runs SET status='failed'",
+        "UPDATE _agent_runs SET status='expired'",
+        "UPDATE _agent_runs SET status='agent_completed'",
+        "UPDATE _agent_runs SET committed_output=NULL",
+        "UPDATE _agent_runs SET claimed_by='live'",
+        "UPDATE _agent_runs SET claimed_at='2026-01-01'",
+        "UPDATE _agent_runs SET extractor_kind='playbook'",
+        "UPDATE _agent_runs SET org_id='foreign'",
+        "UPDATE _agent_runs SET pending_tool_call_ids='[\"pending\"]'",
+        "DELETE FROM _agent_run_finalization_receipts",
+        "UPDATE _agent_run_finalization_receipts SET learning_ids='[\"other\"]'",
+        "UPDATE _agent_run_finalization_receipts SET entity_type='user_playbook'",
+        "UPDATE extraction_windows SET effects=json_set(effects,'$.billing',json('{}'))",
+        "UPDATE extraction_windows SET effects=json_set(effects,'$.billing.pipeline','playbook')",
+        "UPDATE extraction_windows SET derived_claimed=0",
+        "UPDATE extraction_cursors SET completed_seq=0",
+        "UPDATE extraction_cursors SET window_id='closed'",
+        "UPDATE learning_work SET lease_until=9999999999",
+        "INSERT INTO _agent_output_preparations(run_id,org_id,preparation) SELECT id,org_id,'{}' FROM _agent_runs",
+    ],
+)
+def test_invalidated_published_history_requires_exact_closed_native_witness(
+    storage, mutation
+):
+    from reflexio.server.services.storage.storage_base.closed_window_history import (
+        closed_window_history_sql,
+    )
+    from reflexio.test_support.transition_closure import seed_closed_window_history
+
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed_closed_window_history(db, storage.org_id, "")
+        db.query("UPDATE _agent_runs SET status='finalized'")
+        db.query("UPDATE extraction_windows SET invalidated=1")
+        db.query(
+            "INSERT INTO _agent_run_finalization_receipts(run_id,entity_type,learning_ids) VALUES('window:closed','profile','[]')"
+        )
+        if mutation:
+            db.query(mutation)
+    before = storage.conn.total_changes
+    with storage._stream_sql(read_only=True) as db:
+        history = closed_window_history_sql(db, now=db.now())
+        row = db.query(
+            f"SELECT ({history.inert}) AS inert,({history.queue_floor}) AS queued,({history.erased_floor}) AS erased FROM extraction_windows w CROSS JOIN (SELECT ? AS org_id,'' AS project_id) scope",
+            (storage.org_id,),
+        )[0]
+    assert tuple(row.values()) == ((1, 0, 1) if mutation is None else (0, 0, 0))
+    assert storage.conn.total_changes == before
+    if mutation is None:
+        assert derive(storage).ready
+        item = storage.transition_inventory_page("runs").items[0]
+        assert item.inert_history and item.saved_output and not item.execution_bearing
+        assert storage.conn.execute(
+            "SELECT committed_output FROM _agent_runs"
+        ).fetchone()[0] == json.dumps({"output": "PRIVATE_SAVED_CANARY"})
