@@ -60,6 +60,14 @@ SQLite metadata imports use shared failure types without importing provider
 capacity dispatch. This separation does not grant retained datasets authority or
 make normal storage construction a maintenance upgrade operation.
 
+## Native child invocation context
+
+Native learners keep their explicit CLI/model selection and the process-owned
+`CLAUDE_SMART_INTERNAL=1` recursion marker. Starting a Codex or OpenCode learner
+does not assign a coding integration to the enclosing hook: the actual hook
+entrypoint owns that identity. Native launchers preserve unrelated inherited
+environment values and do not invent or overwrite `CLAUDE_SMART_HOST`.
+
 ## Automatic profile admission
 
 `profile_stride_size=0` selects manual-only profile extraction. Positive cadence

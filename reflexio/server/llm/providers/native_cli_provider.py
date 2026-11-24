@@ -644,7 +644,6 @@ def _run_codex_stream(
         cmd.append("-")
         # Path variables reach the child anchored here, not in its private cwd.
         env = {**os.environ, **native_child_path_environment()}
-        env["CLAUDE_SMART_HOST"] = _HOST_CODEX
         env["CLAUDE_SMART_INTERNAL"] = "1"
         if optimizer:
             env["CLAUDE_CODE_ENTRYPOINT"] = "optimizer"

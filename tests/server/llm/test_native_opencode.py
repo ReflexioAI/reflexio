@@ -646,6 +646,7 @@ def test_plugin_bridge_keeps_variant_inline(monkeypatch, model, expected):
 def test_discovery_and_execution_spend_one_original_deadline(
     monkeypatch, private, model
 ):
+    monkeypatch.setenv("CLAUDE_SMART_HOST", "claude-code")
     clock = [10.0]
     calls = []
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
@@ -675,6 +676,8 @@ def test_discovery_and_execution_spend_one_original_deadline(
     assert calls[0][1]["input"] == "" and calls[0][1]["timeout"] == 1
     argv, kwargs = calls[1]
     assert kwargs["timeout"] == pytest.approx(0.4)
+    assert kwargs["env"]["CLAUDE_SMART_HOST"] == "claude-code"
+    assert kwargs["env"]["CLAUDE_SMART_INTERNAL"] == "1"
     assert kwargs["input"] == "owned context\n\n## Task\nowned task"
     if model is None:
         assert not any(arg.startswith(("--model", "--variant")) for arg in argv)

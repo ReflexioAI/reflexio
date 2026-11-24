@@ -657,10 +657,18 @@ class TestNativeCLILLMCompletion:
     @pytest.mark.parametrize(
         "override", [None, "", " \t", "chosen-model", " opaque/model#variant "]
     )
+    @pytest.mark.parametrize("outer_host", [None, "opencode"])
     def test_codex_host_uses_codex_exec(
-        self, monkeypatch: pytest.MonkeyPatch, override: str | None
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        override: str | None,
+        outer_host: str | None,
     ) -> None:
         """Codex runs generation through ``codex exec`` instead of Claude flags."""
+        if outer_host is None:
+            monkeypatch.delenv("CLAUDE_SMART_HOST", raising=False)
+        else:
+            monkeypatch.setenv("CLAUDE_SMART_HOST", outer_host)
 
         def fake_run(cmd, **kwargs):
             out = Path(cmd[cmd.index("--output-last-message") + 1])
@@ -702,7 +710,8 @@ class TestNativeCLILLMCompletion:
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "replace"
         assert kwargs["input"] == "Be terse.\n\n## Task\nUser: ping — now"
-        assert kwargs["env"]["CLAUDE_SMART_HOST"] == "codex"
+        assert kwargs["env"].get("CLAUDE_SMART_HOST") == outer_host
+        assert kwargs["env"]["CLAUDE_SMART_INTERNAL"] == "1"
         assert response.choices[0].message.content == "codex reply"  # type: ignore[union-attr]
         assert response.model == reference
         assert response._hidden_params["reflexio_provider"] == "local-cli"
