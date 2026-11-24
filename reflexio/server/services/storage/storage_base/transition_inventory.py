@@ -18,6 +18,7 @@ from reflexio.server.work_scope import current_project_id
 from ._extraction_stream import StreamSQL
 from .closed_window_history import closed_window_history_sql
 from .transition_sources import (
+    finalized_run_candidate_sql,
     finalized_run_inert,
     finalized_run_inert_sql,
     nonintake_request_sql,
@@ -364,7 +365,6 @@ def _projection(db: StreamSQL, source: InventorySource, now: float) -> tuple:
             f"EXISTS(SELECT 1 FROM {windows} w WHERE w.window_id=substr(r.id,8) "
             f"AND substr(r.id,1,7)='window:' AND r.id='window:'||w.window_id AND ({history.inert}))"
         )
-        parent_idle = db.transition_window_history_parent_idle().replace("a.", "r.")
         window_proof = getattr(db, "transition_window_publication_proof", None)
         window_published = (
             f"EXISTS(SELECT 1 FROM {windows} w WHERE w.window_id=substr(r.id,8) "
@@ -395,7 +395,7 @@ def _projection(db: StreamSQL, source: InventorySource, now: float) -> tuple:
             f"AND {db.transition_json_scalar('output_id')} IS NULL) AS legacy_published,"
             f"{window_published} AS window_published,"
             f"{inert_history} AS inert_history,"
-            f"(r.status='finalized' AND substr(r.id,1,7)<>'window:' AND ({parent_idle})) AS terminal_history,"
+            f"{finalized_run_candidate_sql(db)} AS terminal_history,"
             f"EXISTS(SELECT 1 FROM {work} u WHERE u.org_id=r.org_id AND "
             "(u.user_id=r.user_id OR u.lease_token=r.user_work_token) "
             f"AND u.lease_until>{now!r}) AS live_owner,"

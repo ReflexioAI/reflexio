@@ -605,3 +605,91 @@ def test_source_inventory_uses_bounded_large_pages_without_raising_row_cap(
         assert result.ready, result.blockers
         assert result.counts["runs"] == 501
         assert calls == [500, 500, 500]
+
+
+@pytest.mark.parametrize("virgin", [False, True])
+@pytest.mark.parametrize("bad", [False, True])
+def test_thousand_cursor_proofs_are_batched_and_a_bad_batch_certifies_nothing(
+    storage, monkeypatch, virgin, bad
+):
+    from reflexio.server.services.storage.storage_base import (
+        transition_closure as owner,
+    )
+
+    users = [f"batch-user-{i:04}" for i in range(1000)]
+    with storage.commit_scope():
+        storage.conn.executemany(
+            "INSERT INTO learning_work(org_id,user_id,highwater) VALUES(?,?,?)",
+            [(storage.org_id, user, 0 if virgin else 1) for user in users],
+        )
+        storage.conn.executemany(
+            "INSERT INTO extraction_cursors(user_id,kind,project_id,completed_seq,started) VALUES(?,'profile','',?,?)",
+            [(user, 0 if virgin else 1, 0 if virgin else 1) for user in users],
+        )
+        if not virgin:
+            storage.conn.executemany(
+                "INSERT INTO extraction_windows(window_id,user_id,kind,org_id,project_id,predecessor,end_seq,manifest,policy,completed,effects_done,completed_at) VALUES(?,?,'profile',?,'',0,1,'[]','{}',1,1,1)",
+                [
+                    (f"batch-window-{i:04}", user, storage.org_id)
+                    for i, user in enumerate(users)
+                ],
+            )
+        if bad and virgin:
+            storage.conn.execute(
+                "INSERT INTO extraction_windows(window_id,user_id,kind,org_id,project_id,predecessor,end_seq,manifest,policy,completed,effects_done,completed_at) VALUES('unexpected-window',?,'profile',?,'',0,1,'[]','{}',1,1,1)",
+                (users[0], storage.org_id),
+            )
+        elif bad:
+            storage.conn.execute(
+                "UPDATE extraction_windows SET end_seq=2 WHERE window_id='batch-window-0000'"
+            )
+    query = SQLiteStreamSQL.query
+    batches = []
+
+    def counted(db, sql, params=()):
+        if sql.startswith("WITH virgin_cursors"):
+            batches.append((len(params) - 2) // 2)
+        elif sql.startswith("WITH pending_coverage"):
+            batches.append((len(params) - 3) // 4)
+        return query(db, sql, params)
+
+    monkeypatch.setattr(SQLiteStreamSQL, "query", counted)
+    result = derive(storage)
+    assert result.ready is not bad, result.blockers
+    assert result.counts["cursors"] == 1000
+    assert batches == [100] * 10
+    if bad:
+        assert "cursor_completion_unproven" in result.blockers
+    # The failed batch must not certify its otherwise-good siblings.
+    batches.clear()
+    with storage._stream_sql() as db:
+        blockers = set()
+        frontiers = owner._cursor_frontiers(
+            db, storage.org_id, "", db.now(), blockers, {}
+        )
+    assert len(frontiers) == (900 if bad else 1000)
+    assert (
+        (users[1], "profile") in frontiers
+        if not bad
+        else (users[1], "profile") not in frontiers
+    )
+
+
+@pytest.mark.parametrize("status", ["finalized", "failed", "running"])
+def test_first_native_admission_does_not_confuse_generic_history_with_window_lineage(
+    storage, status
+):
+    from tests.server.services.storage.test_storage_contract_extraction_stream import (
+        publish,
+    )
+
+    with storage.commit_scope():
+        storage.conn.execute(
+            "INSERT INTO _agent_runs(id,org_id,extractor_kind,user_id,request_id,status,generation_request_snapshot,committed_output) VALUES('old-generic',?,'profile','u','old-request',?,'{}','{}')",
+            (storage.org_id, status),
+        )
+    publish(storage, 2, width=2, stride=1)
+    result = derive(storage)
+    assert result.ready is (status == "finalized"), result.blockers
+    if status != "finalized":
+        assert "cursor_completion_unproven" in result.blockers

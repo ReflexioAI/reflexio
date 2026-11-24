@@ -25,7 +25,7 @@ from .transition_inventory import (
     TransitionInventoryScopeError,
     read_transition_inventory_page_db,
 )
-from .transition_sources import nonintake_request_sql
+from .transition_sources import finalized_run_candidate_sql, nonintake_request_sql
 
 
 @dataclass(frozen=True)
@@ -82,6 +82,7 @@ def _pages(
     upper = f" AND ({','.join(keys)})<=({','.join('?' for _ in keys)})"
     after = None
     seen: set[tuple] = set()
+    observed = 0
     for _ in range(_MAX_PAGES):
         boundary = (
             ""
@@ -90,11 +91,14 @@ def _pages(
         )
         rows = db.query(
             f"SELECT {columns} FROM {db.table(table)} r WHERE {predicate}{upper}{boundary} "
-            f"ORDER BY {','.join(keys)} LIMIT 100",
+            f"ORDER BY {','.join(keys)} LIMIT {_INVENTORY_PAGE_SIZE}",
             prefix_params + params + ceiling + (after or ()),
         )
         if not rows:
             return
+        observed += len(rows)
+        if observed > 100 * _MAX_PAGES:
+            raise _ObservationRefusedError("observation_limit_reached")
         for row in rows:
             key = tuple(row[field] for field in fields)
             if key in seen or key == after:
@@ -228,6 +232,58 @@ def _observe_sources(
             raise _ObservationRefusedError("observation_limit_reached")
 
 
+def _virgin_frontiers(
+    db: StreamSQL, org: str, project: str, checks: Sequence[_CoverageCheck]
+) -> bool:
+    if not checks:
+        return True
+    values = ",".join("(?,?)" for _ in checks)
+    project_scope = db.project_filter().replace("?", "scope.project_id")
+    # _observe_sources already checks the full native execution/debt facts.
+    # Historical generic finalization does not consume a window cursor; every
+    # actual window or other run class still prevents a virgin proof.
+    rows = db.query(
+        f"WITH virgin_cursors(user_id,kind) AS (VALUES {values}), "
+        "scope AS (SELECT ? AS org_id,? AS project_id) "
+        "SELECT NOT EXISTS(SELECT 1 FROM virgin_cursors p CROSS JOIN scope WHERE "
+        f"EXISTS(SELECT 1 FROM {db.table('extraction_windows')} w WHERE w.user_id=p.user_id "
+        "AND w.kind=p.kind AND w.project_id=scope.project_id) OR "
+        f"EXISTS(SELECT 1 FROM {db.table('_agent_runs')} r WHERE r.org_id=scope.org_id "
+        "AND r.user_id=p.user_id AND r.extractor_kind=p.kind "
+        f"AND ({project_scope}) AND ({finalized_run_candidate_sql(db)}) IS NOT TRUE)) AS proven",
+        (
+            *chain.from_iterable((user, kind) for user, kind, _, _ in checks),
+            org,
+            project,
+        ),
+    )
+    return bool(rows[0]["proven"])
+
+
+def _certify_frontiers(
+    db: StreamSQL,
+    org: str,
+    project: str,
+    now: float,
+    checks: list[_CoverageCheck],
+    frontiers: dict[tuple[str, str], int],
+    blockers: set[str],
+    *,
+    virgin: bool,
+) -> None:
+    proven = (
+        _virgin_frontiers(db, org, project, checks)
+        if virgin
+        else _covered(db, org, project, checks, now, exact=True)
+    )
+    if proven:
+        frontiers.update(((user, kind), seq) for user, kind, seq, _ in checks)
+    else:
+        # One unproved member cannot certify any sibling in this bounded batch.
+        blockers.add("cursor_completion_unproven")
+    checks.clear()
+
+
 def _cursor_frontiers(
     db: StreamSQL,
     org_id: str,
@@ -251,6 +307,8 @@ def _cursor_frontiers(
         blockers.add("source_attribution_unavailable")
     cursors: dict[tuple[str, str], int] = {}
     counts["cursors"] = 0
+    virgin: list[_CoverageCheck] = []
+    completed: list[_CoverageCheck] = []
     for row in _pages(
         db,
         "extraction_cursors",
@@ -274,26 +332,21 @@ def _cursor_frontiers(
         if not clean:
             blockers.add("cursor_execution_or_unknown_lineage")
             continue
-        if seq == 0 and row["started"] == 0:
-            # A virgin counter cannot hide a previously created execution root.
-            lineage = db.query(
-                f"SELECT (EXISTS(SELECT 1 FROM {db.table('extraction_windows')} WHERE user_id=? AND kind=? AND project_id=?) OR "
-                f"EXISTS(SELECT 1 FROM {db.table('_agent_runs')} r WHERE r.org_id=? AND r.user_id=? AND r.extractor_kind=? AND {db.project_filter()})) AS present",
-                (user, kind, project_id, org_id, user, kind, project_id),
-            )[0]["present"]
-            valid = not lineage
-        else:
-            valid = (
-                row["started"] == 1
-                and seq > 0
-                and _covered(
-                    db, org_id, project_id, ((user, kind, seq, 0),), now, exact=True
-                )
-            )
-        if valid:
-            cursors[(user, kind)] = seq
-        else:
+        is_virgin = seq == 0 and row["started"] == 0
+        if not is_virgin and not (row["started"] == 1 and seq > 0):
             blockers.add("cursor_completion_unproven")
+            continue
+        batch = virgin if is_virgin else completed
+        batch.append((user, kind, seq, 0))
+        if len(batch) == _COVERAGE_BATCH_SIZE:
+            _certify_frontiers(
+                db, org_id, project_id, now, batch, cursors, blockers, virgin=is_virgin
+            )
+    for batch, is_virgin in ((virgin, True), (completed, False)):
+        if batch:
+            _certify_frontiers(
+                db, org_id, project_id, now, batch, cursors, blockers, virgin=is_virgin
+            )
 
     return cursors
 
