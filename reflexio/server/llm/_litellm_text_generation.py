@@ -51,6 +51,7 @@ from reflexio.server.llm._litellm_subprocess import (
     _raise_completion_error,
     require_private_provider_rules,
     retire_completion_worker,
+    start_completion_worker,
 )
 from reflexio.server.llm._litellm_types import (
     CompletionResult,
@@ -734,7 +735,7 @@ def _run_isolated_completion(params: dict[str, Any], deadline: float) -> Any:
     try:
         if time.monotonic() >= deadline:
             raise LLMHardTimeoutError("LLM request deadline expired before startup")
-        process.start()
+        start_completion_worker(process)
         native_owner.worker_started()
         # Drain the result queue BEFORE joining the child. A large completion
         # payload overflows the OS pipe buffer, so the child's queue-feeder
