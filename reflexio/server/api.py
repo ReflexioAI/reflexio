@@ -46,7 +46,6 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware import Middleware
 
@@ -82,7 +81,11 @@ from reflexio.server.publish_timing import (
     PublishHttpTimingMiddleware,
     http_org_resolved,
 )
-from reflexio.server.rate_limit import configure_rate_limiter, limiter
+from reflexio.server.rate_limit import (
+    configure_rate_limiter,
+    limiter,
+    rate_limit_exceeded_handler,
+)
 from reflexio.server.routes import (
     braintrust,
     config,
@@ -670,7 +673,7 @@ def create_app(  # noqa: C901
 
     # Configure rate limiter
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[reportArgumentType]
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)  # type: ignore[reportArgumentType]
 
     # Reject oversized requests before they reach endpoint handlers.
     app.add_middleware(BodySizeLimitMiddleware)
