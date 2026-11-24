@@ -209,7 +209,6 @@ def run_opencode(
             **native_child_path_environment(),
             "PWD": str(directory),
             **OPENCODE_CHILD_ENV,
-            "CLAUDE_SMART_HOST": "opencode",
             "CLAUDE_SMART_INTERNAL": "1",
             "CLAUDE_CODE_ENTRYPOINT": "optimizer",
         }
