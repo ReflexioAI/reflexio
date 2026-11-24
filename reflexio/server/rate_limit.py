@@ -7,10 +7,13 @@ route modules). ``reflexio.server.api`` re-exports ``limiter`` and
 ``configure_rate_limiter`` so the existing enterprise imports keep resolving.
 """
 
+import asyncio
 import inspect
 from collections.abc import Callable
+from copy import copy
 from functools import wraps
 from pathlib import Path
+from threading import Lock
 from typing import Any, cast
 
 from anyio.lowlevel import checkpoint_if_cancelled
@@ -19,7 +22,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import _find_route_handler, _should_exempt
 from slowapi.util import get_remote_address
-from slowapi.wrappers import Limit
+from slowapi.wrappers import Limit, LimitGroup
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -87,6 +90,53 @@ def rate_limit_exceeded_handler(
     )
 
 
+class _DynamicRuleRegistry(dict[str, list[LimitGroup]]):
+    """Registration owns groups; each evaluation gets its own request binding."""
+
+    def __getitem__(self, name: str) -> list[LimitGroup]:
+        # Upstream registers with setdefault(...).append(...) and reads with
+        # indexing before with_request mutates a group's request attribute.
+        return [copy(group) for group in super().__getitem__(name)]
+
+
+_quota_checks: set[asyncio.Task] = set()
+
+
+def _finished_quota_check(task: asyncio.Task) -> None:
+    _quota_checks.discard(task)
+    if not task.cancelled():
+        task.exception()  # A cancelled caller may no longer receive the error.
+
+
+async def _run_quota_check(check: Callable, *args: Any) -> None:
+    """Keep the existing worker token until its physical quota call finishes."""
+    lock = Lock()
+    started = False
+    abandoned = False
+
+    def owned_check() -> None:
+        nonlocal started
+        with lock:
+            if abandoned:
+                return
+            started = True
+        check(*args)
+
+    # Shield the task owning AnyIO's existing token, not only its cancel scope:
+    # raw Task.cancel() otherwise returns that token while its thread continues.
+    task = asyncio.create_task(run_in_threadpool(owned_check))
+    _quota_checks.add(task)
+    task.add_done_callback(_finished_quota_check)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        with lock:
+            if not started:
+                abandoned = True
+                task.cancel()  # Drop queued work; a racing thread sees abandoned.
+        raise
+
+
 class _SDKLimiter(Limiter):
     """Keep upstream counters/registration; own configuration and async admission."""
 
@@ -102,6 +152,8 @@ class _SDKLimiter(Limiter):
             raise ValueError(
                 "Invalid rate-limit backend or policy configuration"
             ) from None
+
+        self._dynamic_route_limits = _DynamicRuleRegistry(self._dynamic_route_limits)
 
     def get_app_config(self, key: str, default_value: Any = None) -> Any:  # noqa: ARG002
         if key not in self._policy:
@@ -131,7 +183,7 @@ class _SDKLimiter(Limiter):
                 @wraps(endpoint)
                 async def admitted(*args: Any, **kwargs: Any) -> Any:
                     if self.enabled and self._auto_check:
-                        await run_in_threadpool(check, args, kwargs)
+                        await _run_quota_check(check, args, kwargs)
                         await checkpoint_if_cancelled()
                     return await endpoint(*args, **kwargs)
 
@@ -172,7 +224,7 @@ class RateLimitMiddleware:
             request.state, "_rate_limiting_complete", False
         ):
             try:
-                await run_in_threadpool(
+                await _run_quota_check(
                     limiter._check_request_limit, request, handler, True
                 )
                 await checkpoint_if_cancelled()

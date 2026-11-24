@@ -434,3 +434,128 @@ async def test_cancelled_worker_queue_never_checks_quota_or_enters_handler(monke
         await holder
         workers.total_tokens = previous
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_dynamic_rules_are_request_local(monkeypatch):
+    from slowapi.wrappers import LimitGroup
+
+    seen = []
+
+    def key(request):
+        return request.headers["x-quota-key"]
+
+    def rule(key):
+        seen.append(key)
+        return "1/minute" if key == "A" else "100/minute"
+
+    limiter = type(rate_limit.limiter)(key_func=key)
+    router = APIRouter()
+
+    @router.get("/dynamic-owner")
+    @limiter.limit(rule)
+    async def limited(request: Request):
+        return {"ok": True}
+
+    original = LimitGroup.with_request
+    both = threading.Barrier(2)
+
+    def interleaved(group, request):
+        result = original(group, request)
+        both.wait(timeout=3)
+        return result
+
+    app = sdk_app(monkeypatch, limiter, router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        with monkeypatch.context() as interleaving:
+            interleaving.setattr(LimitGroup, "with_request", interleaved)
+            responses = await asyncio.gather(
+                client.get("/dynamic-owner", headers={"x-quota-key": "A"}),
+                client.get("/dynamic-owner", headers={"x-quota-key": "B"}),
+            )
+        assert [response.status_code for response in responses] == [200, 200]
+        assert sorted(seen) == ["A", "B"]
+        assert (
+            await client.get("/dynamic-owner", headers={"x-quota-key": "A"})
+        ).status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_raw_cancel_keeps_default_worker_token_until_physical_completion(
+    monkeypatch,
+):
+    import anyio
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    second_entered = threading.Event()
+    second_waiting = asyncio.Event()
+    calls = []
+    worker_attempts = []
+    original_worker = rate_limit.run_in_threadpool
+
+    async def observed_worker(*args, **kwargs):
+        worker_attempts.append(True)
+        if len(worker_attempts) == 2:
+            second_waiting.set()
+        return await original_worker(*args, **kwargs)
+
+    def key(request):
+        if request.headers.get("x-second"):
+            second_entered.set()
+            return "second"
+        entered.set()
+        try:
+            assert release.wait(3)
+            return "first"
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(rate_limit, "run_in_threadpool", observed_worker)
+    limiter = type(rate_limit.limiter)(key_func=key)
+
+    @limiter.limit("1/minute")
+    async def endpoint(request):
+        calls.append(request.headers.get("x-second"))
+
+    def request(headers):
+        return Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/owned-counter",
+                "headers": headers,
+                "state": {},
+            }
+        )
+
+    capacity = anyio.to_thread.current_default_thread_limiter()
+    baseline = capacity.borrowed_tokens
+    previous = capacity.total_tokens
+    capacity.total_tokens = 1
+    task = asyncio.create_task(endpoint(request=request([])))
+    second = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        assert capacity.borrowed_tokens == baseline + 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not finished.is_set()
+        assert capacity.borrowed_tokens == baseline + 1, (
+            "raw cancellation released physical capacity"
+        )
+        second = asyncio.create_task(endpoint(request=request([(b"x-second", b"yes")])))
+        await asyncio.wait_for(second_waiting.wait(), 3)
+        assert not second_entered.is_set()
+    finally:
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 3)
+        await asyncio.gather(*tuple(getattr(rate_limit, "_quota_checks", ())))
+        if second is not None:
+            await second
+        capacity.total_tokens = previous
+    assert capacity.borrowed_tokens == baseline
+    assert second_entered.is_set()
+    assert calls == ["yes"]

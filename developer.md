@@ -94,7 +94,11 @@ The limiter uses canonical process settings, not a second working-directory
 Async route and middleware checks use Starlette's context-propagating worker
 helper before calling the application. Sync routes retain worker execution.
 A cancelled request can consume quota when its physical counter call already
-started; it must not start the application afterward. No quota metadata lookup
+started; it must not start the application afterward. The task owning the
+existing AnyIO worker token stays tracked until physical completion, including
+raw task cancellation. Work cancelled before execution is dropped. Dynamic
+rule groups bind each request on a separate copy so concurrent checks cannot
+select another caller's rule. No quota metadata lookup
 runs after a response has been constructed. Rejections keep the existing JSON
 body and add `Retry-After` in seconds from the rejecting rule's whole window.
 This advisory hint does not reserve capacity or guarantee the retry will pass
