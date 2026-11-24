@@ -1355,6 +1355,16 @@ handling are separate existing contracts, not changed by this validation rule.
 
 ### Durable extraction timing
 
+An overflow coordinator shares its original absolute turn deadline with every
+provider call in `provider_scope`, including main-thread consolidation after
+cached agent output. The existing five-second finish margin is reserved once in
+that shared deadline; provider guards do not subtract it again. Nested caller
+deadlines can only tighten the bound. Per-call tenant timeouts, turn budgets,
+slot waits, fallback walks and durable attempt quotas keep their existing limits.
+An expired scope sends no new provider request; ordinary calls outside the
+coordinator retain their existing timeout policy.
+
+
 `reflexio/durable_learning_policy.py` resolves background discovery timing once
 before worker construction. `REFLEXIO_DURABLE_LEARNING_POLL_SECONDS` controls
 pickup latency and discovery read load (default 2 seconds);
