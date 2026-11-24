@@ -84,6 +84,55 @@ their authenticated original representation, rather than accepting old fields
 in current runtime configuration. Incompatible image-only rollback is unsafe;
 use the existing unchanged-original recovery fences or forward repair.
 
+## HTTP quota ownership
+
+`reflexio.server.rate_limit` owns configuration and admission; SlowAPI/limits
+still own registration, rule composition, counter algorithms and outage recovery.
+The limiter uses canonical process settings, not a second working-directory
+`.env`. An internal empty package asset disables vendor dotenv discovery.
+
+Async route and middleware checks use Starlette's context-propagating worker
+helper before calling the application. Sync routes retain worker execution.
+A cancelled request can consume quota when its physical counter call already
+started; it must not start the application afterward. The task owning the
+existing AnyIO worker token stays tracked until physical completion, including
+raw task cancellation. Work cancelled before execution is dropped. Dynamic
+rule groups bind each request on a separate copy so concurrent checks cannot
+select another caller's rule. No quota metadata lookup
+runs after a response has been constructed. Rejections keep the existing JSON
+body and add `Retry-After` in seconds from the rejecting rule's whole window.
+This advisory hint does not reserve capacity or guarantee the retry will pass
+other stacked/shared rules. Successful responses omit optional quota metadata.
+
+The six old `RATELIMIT_HEADERS_ENABLED` / `RATELIMIT_HEADER_*` settings are
+retired and rejected when nonblank. Remove those assignments and migrate custom
+clients/proxies to the standard rejection contract. This changes clients that
+used successful-response quota metadata; no automatic client retry is added.
+`RATELIMIT_IN_MEMORY_FALLBACK_ENABLED` is also retired: select fallback through
+`RATELIMIT_IN_MEMORY_FALLBACK` alone:
+
+| Value | Outage behavior |
+| --- | --- |
+| Unset/blank | No process-local fallback |
+| `inherit` | Use original route/default rules locally |
+| Rate expression(s) | Use those local fallback rules |
+
+Keep `RATELIMIT_SWALLOW_ERRORS` independent: it selects fail-open behavior when
+counter evaluation cannot complete. Boolean values now mean their stated value;
+`false` no longer accidentally enables false-default policies. Backend, strategy,
+namespace and existing conditional application/default choices remain supported.
+`RATELIMIT_STORAGE_OPTIONS` was already unusable as a nonempty environment
+string; it continues to refuse startup with an explicit name-only diagnostic.
+It is not an additional supported-choice retirement. See `.env.example` for exact defaults and accepted spellings. No quotas or stored
+data are rewritten, and the former image still requires its former settings.
+
+Custom apps using either SlowAPI middleware variant must replace that registration
+with `app.add_middleware(reflexio.server.rate_limit.RateLimitMiddleware)` and
+retain the SDK singleton in `app.state.limiter`. The SDK integration preserves
+upstream default/application composition and exemptions without blocking the
+event loop. Direct vendor middleware is outside that guarantee. Standard SDK
+apps do not install it implicitly; their dormant application settings stay dormant.
+
 ## Services
 
 Two services, started together via `./run_services.sh`:

@@ -9,6 +9,14 @@ from dataclasses import dataclass
 # records, because reflexio-enterprise's configuration_inventory scanner reads
 # this assignment with ast.literal_eval. Callers extend it with their own names.
 REMOVED_ENV_ALIASES = {
+    "RATELIMIT_STORAGE_OPTIONS": "",
+    "RATELIMIT_HEADERS_ENABLED": "",
+    "RATELIMIT_HEADER_LIMIT": "",
+    "RATELIMIT_HEADER_REMAINING": "",
+    "RATELIMIT_HEADER_RESET": "",
+    "RATELIMIT_HEADER_RETRY_AFTER": "",
+    "RATELIMIT_HEADER_RETRY_AFTER_VALUE": "",
+    "RATELIMIT_IN_MEMORY_FALLBACK_ENABLED": "RATELIMIT_IN_MEMORY_FALLBACK",
     "REFLEXIO_EMBEDDING_REGENERATION_BATCH_SIZE": "regeneration request batch_size",
     "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS": "",
     "REFLEXIO_LLM_SEED": "",
@@ -108,6 +116,39 @@ _OPTIMIZATION_GUIDANCE = (
 # Registry order is the order of appended guidance; keep new guidance-bearing
 # records where their paragraph belongs and plain renames after them.
 REMOVED_ENV: tuple[RemovedEnv, ...] = (
+    RemovedEnv(
+        "RATELIMIT_STORAGE_OPTIONS",
+        guidance="; nonempty environment strings never supplied usable storage options; remove the invalid assignment and preserve supported backend URI options",
+    ),
+    RemovedEnv(
+        "RATELIMIT_HEADERS_ENABLED",
+        guidance="; remove custom quota metadata settings; HTTP 429 now supplies standard Retry-After and successful responses omit quota metadata",
+    ),
+    RemovedEnv(
+        "RATELIMIT_HEADER_LIMIT",
+        guidance="; remove custom quota metadata settings; HTTP 429 now supplies standard Retry-After and successful responses omit quota metadata",
+    ),
+    RemovedEnv(
+        "RATELIMIT_HEADER_REMAINING",
+        guidance="; remove custom quota metadata settings; HTTP 429 now supplies standard Retry-After and successful responses omit quota metadata",
+    ),
+    RemovedEnv(
+        "RATELIMIT_HEADER_RESET",
+        guidance="; remove custom quota metadata settings; HTTP 429 now supplies standard Retry-After and successful responses omit quota metadata",
+    ),
+    RemovedEnv(
+        "RATELIMIT_HEADER_RETRY_AFTER",
+        guidance="; remove custom quota metadata settings; HTTP 429 now supplies standard Retry-After and successful responses omit quota metadata",
+    ),
+    RemovedEnv(
+        "RATELIMIT_HEADER_RETRY_AFTER_VALUE",
+        guidance="; remove custom quota metadata settings; HTTP 429 now supplies standard Retry-After and successful responses omit quota metadata",
+    ),
+    _renamed(
+        "RATELIMIT_IN_MEMORY_FALLBACK_ENABLED",
+        "RATELIMIT_IN_MEMORY_FALLBACK",
+        "; unset disables fallback, inherit uses original rules, and a rate expression selects custom rules; do not copy the old boolean",
+    ),
     RemovedEnv(
         "REFLEXIO_INSTANCE_ID",
         guidance=(

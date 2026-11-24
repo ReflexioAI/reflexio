@@ -85,6 +85,7 @@ setup in actual model-client construction.
 ## Main Entry Points
 
 
+- **HTTP quotas**: `rate_limit.py` owns off-loop admission and the 429 protocol; `rate_limit_policy.py` resolves canonical settings. SlowAPI retains counters and registration; see [upgrade guidance](../../developer.md#http-quota-ownership).
 - **API composer**: `api.py` - `create_app()` factory, middleware/capability wiring, OpenAPI auth decoration, and `core_router` aggregation
 - **Search request runtime**: `search_runtime.py` - explicit search-work budget bounded by the original HTTP deadline, accepted-write finalization on that remaining HTTP budget, unsampled phase timing (including completed monotonic landmarks), bounded worker ownership and connection cancellation; embedded calls have no request scope
   - `search.deps_to_body` reuses the final-dependency stamp through the endpoint profiling boundary. It includes dispatch and setup (such as experiment lookup), not pure pool wait. It is absent for missing stamps, holdout early returns and timeouts before that boundary; completed-landmark recording does not track still-queued endpoints.
