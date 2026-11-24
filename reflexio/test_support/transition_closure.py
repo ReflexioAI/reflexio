@@ -167,6 +167,18 @@ def seed_closed_window_history(
             *((project,) if project else ()),
         ),
     )
+    billing = (
+        None
+        if erased
+        else {
+            "ids": [],
+            "created_at": 1,
+            "platform_llm": False,
+            "input_tokens": 1,
+            "prompt_tokens": 2,
+            "completion_tokens": 3,
+        }
+    )
     db.query(
         f"INSERT INTO {db.table('extraction_windows')}(window_id,user_id,kind,org_id,project_id,predecessor,end_seq,manifest,policy,completed,effects_done,completed_at,derived_claimed,invalidated,effects) "
         "VALUES('closed','history-user','profile',NULL,?,0,1,'[]','{}',1,1,2,1,?,?)",
@@ -174,7 +186,7 @@ def seed_closed_window_history(
             project,
             int(erased),
             json.dumps(
-                {"version": 1, "skipped": True, "billing": None, "request_ids": []}
+                {"version": 1, "skipped": True, "billing": billing, "request_ids": []}
             ),
         ),
     )

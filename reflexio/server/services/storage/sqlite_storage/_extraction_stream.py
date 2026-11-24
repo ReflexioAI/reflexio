@@ -242,6 +242,26 @@ class SQLiteStreamSQL:
     def transition_admission_clock_missing(self) -> str:
         return "json_type(r.learning_admission,'$.admitted_at') IS NULL"
 
+    def transition_admission_clock_numeric(self) -> str:
+        return "json_type(r.learning_admission,'$.admitted_at') IN ('integer','real')"
+
+    def transition_admission_input_stats(self) -> str:
+        return (
+            "json_object('n',COUNT(*),'distinct_n',COUNT(DISTINCT i.ingestion_seq),"
+            "'lo',MIN(i.ingestion_seq),'hi',MAX(i.ingestion_seq))"
+        )
+
+    def transition_coverage_batch_limit(self) -> int:
+        get_limit = getattr(self.conn, "getlimit", None)
+        variables = (
+            get_limit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER) if get_limit else 999
+        )
+        return min(500, (variables - 3) // 5)
+
+    def transition_inventory_snapshot(self) -> tuple[object, ...] | None:
+        # SQLite does not expose a transaction generation. Use normal page gates.
+        return None
+
     def transition_window_history_format(self) -> tuple[str, str]:
         """Compact ACK/retired formats for fixed window alias w, no credit."""
         request_ids = "json_each(w.effects,'$.request_ids')"
@@ -271,10 +291,26 @@ class SQLiteStreamSQL:
             ),
         )
 
+    def transition_window_history_request_match(self, request_sql: str) -> str:
+        # Older JSON1 scalar extraction can truncate an escaped NUL.
+        return (
+            "EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(w.effects) "
+            "THEN w.effects ELSE '{}' END,'$.request_ids') item "
+            f"WHERE item.type='text' AND item.value={request_sql} "
+            "AND instr(w.effects -> item.fullkey,char(92)||'u0000')=0)"
+        )
+
     def transition_window_history_no_billing(self) -> str:
         return (
             "CASE WHEN json_valid(w.effects) THEN json_type(w.effects,'$.billing')='null' "
             "ELSE 0 END"
+        )
+
+    def transition_window_billing_descriptor_valid(self) -> str:
+        return (
+            "CASE WHEN json_valid(w.effects) THEN reflexio_valid_window_delivery("
+            "CASE w.kind WHEN 'profile' THEN 'profile' WHEN 'playbook' THEN 'playbook' END,"
+            "CAST(w.effects -> '$.billing' AS BLOB))=1 ELSE 0 END"
         )
 
     def transition_window_history_parent_idle(self) -> str:
@@ -359,9 +395,7 @@ class SQLiteStreamSQL:
             "CASE WHEN json_valid(w.effects) AND json_valid(w.manifest) THEN ("
             "w.project_id='' AND typeof(w.predecessor)='integer' AND typeof(w.end_seq)='integer' "
             "AND (w.effects -> '$.acknowledged_window_run_id')=json_quote(r.id) "
-            "AND reflexio_valid_window_delivery("
-            "CASE w.kind WHEN 'profile' THEN 'profile' WHEN 'playbook' THEN 'playbook' END,"
-            "CAST(w.effects -> '$.billing' AS BLOB))=1 "
+            f"AND ({self.transition_window_billing_descriptor_valid()}) "
             "AND json_type(w.effects,'$.version')='integer' "
             "AND json_extract(w.effects,'$.version')=1 AND json_type(w.effects,'$.skipped')='true' "
             "AND json_type(w.manifest)='array' AND json_array_length(w.manifest)=0 "

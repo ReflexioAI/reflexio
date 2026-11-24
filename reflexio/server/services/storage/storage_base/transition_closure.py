@@ -23,9 +23,14 @@ from .closed_window_history import closed_window_history_sql
 from .transition_inventory import (
     INVENTORY_SOURCES,
     TransitionInventoryScopeError,
-    read_transition_inventory_page_db,
+    _iter_transition_inventory_pages_db,
 )
-from .transition_sources import finalized_run_candidate_sql, nonintake_request_sql
+from .transition_sources import (
+    foreign_admission_inputs_sql,
+    generic_closed_run_candidate_sql,
+    historical_ack_names_request_sql,
+    nonintake_request_sql,
+)
 
 
 @dataclass(frozen=True)
@@ -37,9 +42,7 @@ class ProjectTransitionClosure:
 
 _MAX_PAGES = 1000
 _INVENTORY_PAGE_SIZE = 500
-# Four bind parameters per check plus the shared scope and clock.
-_COVERAGE_BATCH_SIZE = 100
-_CoverageCheck = tuple[str, str, int, float | None]
+_CoverageCheck = tuple[str, str, int, float | None, str | None]
 
 
 class _ObservationRefusedError(Exception):
@@ -122,7 +125,7 @@ def _covered(
         return True
     # Clockless batches can contain only SQL NULL clocks; PostgreSQL would
     # otherwise resolve the VALUES column as text before numeric comparison.
-    values = ",".join("(?,?,?,CAST(? AS DOUBLE PRECISION))" for _ in checks)
+    values = ",".join("(?,?,?,CAST(? AS DOUBLE PRECISION),?)" for _ in checks)
     end_match = "=" if exact else ">="
     history = closed_window_history_sql(db, now=now)
     routed = f"(w.org_id=scope.org_id AND w.invalidated=0 AND w.completed_at IS NOT NULL) OR ({history.queue_floor})"
@@ -135,8 +138,16 @@ def _covered(
         # An exact stored queue position has no publication-time claim.
         # NULL dates enter only through the shared positive history routes.
         timing = f"(w.completed_at IS NULL OR ({timing}))"
+    else:
+        # The enqueue clock predates the completion clock. Match the exact
+        # request in a native compact ACK to prove coverage without a date.
+        ack_request = historical_ack_names_request_sql(db, "p.request_id")
+        timing = (
+            f"(({timing}) OR (p.admitted_at IS NOT NULL AND w.completed_at IS NULL "
+            f"AND ({ack_request})))"
+        )
     rows = db.query(
-        f"WITH pending_coverage(user_id,kind,seq,admitted_at) AS (VALUES {values}), "
+        f"WITH pending_coverage(user_id,kind,seq,admitted_at,request_id) AS (VALUES {values}), "
         "scope AS (SELECT ? AS org_id,? AS project_id) "
         "SELECT NOT EXISTS(SELECT 1 FROM pending_coverage p WHERE NOT EXISTS("
         f"SELECT 1 FROM {db.table('extraction_windows')} w CROSS JOIN scope "
@@ -147,6 +158,13 @@ def _covered(
         (*chain.from_iterable(checks), org, project, now),
     )
     return bool(rows[0]["proven"])
+
+
+def _coverage_batch_limit(db: StreamSQL) -> int:
+    limit = db.transition_coverage_batch_limit()
+    if limit < 1:
+        raise _ObservationRefusedError("observation_limit_reached")
+    return limit
 
 
 def derive_project_transition_closure_db(
@@ -190,16 +208,12 @@ def _observe_sources(
         after = None
         counts[source] = 0
         seen: set[tuple[str, ...]] = set()
+        pages = _iter_transition_inventory_pages_db(
+            db, source, org_id=org_id, project_id=project_id
+        )
         for _ in range(_MAX_PAGES):
             try:
-                page = read_transition_inventory_page_db(
-                    db,
-                    source,
-                    org_id=org_id,
-                    project_id=project_id,
-                    after=after,
-                    limit=_INVENTORY_PAGE_SIZE,
-                )
+                page = next(pages)
             except TransitionInventoryScopeError:
                 blockers.add("source_attribution_unavailable")
                 break
@@ -240,7 +254,7 @@ def _virgin_frontiers(
     values = ",".join("(?,?)" for _ in checks)
     project_scope = db.project_filter().replace("?", "scope.project_id")
     # _observe_sources already checks the full native execution/debt facts.
-    # Historical generic finalization does not consume a window cursor; every
+    # Closed generic runs do not consume a window cursor; every
     # actual window or other run class still prevents a virgin proof.
     rows = db.query(
         f"WITH virgin_cursors(user_id,kind) AS (VALUES {values}), "
@@ -250,9 +264,9 @@ def _virgin_frontiers(
         "AND w.kind=p.kind AND w.project_id=scope.project_id) OR "
         f"EXISTS(SELECT 1 FROM {db.table('_agent_runs')} r WHERE r.org_id=scope.org_id "
         "AND r.user_id=p.user_id AND r.extractor_kind=p.kind "
-        f"AND ({project_scope}) AND ({finalized_run_candidate_sql(db)}) IS NOT TRUE)) AS proven",
+        f"AND ({project_scope}) AND ({generic_closed_run_candidate_sql(db)}) IS NOT TRUE)) AS proven",
         (
-            *chain.from_iterable((user, kind) for user, kind, _, _ in checks),
+            *chain.from_iterable((user, kind) for user, kind, _, _, _ in checks),
             org,
             project,
         ),
@@ -277,7 +291,7 @@ def _certify_frontiers(
         else _covered(db, org, project, checks, now, exact=True)
     )
     if proven:
-        frontiers.update(((user, kind), seq) for user, kind, seq, _ in checks)
+        frontiers.update(((user, kind), seq) for user, kind, seq, _, _ in checks)
     else:
         # One unproved member cannot certify any sibling in this bounded batch.
         blockers.add("cursor_completion_unproven")
@@ -309,6 +323,7 @@ def _cursor_frontiers(
     counts["cursors"] = 0
     virgin: list[_CoverageCheck] = []
     completed: list[_CoverageCheck] = []
+    batch_limit = _coverage_batch_limit(db)
     for row in _pages(
         db,
         "extraction_cursors",
@@ -337,8 +352,8 @@ def _cursor_frontiers(
             blockers.add("cursor_completion_unproven")
             continue
         batch = virgin if is_virgin else completed
-        batch.append((user, kind, seq, 0))
-        if len(batch) == _COVERAGE_BATCH_SIZE:
+        batch.append((user, kind, seq, 0, None))
+        if len(batch) == batch_limit:
             _certify_frontiers(
                 db, org_id, project_id, now, batch, cursors, blockers, virgin=is_virgin
             )
@@ -362,17 +377,16 @@ def _admissions(
 ) -> None:
     # Scope both sides, so a request cannot borrow another user's/project's inputs.
     input_scope = f"i.user_id=r.user_id AND i.request_id=r.request_id AND {db.project_filter('i')}"
-    stats = ",".join(
-        f"(SELECT {expression} FROM {db.table('interactions')} i WHERE {input_scope}) AS {name}"
-        for expression, name in [
-            ("COUNT(*)", "n"),
-            ("COUNT(DISTINCT i.ingestion_seq)", "distinct_n"),
-            ("MIN(i.ingestion_seq)", "lo"),
-            ("MAX(i.ingestion_seq)", "hi"),
-        ]
+    stats = (
+        f"(SELECT {db.transition_admission_input_stats()} "
+        f"FROM {db.table('interactions')} i WHERE {input_scope}) AS input_stats"
+    )
+    foreign_inputs = foreign_admission_inputs_sql(
+        db, request_alias="r", project_sql="?"
     )
     counts["admissions"] = counts["queued_admissions"] = 0
     coverage: list[_CoverageCheck] = []
+    batch_limit = _coverage_batch_limit(db)
 
     def prove_coverage() -> None:
         if not _covered(db, org_id, project_id, coverage, now):
@@ -386,19 +400,26 @@ def _admissions(
     for row in _pages(
         db,
         "requests",
-        f"r.user_id,r.request_id,r.learning_admission,{stats},"
+        f"r.user_id,r.request_id,r.learning_admission,{stats},{foreign_inputs} AS foreign_inputs,"
         f"(SELECT MAX(u.highwater) FROM {db.table('learning_work')} u WHERE u.org_id=? AND u.user_id=r.user_id) AS highwater",
         intake_scope,
         (project_id, project_id),
         ("r.user_id", "r.request_id"),
-        prefix_params=(project_id,) * 4 + (org_id,),
+        prefix_params=(project_id, project_id, org_id),
     ):
         counts["admissions"] += 1
         try:
             admission = decoded(row["learning_admission"])
+            inputs = decoded(row["input_stats"])
         except (ValueError, TypeError):
             admission = None
-        if not isinstance(admission, dict):
+            inputs = None
+        if (
+            not isinstance(admission, dict)
+            or not isinstance(inputs, dict)
+            or inputs.keys() != {"n", "distinct_n", "lo", "hi"}
+            or row["foreign_inputs"] not in (False, 0)
+        ):
             blockers.add("admission_authentication_unproven")
             continue
         valid = all(
@@ -433,13 +454,20 @@ def _admissions(
         if valid:
             # Native deletion/retention leaves the immutable allocation range
             # intact. Authenticate every retained input, not erased content.
-            valid = row["n"] == row["distinct_n"] and (
-                (row["n"] == 0 and row["lo"] is None and row["hi"] is None)
-                or (
-                    row["n"] > 0
-                    and row["lo"] is not None
-                    and row["hi"] is not None
-                    and lo <= row["lo"] <= row["hi"] <= hi
+            n, distinct_n = inputs["n"], inputs["distinct_n"]
+            input_lo, input_hi = inputs["lo"], inputs["hi"]
+            valid = (
+                type(n) is int
+                and type(distinct_n) is int
+                and n == distinct_n
+                and (
+                    (n == 0 and input_lo is None and input_hi is None)
+                    or (
+                        n > 0
+                        and type(input_lo) is int
+                        and type(input_hi) is int
+                        and lo <= input_lo <= input_hi <= hi
+                    )
                 )
             )
         if not valid:
@@ -455,8 +483,10 @@ def _admissions(
                 continue
             processed = min(hi, frontier)
             if processed >= lo:
-                coverage.append((row["user_id"], kind, processed, stamp))
-                if len(coverage) == _COVERAGE_BATCH_SIZE:
+                coverage.append(
+                    (row["user_id"], kind, processed, stamp, row["request_id"])
+                )
+                if len(coverage) == batch_limit:
                     prove_coverage()
             if hi > frontier:
                 queued = True

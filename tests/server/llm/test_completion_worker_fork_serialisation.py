@@ -5,7 +5,7 @@ filelock (>= 3.30) installs a ``sys.audit`` hook that raises
 ownership")`` in any thread calling ``os.fork`` while another thread is between
 filelock's before-fork and after-fork handlers. Under the ``fork`` start method
 every isolated completion forks from the threaded server, so two concurrent
-completions failed in production (Sentry PYTHON-FASTAPI-56).
+completions can race during descriptor-ownership changes.
 
 The scenario runs in a fresh interpreter. An at-fork ``before`` hook registered
 ahead of the filelock import runs after filelock's own (before-hooks run in
