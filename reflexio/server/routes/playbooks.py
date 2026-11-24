@@ -1,7 +1,8 @@
 """Playbook route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
-from typing import TYPE_CHECKING, Annotated, Any
+import threading
+from typing import TYPE_CHECKING, Annotated, Any, Self
 
 if TYPE_CHECKING:
     pass
@@ -13,6 +14,10 @@ from fastapi import (
     HTTPException,
     Request,
 )
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import JSONResponse
+from starlette.types import Receive, Scope, Send
 
 from reflexio.models.api_schema.aggregation_operations import (
     AggregationOperationConflictError,
@@ -73,6 +78,10 @@ from reflexio.server.auth import (
 )
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.offloop_body import off_loop_body
+from reflexio.server.operation_limiter import (
+    limiter_http_exception,
+    try_aggregation_capacity,
+)
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
 from reflexio.server.services.operation_state_utils import OperationStateManager
@@ -86,26 +95,106 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _review_user_playbooks_in_background(
-    reflexio: Any,
-    org_id: str,
-    payload: ReviewUserPlaybooksRequest,
-    run_id: str,
-) -> None:
-    """Run an apply-mode review off the request, keeping the operation limit."""
-    try:
-        _run_limited_api(
-            org_id,
-            "aggregation",
-            lambda: reflexio.review_user_playbooks(payload, run_id=run_id),
-        )
-    except Exception:
-        # Nothing is left to raise to: the response was already sent.
-        logger.exception(
-            "event=review_user_playbooks_background_failed org_id=%s run_id=%s",
-            org_id,
-            run_id,
-        )
+class _AdmittedReviewResponse(JSONResponse):
+    """Own a review permit through response delivery and physical execution."""
+
+    @classmethod
+    async def create(
+        cls, reflexio: Any, org_id: str, payload: ReviewUserPlaybooksRequest
+    ) -> Self:
+        construction_lock = threading.Lock()
+        abandoned = False
+        pending_response: Self | None = None
+
+        def construct() -> Self:
+            nonlocal pending_response
+            response = cls(reflexio, org_id, payload)
+            with construction_lock:
+                was_abandoned = abandoned
+                if not was_abandoned:
+                    pending_response = response
+            if was_abandoned:
+                response._release("response")
+            return response
+
+        try:
+            response = await run_in_threadpool(construct)
+        except BaseException:
+            # The constructor may still be running in its physical thread.
+            # Either reclaim its published result or let that thread release
+            # the reservation when it finishes constructing an abandoned one.
+            with construction_lock:
+                abandoned = True
+                response = pending_response
+                pending_response = None
+            if response is not None:
+                response._release("response")
+            raise
+        with construction_lock:
+            pending_response = None
+        return response
+
+    def __init__(
+        self, reflexio: Any, org_id: str, payload: ReviewUserPlaybooksRequest
+    ) -> None:
+        self._capacity = try_aggregation_capacity(org_id)
+        if not self._capacity.__enter__():
+            self._capacity.__exit__(None, None, None)
+            raise limiter_http_exception("aggregation")
+        self._owner = "response"
+        self._owner_lock = threading.Lock()
+        try:
+            run_id = new_review_run_id()
+            content = ReviewUserPlaybooksResponse(
+                success=True,
+                report_only=False,
+                run_id=run_id,
+                msg="User playbook review started",
+            ).model_dump(mode="json", exclude_none=True)
+            super().__init__(
+                content,
+                background=BackgroundTask(self._run, reflexio, org_id, payload, run_id),
+            )
+        except BaseException:
+            self._release("response")
+            raise
+
+    def _release(self, owner: str) -> None:
+        with self._owner_lock:
+            if self._owner != owner:
+                return
+            self._owner = "closed"
+        self._capacity.__exit__(None, None, None)
+
+    def _run(
+        self,
+        reflexio: Any,
+        org_id: str,
+        payload: ReviewUserPlaybooksRequest,
+        run_id: str,
+    ) -> None:
+        with self._owner_lock:
+            if self._owner != "response":
+                return
+            self._owner = "worker"
+        try:
+            reflexio.review_user_playbooks(payload, run_id=run_id)
+        except Exception:
+            logger.exception(
+                "event=review_user_playbooks_background_failed org_id=%s run_id=%s",
+                org_id,
+                run_id,
+            )
+        finally:
+            self._release("worker")
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # A cancelled await does not prove its physical thread has stopped.
+            # Once execution starts, only that worker may release the permit.
+            self._release("response")
 
 
 @router.post(
@@ -114,12 +203,11 @@ def _review_user_playbooks_in_background(
     response_model_exclude_none=True,
 )
 @limiter.limit("5/minute")
-def review_user_playbooks_endpoint(
+async def review_user_playbooks_endpoint(
     request: Request,
     payload: ReviewUserPlaybooksRequest,
-    background_tasks: BackgroundTasks,
     org_id: str = Depends(default_get_org_id),
-) -> ReviewUserPlaybooksResponse:
+) -> ReviewUserPlaybooksResponse | _AdmittedReviewResponse:
     """Re-review a bounded creation-time window of current user playbooks.
 
     Report mode answers inline because its report exists only in the response.
@@ -128,24 +216,16 @@ def review_user_playbooks_endpoint(
     client with committed writes and no response; each applied decision is
     recorded on the replacement's lineage under the returned ``run_id``.
     """
-    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    reflexio = await run_in_threadpool(reflexio_cache.get_reflexio, org_id=org_id)
     if payload.report_only:
-        return _run_limited_api(
+        return await run_in_threadpool(
+            _run_limited_api,
             org_id,
             "aggregation",
             lambda: reflexio.review_user_playbooks(payload),
         )
 
-    run_id = new_review_run_id()
-    background_tasks.add_task(
-        _review_user_playbooks_in_background, reflexio, org_id, payload, run_id
-    )
-    return ReviewUserPlaybooksResponse(
-        success=True,
-        report_only=False,
-        run_id=run_id,
-        msg="User playbook review started",
-    )
+    return await _AdmittedReviewResponse.create(reflexio, org_id, payload)
 
 
 @router.post(

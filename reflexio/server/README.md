@@ -177,6 +177,18 @@ turnover bound is not a substitute for proving configuration freshness.
 - **Operations/admin**: `GET /api/get_operation_status`, `GET /api/generation_operations/{service_name}`, `GET /api/generation_operations/{service_name}/{operation_id}`, `POST /api/cancel_operation`, `POST /api/cancel_operation/{operation_id}`, `POST /api/admin/cache/invalidate`, `POST /api/session_outcome`, `POST /api/get_session_outcomes`, `DELETE /api/delete_interaction`, `DELETE /api/delete_request`, `DELETE /api/delete_session`, `DELETE /api/delete_requests_by_ids`, `DELETE /api/delete_all_interactions`, `POST /api/clear_user_data`
 - **Human clarification/stall state**: `GET /api/pending_tool_calls`, `GET /api/pending_tool_calls/{pending_tool_call_id}`, `POST /api/pending_tool_calls/{pending_tool_call_id}/resolve`, `PATCH /api/pending_tool_calls/{pending_tool_call_id}/answer`, `POST /api/pending_tool_calls/{pending_tool_call_id}/not_applicable`, `POST /api/pending_tool_calls/{pending_tool_call_id}/cancel`, `GET /api/stall_state`, `POST /api/stall_state/notified`
 
+Apply-mode `POST /api/review_user_playbooks` reserves aggregation capacity before
+acknowledging that a review started. Saturated requests receive 503 and start no
+review; clients can retry after capacity becomes available. Construction stays
+off the event loop behind a cancellation-aware result handoff, so an abandoned
+constructor or result reclaims its reservation without relying on cyclic GC.
+The admitted response owns the reservation until its background thread starts,
+then that physical worker owns it through completion. Failed delivery releases an unstarted
+reservation; cancelling a response cannot release a still-running review's slot.
+This acknowledgement does not make review work durable across process restarts.
+Report-only review and synchronous manual aggregation retain their separate
+supported admission wait.
+
 **Authentication Pattern**: The standalone open-source `api:app` captures the configured organization when it is created and uses that identity for requests and background work, with `LocalAccessMiddleware` limiting no-key data access to loopback peers, hostnames, and browser origins. Setting `REFLEXIO_API_KEY` requires matching Bearer authentication for all data clients. Its launcher binds loopback by default. Embedded hosts composing `create_app()` own their access policy; enterprise deployments supply authenticated org resolution, additional account routers, admin checks, observability hooks, and usage metrics.
 
 **User-playbook exposure boundary**: Authenticated enterprise deployments install `ExposureLedgerRecorder` through their capability registry. In those deployments, `POST /api/search` and `POST /api/search_user_playbooks` synchronously record the final served user-playbook set through `services/search_exposure.py` before metering or releasing success. Shared `create_app()` intentionally installs no default recorder; local/no-auth OSS and custom shared app constructions persist exposures only when their deployment registers `SEARCH_EXPOSURE_RECORDER`. Because that absence is legal, `record_search_exposures()` reports it rather than raising: it returns `SearchExposureOutcome.RECORDED`, `SearchExposureOutcome.RECORDED_UNCORRELATED`, `SearchExposureOutcome.RECORDER_FAILED`, or `SearchExposureOutcome.NO_RECORDER`, so callers that depend on the batch reaching the ledger (corpus reconstruction, replay tooling) can assert on the outcome instead of assuming a silent no-op was a durable write. Only the first two mean the batch is durable.
