@@ -27,6 +27,12 @@ def nonintake_request_sql(
     )
 
 
+def finalized_run_candidate_sql(db: StreamSQL) -> str:
+    """Structural class only; native execution/debt facts must also be clear."""
+    idle = db.transition_window_history_parent_idle().replace("a.", "r.")
+    return f"(r.status='finalized' AND substr(r.id,1,7)<>'window:' AND ({idle}))"
+
+
 RUN_EXECUTION_FACTS = ("live_owner", "dependency", "preparation", "debt", "window")
 
 
