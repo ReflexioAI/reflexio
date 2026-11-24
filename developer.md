@@ -105,7 +105,8 @@ This advisory hint does not reserve capacity or guarantee the retry will pass
 other stacked/shared rules. Successful responses omit optional quota metadata.
 
 The six old `RATELIMIT_HEADERS_ENABLED` / `RATELIMIT_HEADER_*` settings are
-retired and rejected when nonblank. Remove those assignments and migrate custom
+retired and rejected whenever assigned, including blank values. Remove those
+assignments and migrate custom
 clients/proxies to the standard rejection contract. This changes clients that
 used successful-response quota metadata; no automatic client retry is added.
 `RATELIMIT_IN_MEMORY_FALLBACK_ENABLED` is also retired: select fallback through
