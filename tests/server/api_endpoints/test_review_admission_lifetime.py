@@ -1,11 +1,14 @@
 """A successful review response owns capacity until physical work ends."""
 
 import asyncio
+import gc
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi.middleware.asyncexitstack import AsyncExitStackMiddleware
 from fastapi.testclient import TestClient
 
 from reflexio.models.api_schema.service_schemas import ReviewUserPlaybooksRequest
@@ -147,5 +150,81 @@ def test_cancelled_response_retains_capacity_until_physical_review_finishes(
         reflexio.review_user_playbooks.assert_called_once()
         with operation_limiter.try_aggregation_capacity("cancelled") as admitted:
             assert admitted
+
+    asyncio.run(run())
+
+
+def test_cancelled_endpoint_cannot_orphan_a_constructed_reservation(
+    test_app, mock_reflexio, patched_reflexio, monkeypatch
+):
+    async def run():
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        cancelled = threading.Event()
+        constructed = threading.Event()
+        original_init = playbooks._AdmittedReviewResponse.__init__
+        task = None
+
+        def cancel_request():
+            assert task is not None
+            task.cancel()
+            cancelled.set()
+
+        def construct(response, *args, **kwargs):
+            original_init(response, *args, **kwargs)
+            loop.call_soon_threadsafe(cancel_request)
+            if threading.get_ident() != loop_thread:
+                assert cancelled.wait(5), "request cancellation did not reach the loop"
+            constructed.set()
+
+        monkeypatch.setattr(playbooks._AdmittedReviewResponse, "__init__", construct)
+        # Orphan cleanup must not depend on when cyclic GC happens to run.
+        gc_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            route = next(
+                route
+                for route in test_app.routes
+                if getattr(route, "path", None) == "/api/review_user_playbooks"
+            )
+
+            async def receive():
+                return {
+                    "type": "http.request",
+                    "body": json.dumps(_PAYLOAD).encode(),
+                    "more_body": False,
+                }
+
+            async def send(_message):
+                await asyncio.sleep(0)
+
+            # Exercise the actual FastAPI route task whose endpoint handoff
+            # can be cancelled, without an outer middleware masking it.
+            scope = {
+                "type": "http",
+                "app": test_app,
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": "http",
+                "path": "/api/review_user_playbooks",
+                "raw_path": b"/api/review_user_playbooks",
+                "root_path": "",
+                "query_string": b"",
+                "headers": [(b"content-type", b"application/json")],
+                "client": ("127.0.0.1", 12345),
+                "server": ("testserver", 80),
+            }
+            route_app = AsyncExitStackMiddleware(route.app)
+            task = asyncio.create_task(route_app(scope, receive, send))
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+            assert await asyncio.to_thread(constructed.wait, 5)
+            mock_reflexio.review_user_playbooks.assert_not_called()
+            with operation_limiter.try_aggregation_capacity("test-org") as admitted:
+                assert admitted, "cancelled endpoint orphaned its reservation"
+        finally:
+            gc.collect()
+            if gc_enabled:
+                gc.enable()
 
     asyncio.run(run())

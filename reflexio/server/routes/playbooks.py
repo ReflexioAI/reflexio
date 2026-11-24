@@ -15,6 +15,7 @@ from fastapi import (
     Request,
 )
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 from starlette.types import Receive, Scope, Send
 
@@ -166,7 +167,7 @@ class _AdmittedReviewResponse(JSONResponse):
     response_model_exclude_none=True,
 )
 @limiter.limit("5/minute")
-def review_user_playbooks_endpoint(
+async def review_user_playbooks_endpoint(
     request: Request,
     payload: ReviewUserPlaybooksRequest,
     org_id: str = Depends(default_get_org_id),
@@ -179,14 +180,17 @@ def review_user_playbooks_endpoint(
     client with committed writes and no response; each applied decision is
     recorded on the replacement's lineage under the returned ``run_id``.
     """
-    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    reflexio = await run_in_threadpool(reflexio_cache.get_reflexio, org_id=org_id)
     if payload.report_only:
-        return _run_limited_api(
+        return await run_in_threadpool(
+            _run_limited_api,
             org_id,
             "aggregation",
             lambda: reflexio.review_user_playbooks(payload),
         )
 
+    # Construct and return without an await: cancellation cannot orphan a
+    # reserved response in a completed synchronous endpoint worker.
     return _AdmittedReviewResponse(reflexio, org_id, payload)
 
 
