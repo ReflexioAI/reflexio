@@ -285,8 +285,24 @@ def test_legacy_finalization_receipt_proves_old_saved_output_published(storage):
         )
     legacy, unproven = storage.transition_inventory_page("runs").items
     assert legacy.execution_bearing is False
-    assert unproven.execution_bearing is None
-    assert unproven.reasons == ("unreceipted_output",)
+    assert unproven.execution_bearing is False
+    assert unproven.inert_history
+    with storage._stream_sql() as db:
+        from reflexio.server.services.storage.storage_base.transition_inventory import (
+            _projection,
+        )
+
+        table, _keys, scope, columns = _projection(db, "runs", db.now())
+        facts = {
+            row["run_id"]: row
+            for row in db.query(
+                f"SELECT {columns} FROM {table} r WHERE {scope}",  # noqa: S608 -- Actual native projection and fixed test scope.
+                (storage.org_id,),
+            )
+        }
+    assert facts["legacy"]["legacy_published"]
+    assert not facts["unproven"]["legacy_published"]
+    assert not facts["unproven"]["published"]
 
 
 def test_ignored_cursor_never_reports_a_complete_inventory(storage, monkeypatch):
@@ -365,6 +381,10 @@ def test_project_scoped_metadata_never_returns_foreign_or_unbound_identifiers(
     from reflexio.server.services.storage.storage_base import transition_inventory
 
     # Exercise the native project's SQL predicates on disposable SQLite tables.
+    # The shared closed-window proof now also binds the native parent's project.
+    storage.conn.execute(
+        "ALTER TABLE _agent_runs ADD COLUMN project_id TEXT DEFAULT ''"
+    )
     monkeypatch.setattr(transition_inventory, "current_project_id", lambda: "requested")
     monkeypatch.setattr(
         SQLiteStreamSQL,
@@ -451,3 +471,75 @@ def test_null_nonleading_inventory_key_cannot_be_paginated_away(
             read_transition_inventory_page_db(
                 db, "dependencies", org_id=storage.org_id, project_id="", after=after
             )
+
+
+@pytest.mark.parametrize(
+    "state,inert",
+    [
+        ("finalized", True),
+        ("failed", False),
+        ("cancelled", False),
+        ("agent_completed", False),
+        ("finalizing", False),
+    ],
+)
+def test_generic_terminal_saved_output_is_history_only_when_native_owners_cannot_replay(
+    storage, state, inert
+):
+    seed_run(
+        storage,
+        "standalone",
+        status=state,
+        output={"output": "PRIVATE_RETAINED_OUTPUT"},
+    )
+    item = storage.transition_inventory_page("runs").items[0]
+    assert item.inert_history is inert
+    assert item.saved_output
+    assert (
+        item.execution_bearing is False
+        if inert
+        else item.execution_bearing is not False
+    )
+    assert "PRIVATE_RETAINED_OUTPUT" not in json.dumps(asdict(item))
+
+
+@pytest.mark.parametrize("unknown", [None, True])
+@pytest.mark.parametrize(
+    "field",
+    ["live_owner", "dependency", "preparation", "debt", "window", "terminal_history"],
+)
+def test_finalized_history_python_and_sql_both_refuse_unknown_or_active_facts(
+    storage, field, unknown
+):
+    from reflexio.server.services.storage.storage_base.transition_sources import (
+        RUN_EXECUTION_FACTS,
+        finalized_run_inert,
+        finalized_run_inert_sql,
+    )
+
+    facts: dict[str, bool | None] = dict.fromkeys(RUN_EXECUTION_FACTS, False)
+    facts["terminal_history"] = True
+    facts[field] = (
+        unknown if field != "terminal_history" else (None if unknown is None else False)
+    )
+    columns = ",".join(f"? AS {key}" for key in facts)
+    with storage._stream_sql() as db:
+        observed = db.query(
+            f"SELECT {finalized_run_inert_sql()} AS inert FROM (SELECT {columns}) facts",  # noqa: S608 -- Fixed shared source predicate and test-only column names.
+            tuple(facts.values()),
+        )[0]["inert"]
+    assert not finalized_run_inert(facts)
+    assert not observed
+
+
+def test_finalized_generic_history_does_not_ignore_a_foreign_user_live_token(storage):
+    seed_run(storage, "standalone", status="finalized", output={"output": "retained"})
+    with storage.commit_scope():
+        storage.conn.execute("UPDATE _agent_runs SET user_work_token='parent-token'")
+        storage.conn.execute(
+            "INSERT INTO learning_work(org_id,user_id,lease_token,lease_until) VALUES(?,'other','parent-token',9999999999)",
+            (storage.org_id,),
+        )
+    item = storage.transition_inventory_page("runs").items[0]
+    assert not item.inert_history
+    assert "live_owner" in item.reasons

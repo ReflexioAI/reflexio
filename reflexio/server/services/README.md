@@ -124,6 +124,7 @@ Generation uses configured actors and fenced persistence; deferred workers rebui
   dependencies and finalization receipts join an enclosing transaction. Standalone
   mutations use the same owner for atomic commit/rollback; nested and no-op calls
   cannot publish earlier writes. Keep model calls outside these transactions.
+- **Transition metadata stays source-owned** — `storage_base/closed_window_history.py` proves only detached inert history and numeric queue positions, never publication or financial settlement; `storage_base/transition_sources.py` shares intrinsic non-intake predicates between closure and attributed cursor reads.
 - **Automatic extraction uses `storage_base/_extraction_stream.py`** — admission locks the user work row first; window output writes, cursor advancement and receipts share one fenced transaction.
 - **Aggregation state is per agent version** — scheduled intake, centroid matching, cluster membership, invalidation, and agent-playbook generation must never cross versions; keep LLM and clustering work outside `commit_scope()`.
 - **`tool_can_use` lives at root `Config`** — shared by playbook extraction and success evaluation, not per-service.

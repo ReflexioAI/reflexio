@@ -77,7 +77,7 @@ def test_retained_cursor_requires_attribution_and_exact_completed_source(storage
         ("UPDATE extraction_windows SET user_id='other'", "cursor_completion_unproven"),
         ("UPDATE extraction_windows SET kind='playbook'", "cursor_completion_unproven"),
         ("UPDATE requests SET learning_admission=NULL", "cursor_source_unproven"),
-        ("DELETE FROM interactions", "cursor_source_unproven"),
+        ("UPDATE interactions SET ingestion_seq=2", "cursor_source_unproven"),
         ("UPDATE extraction_cursors SET last_error='held'", "held_cursor"),
         ("UPDATE extraction_cursors SET attempts=1", "unfinished_cursor"),
     ],
@@ -168,3 +168,14 @@ def test_null_attributed_cursor_key_refuses_before_keyset_filter(
         )
         with pytest.raises(TransitionInventoryScopeError):
             _attributed_cursors(db, attribution(storage), after, 100)
+
+
+def test_native_retention_does_not_require_recreating_erased_admission_inputs(storage):
+    seed_completed(storage)
+    with storage.commit_scope():
+        storage.conn.execute("DELETE FROM interactions")
+    item = storage.transition_inventory_page(
+        "cursors", attribution=attribution(storage)
+    ).items[0]
+    assert item.execution_bearing is False
+    assert not item.reasons

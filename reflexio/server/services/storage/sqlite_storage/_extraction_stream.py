@@ -239,6 +239,55 @@ class SQLiteStreamSQL:
             "json_extract(r.generation_request_snapshot,'$.overflow.checkpoint.extraction_policy') AS policy_digest"
         )
 
+    def transition_admission_clock_missing(self) -> str:
+        return "json_type(r.learning_admission,'$.admitted_at') IS NULL"
+
+    def transition_window_history_format(self) -> tuple[str, str]:
+        """Compact ACK/retired formats for fixed window alias w, no credit."""
+        request_ids = "json_each(w.effects,'$.request_ids')"
+        common = (
+            "json_type(w.effects,'$.version')='integer' AND json_extract(w.effects,'$.version')=1 "
+            "AND json_type(w.effects,'$.skipped')='true' "
+            "AND json_type(w.effects,'$.request_ids')='array' "
+            f"AND NOT EXISTS(SELECT 1 FROM {request_ids} j WHERE j.type<>'text' OR length(trim(j.value,char(9)||char(10)||char(11)||char(12)||char(13)||' '))=0) "
+            f"AND (SELECT count(*)=count(DISTINCT value) FROM {request_ids})"
+        )
+
+        def shape(keys: str, count: int, extra: str) -> str:
+            return (
+                "CASE WHEN json_valid(w.effects) THEN CASE WHEN json_type(w.effects)='object' THEN "
+                f"({common}) AND (SELECT count(*) FROM json_each(w.effects))={count} "
+                f"AND NOT EXISTS(SELECT 1 FROM json_each(w.effects) j WHERE j.key NOT IN ({keys})) "
+                f"AND ({extra}) ELSE 0 END ELSE 0 END"
+            )
+
+        keys = "'version','skipped','billing','request_ids'"
+        return (
+            shape(keys, 4, "json_type(w.effects,'$.billing') IN ('object','null')"),
+            shape(
+                keys + ",'retired'",
+                5,
+                "json_type(w.effects,'$.retired')='true' AND json_type(w.effects,'$.billing')='null'",
+            ),
+        )
+
+    def transition_window_history_no_billing(self) -> str:
+        return (
+            "CASE WHEN json_valid(w.effects) THEN json_type(w.effects,'$.billing')='null' "
+            "ELSE 0 END"
+        )
+
+    def transition_window_history_parent_idle(self) -> str:
+        return (
+            "CASE WHEN json_valid(a.pending_tool_call_ids) THEN json_type(a.pending_tool_call_ids)='array' "
+            "AND json_array_length(a.pending_tool_call_ids)=0 ELSE 0 END "
+            "AND CASE WHEN json_valid(a.generation_request_snapshot) THEN "
+            "(json_type(a.generation_request_snapshot,'$.overflow.checkpoint.active_child') IS NULL "
+            "OR json_type(a.generation_request_snapshot,'$.overflow.checkpoint.active_child')='null') "
+            "AND (json_type(a.generation_request_snapshot,'$.overflow.checkpoint.waiting_child') IS NULL "
+            "OR json_type(a.generation_request_snapshot,'$.overflow.checkpoint.waiting_child')='null') ELSE 0 END"
+        )
+
     def transition_project_scope(self, source: str) -> tuple[str, str]:  # noqa: ARG002 -- SQLite has no projects.
         return "'' AS project_id", "? = ''"
 

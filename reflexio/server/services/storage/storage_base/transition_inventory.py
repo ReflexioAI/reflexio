@@ -16,6 +16,12 @@ from typing import Any, Literal
 from reflexio.server.work_scope import current_project_id
 
 from ._extraction_stream import StreamSQL
+from .closed_window_history import closed_window_history_sql
+from .transition_sources import (
+    finalized_run_inert,
+    finalized_run_inert_sql,
+    nonintake_request_sql,
+)
 
 InventorySource = Literal[
     "runs", "windows", "cursors", "dependencies", "preparations", "receipts", "work"
@@ -107,6 +113,7 @@ class TransitionInventoryItem:
     state: str | None = None
     live_owner: bool = False
     saved_output: bool = False
+    inert_history: bool = False
     overflow: bool = False
     schema_name: str | None = None
     instruction_digest: str | None = None
@@ -177,37 +184,54 @@ def _attributed_cursors(
     maximum = db.admission_value("max_seq").replace("r.", "q.")
     minimum = db.admission_value("min_seq").replace("r.", "q.")
     admitted = db.admission_value("admitted_at").replace("r.", "q.")
+    clockless = db.transition_admission_clock_missing().replace("r.", "q.")
     source = f"{requests} q WHERE q.user_id=r.user_id AND ({project})"
     input_project = db.project_filter("i").replace("?", "scope.project_id")
     input_scope = (
         f"i.user_id=q.user_id AND i.request_id=q.request_id AND ({input_project})"
     )
+    history = closed_window_history_sql(db, now=now)
+    routed_floor = f"((w.org_id=scope.org_id AND w.invalidated=0 AND w.completed_at IS NOT NULL) OR ({history.queue_floor}))"
     matching = (
-        "w.org_id=scope.org_id AND w.user_id=r.user_id AND w.kind=r.kind "
-        "AND w.project_id=r.project_id AND w.completed=1 AND w.invalidated=0 "
+        f"{routed_floor} AND w.user_id=r.user_id AND w.kind=r.kind "
+        "AND w.project_id=r.project_id AND w.completed=1 "
         "AND w.effects_done=1"
         f" AND w.completed_at>=0 AND w.completed_at<={now!r} "
         "AND w.predecessor>=0 AND w.end_seq>w.predecessor"
     )
+    matching_erased_floor = matching.replace(
+        routed_floor, f"({routed_floor} OR ({history.erased_floor}))"
+    ).replace(
+        f"w.completed_at>=0 AND w.completed_at<={now!r}",
+        f"(w.completed_at IS NULL OR (w.completed_at>=0 AND w.completed_at<={now!r}))",
+    )
     # This is the acceptance-to-coverage predicate in learning_completion._page:
     # a cursor counter alone is insufficient without its completed-window receipt.
+    clockless_matching = matching.replace(
+        f"w.completed_at>=0 AND w.completed_at<={now!r}",
+        f"(w.completed_at IS NULL OR (w.completed_at>=0 AND w.completed_at<={now!r}))",
+    )
+    processed = (
+        f"CASE WHEN {maximum}<=r.completed_seq THEN {maximum} ELSE r.completed_seq END"
+    )
     coverage = (
-        f"EXISTS(SELECT 1 FROM {windows} w WHERE {matching} "
-        f"AND w.predecessor<{maximum} AND w.end_seq>={maximum} "
-        f"AND w.completed_at>={admitted})"
+        f"EXISTS(SELECT 1 FROM {windows} w WHERE "
+        f"((({clockless}) AND {clockless_matching}) OR ({matching} AND w.completed_at>={admitted})) "
+        f"AND w.predecessor<({processed}) AND w.end_seq>=({processed}))"
     )
     _, _, _, run_columns = _projection(db, "runs", now)
     run_project = (
         db.project_filter().replace("r.", "a.").replace("?", "scope.project_id")
     )
+    generic_inert = finalized_run_inert_sql()
     run_debt = (
         f"EXISTS(SELECT 1 FROM (SELECT {run_columns.replace('r.', 'a.')} "
         f"FROM {runs} a WHERE a.org_id=scope.org_id AND a.user_id=r.user_id "
         "AND a.extractor_kind=r.kind "
         f"AND ({run_project})) facts WHERE facts.status NOT IN ('finalized','failed','expired','cancelled') "
         "OR facts.dependency OR facts.preparation OR facts.debt OR facts.window "
-        "OR (facts.saved_output AND NOT facts.published AND NOT facts.legacy_published AND NOT facts.window_published) "
-        "OR (facts.overflow AND NOT facts.overflow_retired AND NOT facts.published AND NOT facts.window_published))"
+        f"OR (facts.saved_output AND NOT facts.published AND NOT facts.legacy_published AND NOT facts.window_published AND NOT facts.inert_history AND NOT ({generic_inert})) "
+        f"OR (facts.overflow AND NOT facts.overflow_retired AND NOT facts.published AND NOT facts.window_published AND NOT facts.inert_history AND NOT ({generic_inert})))"
     )
     unsafe = (
         # Full-source guard is not narrowed by the caller's after cursor.
@@ -219,10 +243,13 @@ def _attributed_cursors(
         f"EXISTS(SELECT 1 FROM {runs} a WHERE a.org_id<>scope.org_id "
         f"AND ({run_project})) OR "
         f"EXISTS(SELECT 1 FROM {windows} w WHERE w.project_id=scope.project_id "
-        "AND (w.org_id IS NULL OR w.org_id<>scope.org_id))"
+        f"AND (w.org_id<>scope.org_id OR (w.org_id IS NULL AND ({history.inert}) IS NOT TRUE)))"
     )
     boundary = (
         " AND (r.user_id,r.kind,r.project_id)>(?,?,?)" if after is not None else ""
+    )
+    nonintake = nonintake_request_sql(
+        db, request_alias="q", project_sql="scope.project_id"
     )
     statement = (
         "WITH scope AS (SELECT ? AS org_id,? AS project_id) "
@@ -230,15 +257,16 @@ def _attributed_cursors(
         "SELECT r.user_id AS key0,r.kind AS key1,r.project_id AS key2,"
         "r.user_id,r.project_id,r.window_id,r.started,r.attempts,r.retry_at,"
         "r.last_error IS NOT NULL AS held,r.completed_seq,"
-        f"EXISTS(SELECT 1 FROM {windows} w WHERE {matching} "
+        f"EXISTS(SELECT 1 FROM {windows} w WHERE {matching_erased_floor} "
         "AND w.end_seq=r.completed_seq AND r.started=1) AS completion_proven,"
         f"EXISTS(SELECT 1 FROM {source} AND ({eligible}) AND {maximum}>r.completed_seq) AS uncovered_source,"
-        f"EXISTS(SELECT 1 FROM {source} AND (q.learning_admission IS NULL OR ({eligible}) IS NULL "
-        f"OR (({eligible}) AND ({maximum} IS NULL OR {minimum} IS NULL OR {admitted} IS NULL "
+        f"EXISTS(SELECT 1 FROM {source} AND NOT ({nonintake}) AND (q.learning_admission IS NULL OR ({eligible}) IS NULL "
+        f"OR (({eligible}) AND ({maximum} IS NULL OR {minimum} IS NULL OR (({admitted} IS NULL) AND NOT ({clockless})) "
         f"OR {admitted}<0 OR {admitted}>{now!r} "
-        f"OR {maximum}<{minimum} OR NOT ({coverage}) "
-        f"OR (SELECT COUNT(*) FROM {interactions} i WHERE {input_scope})<>{maximum}-{minimum}+1 "
-        f"OR (SELECT MAX(i.ingestion_seq) FROM {interactions} i WHERE {input_scope})<>{maximum})))) AS source_unproven,"
+        f"OR {maximum}<{minimum} OR ({minimum}<=r.completed_seq AND NOT ({coverage})) "
+        f"OR (SELECT COUNT(*) FROM {interactions} i WHERE {input_scope})<>(SELECT COUNT(DISTINCT i.ingestion_seq) FROM {interactions} i WHERE {input_scope}) "
+        f"OR (SELECT MIN(i.ingestion_seq) FROM {interactions} i WHERE {input_scope})<{minimum} "
+        f"OR (SELECT MAX(i.ingestion_seq) FROM {interactions} i WHERE {input_scope})>{maximum})))) AS source_unproven,"
         f"({run_debt} OR EXISTS(SELECT 1 FROM {windows} w WHERE w.org_id=scope.org_id "
         "AND w.user_id=r.user_id AND w.kind=r.kind AND w.project_id=r.project_id "
         "AND (w.completed=0 OR w.effects_done=0))) AS execution_debt,"
@@ -291,10 +319,14 @@ def _ambiguity(
             (org_id,),
         )
     if source == "windows":
+        history = closed_window_history_sql(db, now=db.now())
+        window_project = project_scope.replace("r.", "w.")
+        window_unbound = unbound.replace("r.", "w.")
         return (
-            f"EXISTS(SELECT 1 FROM {db.table('extraction_windows')} r WHERE "
-            f"(r.org_id IS NULL AND (({project_scope}) OR ({unbound}))) OR (r.org_id=? AND ({unbound})))",
-            (project, org_id),
+            f"EXISTS(SELECT 1 FROM {db.table('extraction_windows')} w CROSS JOIN (SELECT ? AS org_id,? AS project_id) scope WHERE "
+            f"(w.org_id IS NULL AND (({window_project}) OR ({window_unbound})) AND ({history.inert}) IS NOT TRUE) "
+            f"OR (w.org_id=? AND ({window_unbound})))",
+            (org_id, project, project, org_id),
         )
     if source in {"runs", "preparations", "receipts"}:
         table = db.table(
@@ -322,6 +354,17 @@ def _projection(db: StreamSQL, source: InventorySource, now: float) -> tuple:
     prep = db.table("_agent_output_preparations")
     receipts = db.table("_agent_output_receipts")
     if source == "runs":
+        run_project_column = db.transition_project_scope("runs")[0].removesuffix(
+            " AS project_id"
+        )
+        history = closed_window_history_sql(
+            db, org_sql="r.org_id", project_sql=run_project_column, now=now
+        )
+        inert_history = (
+            f"EXISTS(SELECT 1 FROM {windows} w WHERE w.window_id=substr(r.id,8) "
+            f"AND substr(r.id,1,7)='window:' AND r.id='window:'||w.window_id AND ({history.inert}))"
+        )
+        parent_idle = db.transition_window_history_parent_idle().replace("a.", "r.")
         window_proof = getattr(db, "transition_window_publication_proof", None)
         window_published = (
             f"EXISTS(SELECT 1 FROM {windows} w WHERE w.window_id=substr(r.id,8) "
@@ -351,6 +394,8 @@ def _projection(db: StreamSQL, source: InventorySource, now: float) -> tuple:
             f"(EXISTS(SELECT 1 FROM {db.table('_agent_run_finalization_receipts')} p WHERE p.run_id=r.id) "
             f"AND {db.transition_json_scalar('output_id')} IS NULL) AS legacy_published,"
             f"{window_published} AS window_published,"
+            f"{inert_history} AS inert_history,"
+            f"(r.status='finalized' AND substr(r.id,1,7)<>'window:' AND ({parent_idle})) AS terminal_history,"
             f"EXISTS(SELECT 1 FROM {work} u WHERE u.org_id=r.org_id AND "
             "(u.user_id=r.user_id OR u.lease_token=r.user_work_token) "
             f"AND u.lease_until>{now!r}) AS live_owner,"
@@ -367,7 +412,7 @@ def _projection(db: StreamSQL, source: InventorySource, now: float) -> tuple:
         return (
             windows,
             ("r.window_id",),
-            "r.org_id=?",
+            "(r.org_id=? OR r.org_id IS NULL)",
             "r.user_id,r.window_id,r.predecessor,r.end_seq,'window:' || r.window_id AS run_id,r.completed,r.invalidated,"
             "r.effects_done,r.org_id IS NULL AS unknown_route,"
             f"EXISTS(SELECT 1 FROM {work} u WHERE u.org_id=? AND u.user_id=r.user_id AND u.lease_until>{now!r}) AS live_owner",
@@ -434,6 +479,8 @@ def _run_reasons(row: dict) -> list[InventoryReason]:
         and not row["overflow_retired"]
         and not row["published"]
         and not row["window_published"]
+        and not row.get("inert_history", False)
+        and not finalized_run_inert(row)
     ):
         reasons.append("overflow_requires_inspection")
     if (
@@ -441,6 +488,8 @@ def _run_reasons(row: dict) -> list[InventoryReason]:
         and not row["published"]
         and not row["legacy_published"]
         and not row["window_published"]
+        and not row.get("inert_history", False)
+        and not finalized_run_inert(row)
     ):
         reasons.append("unreceipted_output")
     return reasons
@@ -545,6 +594,8 @@ def _item(
         else None,
         live_owner=bool(row.get("live_owner")),
         saved_output=bool(row.get("saved_output")),
+        inert_history=bool(row.get("inert_history"))
+        or (source == "runs" and finalized_run_inert(row)),
         overflow=bool(row.get("overflow")),
         schema_name=_witness(row.get("schema_name"), _SCHEMA),
         instruction_digest=_witness(row.get("instruction_digest"), _DIGEST),
@@ -695,6 +746,11 @@ def read_transition_inventory_page_db(
         if key in seen:
             raise ValueError("Transition inventory page did not advance")
         seen.add(key)
+        if source == "windows" and row["unknown_route"]:
+            # The same guarded statement proved every scoped NULL-org row's
+            # exact native inert facts before any identifier could leave here.
+            # Preserve its stored NULL ownership; classify, never backfill it.
+            row = {**row, "unknown_route": False, "inert_history": True}
         items.append(_item(source, key, row))
         previous = key
     return TransitionInventoryPage(tuple(items), previous if rows else None, not rows)
