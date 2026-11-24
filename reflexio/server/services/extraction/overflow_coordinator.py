@@ -24,6 +24,7 @@ from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuardError,
 )
+from reflexio.server.llm.call_deadline import model_call_deadline, model_deadline
 from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.input_budget import (
     ComputationEvidenceChangedError,
@@ -838,7 +839,12 @@ class OverflowCoordinator:
         # Don't start a call that can outlive this turn. Each fallback/repair
         # reaches this boundary again, so a late rung yields without dispatch.
         remaining = self._deadline - time.monotonic()
-        if hard_timeout <= 0 or hard_timeout + 5 > remaining:
+        # provider_scope already leaves this margin in the shared physical
+        # call deadline. Do not reserve it a second time against a timeout
+        # sampled just before this guard (which would always lose microseconds).
+        caller = model_call_deadline.get()
+        reserve = 0 if caller is not None and caller <= self._deadline - 5 else 5
+        if hard_timeout <= 0 or hard_timeout + reserve > remaining:
             # Routine continuation, not a fault: the window resumes next turn,
             # and one that never finishes surfaces as a failed window.
             logger.info(
@@ -1083,7 +1089,13 @@ class OverflowCoordinator:
         exhaustion_token = extraction_reasoning_exhaustion.set(self)
         identity_token = extraction_request_identity.set(None)
         try:
-            yield
+            # This scope also encloses main-thread consolidation and embeddings,
+            # not just extractor futures. The existing five-second finish
+            # margin belongs to the absolute owner, not each new model walk.
+            if time.monotonic() >= self._deadline - 5:
+                raise OverflowSuspendedError("Extraction turn needs continuation")
+            with model_deadline(self._deadline - 5):
+                yield
         finally:
             extraction_request_identity.reset(identity_token)
             extraction_reasoning_exhaustion.reset(exhaustion_token)
