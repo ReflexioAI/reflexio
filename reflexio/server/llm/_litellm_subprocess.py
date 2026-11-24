@@ -60,6 +60,30 @@ from reflexio.server.llm._provider_concurrency import retain_current_provider_sl
 
 logger = logging.getLogger(__name__)
 
+# Starting a worker under the ``fork`` start method is an ``os.fork()`` from a
+# threaded server. filelock (>= 3.30, imported in this process) audits every
+# ``os.fork`` and raises ``RuntimeError("os.fork is unsafe while filelock is
+# changing descriptor ownership")`` while another thread is between its
+# before-fork and after-fork handlers. Concurrent completions therefore must not
+# fork at the same time, and every worker start goes through this lock.
+_worker_start_lock = threading.Lock()
+
+
+def _reset_worker_start_lock() -> None:
+    # The fork child inherits this lock held by the thread that forked it.
+    global _worker_start_lock
+    _worker_start_lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_worker_start_lock)
+
+
+def start_completion_worker(process: BaseProcess) -> None:
+    """Start ``process`` so that no two completion workers fork concurrently."""
+    with _worker_start_lock:
+        process.start()
+
 
 def retire_completion_worker(
     process: BaseProcess,
