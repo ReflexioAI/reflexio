@@ -84,6 +84,105 @@ def test_erased_raw_source_is_not_restored_for_committed_effects_ack(context):
     assert storage.conn.execute("SELECT count(*) FROM interactions").fetchone()[0] == 0
 
 
+def test_c6_input_delete_effects_retry_acks_published_parent_as_inert_history(
+    context, monkeypatch
+):
+    """A finalized publication is retained when inputs disappear before ACK."""
+    from types import SimpleNamespace
+
+    from reflexio.server.services.durable_learning.user_lease import (
+        owned_user_work_context,
+    )
+    from reflexio.server.services.storage.storage_base.closed_window_history import (
+        closed_window_history_sql,
+    )
+
+    storage = context.storage
+    window = commit_window(context, skipped=False, parent=True, billing=True)
+    storage.conn.execute(
+        "INSERT INTO profiles(profile_id,user_id,content,last_modified_timestamp) VALUES('published-sentinel','user','PUBLISHED PROFILE',1)"
+    )
+    storage.conn.commit()
+    token = storage.claim_user_extraction("user", "effects-retry", 300)
+    assert token is not None
+    executor = WindowExecutor(context, MagicMock())
+    billed = []
+    monkeypatch.setattr(executor, "_bill", lambda *_a: billed.append("delivered"))
+    acknowledge = storage.ack_extraction_effects
+
+    def lost_ack(*_a, **_kw):
+        raise RuntimeError("synthetic ACK did not commit")
+
+    monkeypatch.setattr(storage, "ack_extraction_effects", lost_ack)
+    effects = storage.pending_extraction_effects(user_id="user", token=token)[0][1]
+    with (
+        owned_user_work_context(storage, "user", token, 300),
+        pytest.raises(RuntimeError, match="synthetic ACK"),
+    ):
+        executor.deliver(
+            window,
+            effects,
+            service=SimpleNamespace(emit_generation_side_effects=lambda _p: None),
+            plan=object(),
+            token=token,
+        )
+    parent = storage.get_agent_run("window:" + window.window_id)
+    assert (
+        parent.status == AgentRunStatus.FINALIZED
+        and parent.committed_output is not None
+    )
+    before_parent = storage.conn.execute(
+        "SELECT committed_output FROM _agent_runs WHERE id=?", (parent.id,)
+    ).fetchone()[0]
+    before_profile = storage.conn.execute(
+        "SELECT content FROM profiles WHERE profile_id='published-sentinel'"
+    ).fetchone()[0]
+    # The predecessor may have no completion clock. Native DELETE fires the
+    # historical input invalidation hook; observation must preserve both.
+    storage.conn.execute("UPDATE extraction_windows SET completed_at=NULL")
+    # C6 retained no agent-claim stamp on this finalized parent. Current
+    # execution stamps its W adoption; reconstruct only that predecessor fact.
+    storage.conn.execute("UPDATE _agent_runs SET claimed_by=NULL,claimed_at=NULL")
+    storage.conn.execute("DELETE FROM interactions")
+    storage.conn.commit()
+    erased_window, compact = storage.pending_extraction_effects(
+        user_id="user", token=token
+    )[0]
+    assert erased_window.invalidated and "extraction_run_ids" not in compact
+    monkeypatch.setattr(storage, "ack_extraction_effects", acknowledge)
+    with owned_user_work_context(storage, "user", token, 300):
+        executor.deliver(erased_window, compact, token=token)
+    storage.release_user_extraction("user", token)
+    assert billed == [
+        "delivered",
+        "delivered",
+    ]  # Existing billing idempotence owns retries.
+    with storage._stream_sql(read_only=True) as db:
+        history = closed_window_history_sql(db, now=db.now())
+        row = db.query(
+            f"SELECT ({history.inert}) AS inert,({history.queue_floor}) AS queued,({history.erased_floor}) AS erased FROM extraction_windows w CROSS JOIN (SELECT ? AS org_id,'' AS project_id) scope",  # noqa: S608 -- Fixed native history fragments and fixture scope.
+            (storage.org_id,),
+        )[0]
+        assert tuple(row.values()) == (1, 0, 1)
+    assert (
+        storage.transition_inventory_page("windows").items[0].execution_bearing is False
+    )
+    item = storage.transition_inventory_page("runs").items[0]
+    assert item.inert_history and item.execution_bearing is False
+    assert (
+        storage.conn.execute(
+            "SELECT committed_output FROM _agent_runs WHERE id=?", (parent.id,)
+        ).fetchone()[0]
+        == before_parent
+    )
+    assert (
+        storage.conn.execute(
+            "SELECT content FROM profiles WHERE profile_id='published-sentinel'"
+        ).fetchone()[0]
+        == before_profile
+    )
+
+
 def test_changed_effects_receipt_or_source_identity_cannot_use_an_old_grant(context):
     storage = context.storage
     window = commit_window(context)
