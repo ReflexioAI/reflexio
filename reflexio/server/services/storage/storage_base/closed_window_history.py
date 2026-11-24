@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .transition_sources import detached_window_sql, live_work_sql
+
 if TYPE_CHECKING:
     from ._extraction_stream import StreamSQL
 
@@ -49,10 +51,10 @@ def closed_window_history_sql(
         raise ValueError("Closed window history scope is invalid")
     ack, retired = db.transition_window_history_format()
     no_billing = db.transition_window_history_no_billing()
+    valid_billing = db.transition_window_billing_descriptor_valid()
     idle_parent = db.transition_window_history_parent_idle().replace("a.", "h.")
     runs = db.table("_agent_runs")
     cursors = db.table("extraction_cursors")
-    work = db.table("learning_work")
     dependencies = db.table("_run_tool_dependencies")
     preparations = db.table("_agent_output_preparations")
     receipts = db.table("_agent_output_receipts")
@@ -76,10 +78,8 @@ def closed_window_history_sql(
         "AND w.completed=1 AND w.effects_done=1 AND w.outcome IS NULL AND w.manifest='[]' "
         f"AND (w.completed_at IS NULL OR (w.completed_at>=0 AND w.completed_at<={now!r})) "
         "AND w.predecessor>=0 AND w.end_seq>w.predecessor "
-        f"AND w.window_id NOT IN(SELECT c.window_id FROM {cursors} c WHERE c.window_id IS NOT NULL) "
-        f"AND NOT EXISTS(SELECT 1 FROM {work} u WHERE u.org_id={org_sql} "
-        f"AND (u.user_id=w.user_id OR u.lease_token=(SELECT h.user_work_token FROM {runs} h WHERE h.id={parent_id})) "
-        f"AND u.lease_until>{now!r}) "
+        f"AND ({detached_window_sql(db)}) "
+        f"AND NOT ({live_work_sql(db, alias='w', org_sql=org_sql, now=now)}) "
         f"AND NOT EXISTS(SELECT 1 FROM {dependencies} d WHERE d.run_id={parent_id} AND d.consumed_at IS NULL) "
         f"AND NOT EXISTS(SELECT 1 FROM {preparations} p WHERE p.run_id={parent_id}) "
         f"AND {parent_id} NOT IN(SELECT p.run_id FROM {receipts} p WHERE p.run_id IS NOT NULL "
@@ -89,8 +89,11 @@ def closed_window_history_sql(
     )
     acknowledged = (
         f"({ack}) AND w.invalidated=0 AND w.derived_claimed IN (0,1) "  # noqa: S608 -- Fixed adapter tables and validated source column references.
-        f"AND (EXISTS(SELECT 1 FROM {runs} h WHERE {parent_bound} AND ({idle_parent}) "
+        "AND (((w.org_id IS NULL OR w.completed_at IS NULL) "
+        f"AND EXISTS(SELECT 1 FROM {runs} h WHERE {parent_bound} AND ({idle_parent}) "
+        f"AND ((h.committed_output IS NULL AND ({no_billing})) OR ({valid_billing})) "
         "AND (h.status IN ('finalized','failed','cancelled') OR (h.status='expired' AND h.committed_output IS NULL))) "
+        ") "
         f"OR (w.derived_claimed=1 AND ({no_billing}) AND ({past_cursor}) "
         f"AND NOT EXISTS(SELECT 1 FROM {runs} h WHERE h.id={parent_id})))"
     )

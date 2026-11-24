@@ -478,7 +478,7 @@ def test_null_nonleading_inventory_key_cannot_be_paginated_away(
     [
         ("finalized", True),
         ("failed", False),
-        ("cancelled", False),
+        ("cancelled", True),
         ("agent_completed", False),
         ("finalizing", False),
     ],
@@ -513,8 +513,8 @@ def test_finalized_history_python_and_sql_both_refuse_unknown_or_active_facts(
 ):
     from reflexio.server.services.storage.storage_base.transition_sources import (
         RUN_EXECUTION_FACTS,
-        finalized_run_inert,
-        finalized_run_inert_sql,
+        generic_closed_run_inert,
+        generic_closed_run_inert_sql,
     )
 
     facts: dict[str, bool | None] = dict.fromkeys(RUN_EXECUTION_FACTS, False)
@@ -525,10 +525,10 @@ def test_finalized_history_python_and_sql_both_refuse_unknown_or_active_facts(
     columns = ",".join(f"? AS {key}" for key in facts)
     with storage._stream_sql() as db:
         observed = db.query(
-            f"SELECT {finalized_run_inert_sql()} AS inert FROM (SELECT {columns}) facts",  # noqa: S608 -- Fixed shared source predicate and test-only column names.
+            f"SELECT {generic_closed_run_inert_sql()} AS inert FROM (SELECT {columns}) facts",  # noqa: S608 -- Fixed shared source predicate and test-only column names.
             tuple(facts.values()),
         )[0]["inert"]
-    assert not finalized_run_inert(facts)
+    assert not generic_closed_run_inert(facts)
     assert not observed
 
 
@@ -543,3 +543,185 @@ def test_finalized_generic_history_does_not_ignore_a_foreign_user_live_token(sto
     item = storage.transition_inventory_page("runs").items[0]
     assert not item.inert_history
     assert "live_owner" in item.reasons
+
+
+def test_run_window_debt_lookup_uses_exact_window_primary_key(storage):
+    from reflexio.server.services.storage.storage_base.transition_inventory import (
+        _projection,
+    )
+
+    with storage._stream_sql() as db:
+        columns = _projection(db, "runs", db.now())[3]
+        prefix = f"EXISTS(SELECT 1 FROM {db.table('extraction_windows')} w WHERE "  # noqa: S608 -- Fixed native predicates and registered fixture tables.
+        debt = prefix + columns.rsplit(prefix, 1)[1].removesuffix(" AS window")
+        plan = db.query(
+            f"EXPLAIN QUERY PLAN SELECT {debt} FROM {db.table('_agent_runs')} r"  # noqa: S608 -- Fixed native predicates and registered fixture tables.
+        )
+    details = [row["detail"] for row in plan]
+    assert any(
+        "SEARCH w USING INDEX" in detail and "window_id=?" in detail
+        for detail in details
+    ), details
+    assert not any(detail == "SCAN w" for detail in details), details
+
+
+def test_indexed_run_window_debt_preserves_exact_scope_and_terminal_semantics(storage):
+    from reflexio.server.services.storage.storage_base.transition_inventory import (
+        _projection,
+    )
+
+    cases = [
+        ("window:matching", "matching", storage.org_id, 0, 0, True),
+        ("window:null-org", "null-org", None, 1, 0, True),
+        ("window:foreign", "foreign", "foreign", 0, 0, False),
+        ("window:done", "done", storage.org_id, 1, 1, False),
+        ("generic", "generic", storage.org_id, 0, 0, False),
+        ("window:suffix:extra", "suffix", storage.org_id, 0, 0, False),
+        ("window:", "", storage.org_id, 0, 0, True),
+        ("prefixwindow:z", "z", storage.org_id, 0, 0, False),
+    ]
+    with storage.commit_scope(), storage._stream_sql() as db:
+        for index, (run, window, org, completed, effects, _expected) in enumerate(
+            cases
+        ):
+            db.query(
+                "INSERT INTO _agent_runs(id,org_id,extractor_kind,user_id,request_id,status,generation_request_snapshot) VALUES(?,?,'profile',?,'request','finalized','{}')",
+                (run, storage.org_id, f"user-{index}"),
+            )
+            db.query(
+                "INSERT INTO extraction_windows(window_id,user_id,kind,org_id,project_id,predecessor,end_seq,manifest,policy,completed,effects_done) VALUES(?,?,'profile',?,'',?,?,'[]','{}',?,?)",
+                (
+                    window,
+                    f"user-{index}",
+                    org,
+                    index * 3,
+                    index * 3 + 1,
+                    completed,
+                    effects,
+                ),
+            )
+        prefix = f"EXISTS(SELECT 1 FROM {db.table('extraction_windows')} w WHERE "  # noqa: S608 -- Fixed native predicates and registered fixture tables.
+        debt = prefix + _projection(db, "runs", db.now())[3].rsplit(prefix, 1)[
+            1
+        ].removesuffix(" AS window")
+        old = "EXISTS(SELECT 1 FROM extraction_windows w WHERE r.id='window:'||w.window_id AND (w.org_id=r.org_id OR w.org_id IS NULL) AND (w.completed=0 OR w.effects_done=0))"
+        rows = db.query(
+            f"SELECT r.id,{debt} AS indexed,{old} AS previous FROM _agent_runs r"  # noqa: S608 -- Fixed native predicates and registered fixture tables.
+        )
+    expected = {run: value for run, _window, _org, _completed, _effects, value in cases}
+    assert len(rows) == len(cases)
+    assert all(
+        bool(row["indexed"]) is expected[row["id"]]
+        and row["indexed"] == row["previous"]
+        for row in rows
+    )
+
+
+@pytest.mark.parametrize("overflow", [None, {}, {"version": 1}, "unknown"])
+def test_cancelled_overflow_is_not_generic_inert_history(storage, overflow):
+    seed_run(
+        storage,
+        "cancelled-generic",
+        status="cancelled",
+        snapshot={"overflow": overflow},
+        output={"retained": "synthetic"},
+    )
+    item = storage.transition_inventory_page("runs").items[0]
+    assert not item.inert_history
+    assert item.execution_bearing is not False
+
+
+@pytest.mark.parametrize(
+    "user,token,work_org,work_user,work_token,until,expected",
+    [
+        ("subject", None, "target", "subject", "other", 2, True),
+        ("subject", "shared", "target", "another", "shared", 2, True),
+        ("subject", "shared", "target", "subject", "shared", 0, False),
+        ("subject", "shared", "foreign", "subject", "shared", 2, False),
+        ("subject", None, "target", "another", None, 2, False),
+        (None, "shared", "target", "another", "shared", 2, True),
+        (None, None, "target", "another", None, 2, False),
+        ("subject", "", "target", "another", "", 2, True),
+    ],
+)
+def test_live_owner_sets_preserve_exists_null_and_foreign_identity_semantics(
+    storage, user, token, work_org, work_user, work_token, until, expected
+):
+    from reflexio.server.services.storage.storage_base.transition_sources import (
+        live_work_sql,
+    )
+
+    with storage.commit_scope(), storage._stream_sql() as db:
+        db.query(
+            "INSERT INTO learning_work(org_id,user_id,lease_token,lease_until) VALUES(?,?,?,?)",
+            (work_org, work_user, work_token, until),
+        )
+        indexed = live_work_sql(db, alias="r", org_sql="r.org_id", now=1)
+        old = "EXISTS(SELECT 1 FROM learning_work u WHERE u.org_id=r.org_id AND (u.user_id=r.user_id OR u.lease_token=r.user_work_token) AND u.lease_until>1)"
+        row = db.query(
+            f"SELECT {indexed} AS indexed,{old} AS previous FROM (SELECT CAST(? AS TEXT) AS org_id,CAST(? AS TEXT) AS user_id,CAST(? AS TEXT) AS user_work_token) r",  # noqa: S608 -- Fixed native predicate and typed synthetic fixture identity.
+            ("target", user, token),
+        )[0]
+    assert bool(row["indexed"]) is expected
+    assert row["indexed"] == row["previous"]
+
+
+def test_private_closure_projection_keeps_classification_and_public_witnesses(storage):
+    from reflexio.server.services.storage.storage_base.transition_inventory import (
+        _item,
+        _projection,
+    )
+
+    seed_run(
+        storage,
+        "metadata",
+        status="finalized",
+        snapshot={
+            "output_schema_name": "metadata_schema",
+            "overflow": {
+                "version": 1,
+                "checkpoint": {
+                    "stage": "retired",
+                    "extraction_instruction_contract": "a" * 64,
+                    "extraction_policy": "b" * 64,
+                },
+            },
+        },
+        output={"retained": "synthetic"},
+    )
+    with storage.commit_scope():
+        storage.conn.execute(
+            "UPDATE _agent_runs SET extractor_config_hash=?", ("c" * 64,)
+        )
+    public = storage.transition_inventory_page("runs").items[0]
+    with storage._stream_sql() as db:
+        columns = _projection(db, "runs", db.now(), include_witnesses=False)[3]
+        row = db.query(f"SELECT {columns} FROM _agent_runs r")[0]  # noqa: S608 -- Fixed private projection on the fixture table.
+    private = _item("runs", public.key, row)
+    assert (
+        private.reasons,
+        private.execution_bearing,
+        private.live_owner,
+        private.inert_history,
+        private.overflow,
+    ) == (
+        public.reasons,
+        public.execution_bearing,
+        public.live_owner,
+        public.inert_history,
+        public.overflow,
+    )
+    assert public.overflow and private.overflow
+    assert public.schema_name == "metadata_schema"
+    assert public.instruction_digest == "a" * 64
+    assert public.policy_digest == "b" * 64
+    assert public.configuration_digest == "c" * 64
+    assert (
+        private.schema_name
+        is private.instruction_digest
+        is private.policy_digest
+        is private.configuration_digest
+        is private.revision
+        is None
+    )
+    assert " AS schema_name" not in columns

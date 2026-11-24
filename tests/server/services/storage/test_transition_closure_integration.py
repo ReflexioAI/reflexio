@@ -2,6 +2,7 @@
 """Queued-only closure is independently proved, never inferred from counters."""
 
 import json
+import sqlite3
 
 import pytest
 
@@ -76,9 +77,12 @@ def test_replayed_admission_page_is_refused_without_unbounded_iteration(
 
 
 @pytest.mark.parametrize("missing_coverage", [False, True])
+@pytest.mark.parametrize("restricted", [False, True])
 def test_processed_admission_coverage_is_proven_in_bounded_batches(
-    storage, monkeypatch, missing_coverage
+    storage, monkeypatch, missing_coverage, restricted
 ):
+    if restricted:
+        storage.conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 503)
     count = 121
     with storage.commit_scope(), storage._stream_sql() as db:
         seed(db, storage.org_id, "", history=True)
@@ -119,7 +123,7 @@ def test_processed_admission_coverage_is_proven_in_bounded_batches(
 
     def count_queries(db, sql, params=()):
         if sql.startswith("WITH pending_coverage") and "w.end_seq>=p.seq" in sql:
-            coverage_batches.append((len(params) - 3) // 4)
+            coverage_batches.append((len(params) - 3) // 5)
         return query(db, sql, params)
 
     monkeypatch.setattr(SQLiteStreamSQL, "query", count_queries)
@@ -130,7 +134,10 @@ def test_processed_admission_coverage_is_proven_in_bounded_batches(
     )
     assert result.counts["admissions"] == count
     assert result.counts["queued_admissions"] == 0
-    assert coverage_batches == [100, 100, 40]
+    cap = SQLiteStreamSQL(storage.conn).transition_coverage_batch_limit()
+    assert coverage_batches == [min(cap, 240 - start) for start in range(0, 240, cap)]
+    if restricted:
+        assert cap == 100
 
 
 def test_cursor_completion_still_requires_exact_window_end(storage):
@@ -386,6 +393,8 @@ def test_closed_detached_history_proves_numeric_floor_not_publication(
         "UPDATE _agent_runs SET status='agent_completed'",
         "UPDATE _agent_runs SET extractor_kind='playbook'",
         "UPDATE _agent_runs SET pending_tool_call_ids='[\"call\"]'",
+        "UPDATE extraction_windows SET effects=json_set(effects,'$.billing',json('{}'))",
+        "UPDATE extraction_windows SET effects=json_set(effects,'$.billing.pipeline','playbook')",
         'UPDATE _agent_runs SET generation_request_snapshot=\'{"overflow":{"checkpoint":{"active_child":"child"}}}\'',
         'UPDATE extraction_windows SET effects=\'{"version":1,"skipped":true,"billing":null,"request_ids":[" \\t\\n"]}\'',
         'UPDATE extraction_windows SET effects=\'{"version":1,"skipped":true,"billing":null,"request_ids":[],"acknowledged_window_run_id":"window:closed"}\'',
@@ -528,6 +537,50 @@ def test_present_invalid_admission_clock_is_not_a_legacy_format(storage, stamp):
     assert "admission_authentication_unproven" in derive(storage).blockers
 
 
+@pytest.mark.parametrize(
+    "case", ["exact", "wrong-request", "nul-prefix", "retired", "early-date"]
+)
+def test_clocked_admission_needs_exact_undated_ack_or_valid_dated_coverage(
+    storage, case
+):
+    from reflexio.server.services.storage.storage_base.transition_inventory import (
+        TransitionInventoryAttribution,
+    )
+
+    with storage.commit_scope(), storage._stream_sql() as db:
+        seed(db, storage.org_id, "", history=True)
+        effect = {
+            "version": 1,
+            "skipped": True,
+            "billing": None,
+            "request_ids": [
+                {
+                    "wrong-request": "different",
+                    "nul-prefix": "request-1\0suffix",
+                }.get(case, "request-1")
+            ],
+        }
+        if case == "retired":
+            effect["retired"] = True
+        db.query(
+            "UPDATE extraction_windows SET completed_at=?,effects=?,derived_claimed=1 WHERE window_id='past'",
+            (0 if case == "early-date" else None, json.dumps(effect)),
+        )
+
+    closure = derive(storage)
+    assert closure.ready is (case == "exact"), closure.blockers
+    if case != "exact":
+        assert "processed_admission_coverage_unproven" in closure.blockers
+    page = storage.transition_inventory_page(
+        "cursors",
+        attribution=TransitionInventoryAttribution(
+            storage.org_id, "", storage._durable_work_route()
+        ),
+    )
+    profile = next(item for item in page.items if item.key[1] == "profile")
+    assert ("cursor_source_unproven" not in profile.reasons) is (case == "exact")
+
+
 @pytest.mark.parametrize("clockless", [False, True])
 def test_native_retention_hole_preserves_range_but_selects_only_retained_inputs(
     storage, clockless
@@ -580,13 +633,16 @@ def test_source_inventory_uses_bounded_large_pages_without_raising_row_cap(
     from reflexio.server.services.storage.storage_base import (
         transition_closure as owner,
     )
+    from reflexio.server.services.storage.storage_base import (
+        transition_inventory as inventory_owner,
+    )
 
     with storage.commit_scope():
         storage.conn.executemany(
             "INSERT INTO _agent_runs(id,org_id,extractor_kind,user_id,request_id,status,generation_request_snapshot,service_config_snapshot,agent_context_snapshot) VALUES(?,?,'profile','historical-user','request','finalized','{}','{}','')",
             [(f"history-{i:04}", storage.org_id) for i in range(501)],
         )
-    read = owner.read_transition_inventory_page_db
+    read = inventory_owner.read_transition_inventory_page_db
     calls = []
 
     def observe(db, source, **kwargs):
@@ -594,7 +650,7 @@ def test_source_inventory_uses_bounded_large_pages_without_raising_row_cap(
             calls.append(kwargs["limit"])
         return read(db, source, **kwargs)
 
-    monkeypatch.setattr(owner, "read_transition_inventory_page_db", observe)
+    monkeypatch.setattr(inventory_owner, "read_transition_inventory_page_db", observe)
     if capped:
         monkeypatch.setattr(owner, "_MAX_PAGES", 1)
     result = derive(storage)
@@ -650,14 +706,15 @@ def test_thousand_cursor_proofs_are_batched_and_a_bad_batch_certifies_nothing(
         if sql.startswith("WITH virgin_cursors"):
             batches.append((len(params) - 2) // 2)
         elif sql.startswith("WITH pending_coverage"):
-            batches.append((len(params) - 3) // 4)
+            batches.append((len(params) - 3) // 5)
         return query(db, sql, params)
 
     monkeypatch.setattr(SQLiteStreamSQL, "query", counted)
     result = derive(storage)
     assert result.ready is not bad, result.blockers
     assert result.counts["cursors"] == 1000
-    assert batches == [100] * 10
+    cap = SQLiteStreamSQL(storage.conn).transition_coverage_batch_limit()
+    assert batches == [min(cap, 1000 - start) for start in range(0, 1000, cap)]
     if bad:
         assert "cursor_completion_unproven" in result.blockers
     # The failed batch must not certify its otherwise-good siblings.
@@ -667,7 +724,7 @@ def test_thousand_cursor_proofs_are_batched_and_a_bad_batch_certifies_nothing(
         frontiers = owner._cursor_frontiers(
             db, storage.org_id, "", db.now(), blockers, {}
         )
-    assert len(frontiers) == (900 if bad else 1000)
+    assert len(frontiers) == (1000 - cap if bad else 1000)
     assert (
         (users[1], "profile") in frontiers
         if not bad
