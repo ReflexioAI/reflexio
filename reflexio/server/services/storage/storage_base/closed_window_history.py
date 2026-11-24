@@ -109,8 +109,21 @@ def closed_window_history_sql(
         f"AND EXISTS(SELECT 1 FROM {runs} h WHERE {parent_bound} AND ({idle_parent}) "
         "AND h.status='cancelled' AND h.claimed_by IS NULL AND h.claimed_at IS NULL)"
     )
+    # C6 source deletion can invalidate a completed window before its effects
+    # ACK. Published FINALIZED parents deliberately retain their saved output.
+    # This is erased history with an independent matching publication witness;
+    # it proves neither fresh publication nor positive processed-admission time.
+    invalidated_published_history = (
+        f"({ack}) AND w.invalidated=1 AND w.derived_claimed=1 "  # noqa: S608 -- Fixed adapter tables and source-owned scope.
+        "AND (w.org_id IS NULL OR w.completed_at IS NULL) "
+        f"AND ({past_cursor}) AND ({valid_billing}) "
+        f"AND EXISTS(SELECT 1 FROM {runs} h WHERE {parent_bound} AND ({idle_parent}) "
+        "AND h.status='finalized' AND h.committed_output IS NOT NULL "
+        "AND h.claimed_by IS NULL AND h.claimed_at IS NULL "
+        f"AND ({db.transition_window_history_publication_receipt()}))"
+    )
     return ClosedWindowHistorySQL(
-        f"({common} AND (({acknowledged}) OR ({retired_history}) OR ({erased_history})))",
+        f"({common} AND (({acknowledged}) OR ({retired_history}) OR ({erased_history}) OR ({invalidated_published_history})))",
         f"({common} AND (({acknowledged}) OR ({retired_history})))",
-        f"({common} AND ({erased_history}))",
+        f"({common} AND (({erased_history}) OR ({invalidated_published_history})))",
     )

@@ -156,6 +156,23 @@ def valid_window_delivery_payload(kind: str | None, billing_json: bytes | None) 
     return 1
 
 
+def window_delivery_ids_match(
+    kind: str | None, billing_json: bytes | None, ids_json: bytes | None
+) -> int:
+    """Compare a validated historical descriptor to native publication IDs.
+
+    BLOB arguments preserve SQLite encodings and escaped NULs. This checks
+    identity only; it creates no publication or financial delivery receipt.
+    """
+    if kind is None or billing_json is None or ids_json is None:
+        return 0
+    try:
+        ids, _facts = window_delivery_facts(kind, json.loads(billing_json))
+        return int(ids == require_learning_ids(json.loads(ids_json)))
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        return 0
+
+
 def window_handoff_matches(
     kind: Any, billing_json: Any, ids_json: Any, facts_json: Any
 ) -> int:

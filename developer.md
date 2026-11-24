@@ -2250,3 +2250,11 @@ ignored future-field collisions and requires storage admission before preparatio
 publishes. Configuration conversion does not grant retained-dataset authority.
 Frozen windows and snapshots retain captured policy, identities and original
 hashes rather than being rewritten as fresh configuration.
+
+Detached C6 invalidated ACK history can retain a finalized parent and saved
+output after input deletion races the effects ACK. Native transition observation
+accepts that predecessor shape only with an idle, unclaimed exact-bound parent,
+valid billing descriptor, and matching immutable legacy publication IDs, alongside
+all ordinary lease, cursor, dependency, preparation, and receipt fences. It is
+inert erased history for stored numeric coverage; it grants no queue/admission
+coverage or new publication credit and does not change profiles or billing.
