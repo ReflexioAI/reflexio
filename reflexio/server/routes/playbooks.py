@@ -2,7 +2,7 @@
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Self
 
 if TYPE_CHECKING:
     pass
@@ -98,6 +98,42 @@ router = APIRouter()
 class _AdmittedReviewResponse(JSONResponse):
     """Own a review permit through response delivery and physical execution."""
 
+    @classmethod
+    async def create(
+        cls, reflexio: Any, org_id: str, payload: ReviewUserPlaybooksRequest
+    ) -> Self:
+        construction_lock = threading.Lock()
+        abandoned = False
+        pending_response: Self | None = None
+
+        def construct() -> Self:
+            nonlocal pending_response
+            response = cls(reflexio, org_id, payload)
+            with construction_lock:
+                was_abandoned = abandoned
+                if not was_abandoned:
+                    pending_response = response
+            if was_abandoned:
+                response._release("response")
+            return response
+
+        try:
+            response = await run_in_threadpool(construct)
+        except BaseException:
+            # The constructor may still be running in its physical thread.
+            # Either reclaim its published result or let that thread release
+            # the reservation when it finishes constructing an abandoned one.
+            with construction_lock:
+                abandoned = True
+                response = pending_response
+                pending_response = None
+            if response is not None:
+                response._release("response")
+            raise
+        with construction_lock:
+            pending_response = None
+        return response
+
     def __init__(
         self, reflexio: Any, org_id: str, payload: ReviewUserPlaybooksRequest
     ) -> None:
@@ -189,9 +225,7 @@ async def review_user_playbooks_endpoint(
             lambda: reflexio.review_user_playbooks(payload),
         )
 
-    # Construct and return without an await: cancellation cannot orphan a
-    # reserved response in a completed synchronous endpoint worker.
-    return _AdmittedReviewResponse(reflexio, org_id, payload)
+    return await _AdmittedReviewResponse.create(reflexio, org_id, payload)
 
 
 @router.post(

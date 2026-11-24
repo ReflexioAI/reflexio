@@ -10,9 +10,10 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.middleware.asyncexitstack import AsyncExitStackMiddleware
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from reflexio.models.api_schema.service_schemas import ReviewUserPlaybooksRequest
-from reflexio.server import operation_limiter
+from reflexio.server import operation_limiter, usage_metrics
 from reflexio.server.routes import playbooks
 
 _PAYLOAD = {
@@ -162,8 +163,16 @@ def test_cancelled_endpoint_cannot_orphan_a_constructed_reservation(
         loop_thread = threading.get_ident()
         cancelled = threading.Event()
         constructed = threading.Event()
+        released = threading.Event()
         original_init = playbooks._AdmittedReviewResponse.__init__
+        original_release = operation_limiter._release_operation
         task = None
+
+        def release(state):
+            original_release(state)
+            released.set()
+
+        monkeypatch.setattr(operation_limiter, "_release_operation", release)
 
         def cancel_request():
             assert task is not None
@@ -219,10 +228,101 @@ def test_cancelled_endpoint_cannot_orphan_a_constructed_reservation(
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(task, 5)
             assert await asyncio.to_thread(constructed.wait, 5)
+            assert await asyncio.to_thread(released.wait, 5), (
+                "cancelled endpoint did not release its constructed reservation"
+            )
             mock_reflexio.review_user_playbooks.assert_not_called()
             with operation_limiter.try_aggregation_capacity("test-org") as admitted:
                 assert admitted, "cancelled endpoint orphaned its reservation"
         finally:
+            gc.collect()
+            if gc_enabled:
+                gc.enable()
+
+    asyncio.run(run())
+
+
+def test_blocking_admission_recorder_cannot_stall_the_request_loop(
+    test_app, mock_reflexio, patched_reflexio, monkeypatch
+):
+    async def run():
+        loop = asyncio.get_running_loop()
+        entered = threading.Event()
+        finish = threading.Event()
+        loop_tick = threading.Event()
+        responsive_before_release = []
+
+        def record(event):
+            if event.event_category == "limiter":
+                entered.set()
+                assert finish.wait(5), "test did not release the blocking recorder"
+            return usage_metrics.UsageEventDeliveryStatus.EXEMPT
+
+        monkeypatch.setattr(usage_metrics, "_recorder", record)
+
+        def observe_loop():
+            try:
+                if entered.wait(5):
+                    loop.call_soon_threadsafe(loop_tick.set)
+                    responsive_before_release.append(loop_tick.wait(1))
+            finally:
+                finish.set()
+
+        observer = threading.Thread(target=observe_loop, daemon=True)
+        observer.start()
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=test_app), base_url="http://testserver"
+            ) as client:
+                response = await client.post(
+                    "/api/review_user_playbooks", json=_PAYLOAD
+                )
+            assert response.status_code == 200
+            mock_reflexio.review_user_playbooks.assert_called_once()
+            assert responsive_before_release == [True]
+        finally:
+            finish.set()
+            await asyncio.to_thread(observer.join, 5)
+            assert not observer.is_alive()
+
+    asyncio.run(run())
+
+
+def test_cancelled_awaiter_reclaims_an_already_constructed_response(monkeypatch):
+    async def run():
+        published = asyncio.Event()
+        original_run = playbooks.run_in_threadpool
+
+        async def hold_result(func, *args, **kwargs):
+            response = await original_run(func, *args, **kwargs)
+            published.set()
+            await asyncio.Event().wait()
+            return response
+
+        monkeypatch.setattr(playbooks, "run_in_threadpool", hold_result)
+        reflexio = MagicMock()
+        gc_enabled = gc.isenabled()
+        gc.disable()
+        task = asyncio.create_task(
+            playbooks._AdmittedReviewResponse.create(
+                reflexio,
+                "published",
+                ReviewUserPlaybooksRequest.model_validate(_PAYLOAD),
+            )
+        )
+        try:
+            await asyncio.wait_for(published.wait(), 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            reflexio.review_user_playbooks.assert_not_called()
+            with operation_limiter.try_aggregation_capacity("published") as admitted:
+                assert admitted
+        finally:
+            if not task.done():
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
             gc.collect()
             if gc_enabled:
                 gc.enable()

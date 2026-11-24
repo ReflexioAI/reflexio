@@ -179,9 +179,11 @@ turnover bound is not a substitute for proving configuration freshness.
 
 Apply-mode `POST /api/review_user_playbooks` reserves aggregation capacity before
 acknowledging that a review started. Saturated requests receive 503 and start no
-review; clients can retry after capacity becomes available. The admitted response
-owns the reservation until its background thread starts, then that physical
-worker owns it through completion. Failed delivery releases an unstarted
+review; clients can retry after capacity becomes available. Construction stays
+off the event loop behind a cancellation-aware result handoff, so an abandoned
+constructor or result reclaims its reservation without relying on cyclic GC.
+The admitted response owns the reservation until its background thread starts,
+then that physical worker owns it through completion. Failed delivery releases an unstarted
 reservation; cancelling a response cannot release a still-running review's slot.
 This acknowledgement does not make review work durable across process restarts.
 Report-only review and synchronous manual aggregation retain their separate
