@@ -19,6 +19,32 @@ from reflexio.server.services.storage.storage_base import BaseStorage
 
 logger = logging.getLogger(__name__)
 
+# Nested settings that SDKs released before them cannot express. Such a client
+# drops the field when it reads, edits and writes back a config, so an omitted
+# field keeps the saved value; an explicit null still clears it. Current reads
+# omit these only while they are unset (``exclude_if``), so preservation never
+# restores a value a current client saw as cleared.
+PRESERVED_WHEN_OMITTED: tuple[tuple[str, str], ...] = (
+    ("llm_config", "evaluation_model_name"),
+)
+
+
+def preserve_omitted_settings(request: dict[str, Any], saved: Config) -> dict[str, Any]:
+    """Return *request* with saved values for settings it could not express.
+
+    Only a section the request sends as an object is filled in. A request that
+    omits or nulls the whole section replaces it as before.
+    """
+    result = dict(request)
+    for section, field in PRESERVED_WHEN_OMITTED:
+        incoming = request.get(section)
+        if not isinstance(incoming, dict) or field in incoming:
+            continue
+        stored = getattr(getattr(saved, section), field, None)
+        if stored is not None:
+            result[section] = {**incoming, field: stored}
+    return result
+
 
 class BaseConfigurator(ABC):
     """Abstract base for organization configurators.
@@ -109,8 +135,12 @@ class BaseConfigurator(ABC):
     def normalize_config_payload(
         self, config: dict[str, Any]
     ) -> Config | dict[str, Any]:
-        """Normalize raw API config payloads before Pydantic validation."""
-        return config
+        """Normalize raw API config payloads before Pydantic validation.
+
+        Omitted settings listed in ``PRESERVED_WHEN_OMITTED`` keep their saved
+        values, so an older client's full write cannot erase them.
+        """
+        return preserve_omitted_settings(config, self.get_org_config())
 
     def prepare_config_patch(self, partial: dict[str, Any]) -> Config:
         """Prepare a top-level PATCH payload for persistence.
