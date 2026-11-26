@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.extraction.input_preparation import (
     PreparedExtractionInput,
@@ -45,7 +45,7 @@ def judge_extraction_chunks(
                         [{"role": "user", "content": prompt}]
                     )
                 ):
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Extraction gate template omits prepared source"
                     )
                 if not prompt:

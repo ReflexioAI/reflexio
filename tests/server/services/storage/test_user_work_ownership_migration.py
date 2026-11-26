@@ -36,6 +36,8 @@ def legacy_storage(tmp_path):
         ):
             if name in _columns(storage, table):
                 storage.conn.execute(f"ALTER TABLE {table} DROP COLUMN {name}")
+        # A database written before the schema ledger carries no version.
+        storage.conn.execute("PRAGMA user_version = 0")
         storage.conn.commit()
         token = storage.claim_user_extraction("synthetic_user", "original_owner", 300)
         assert token is not None
@@ -149,6 +151,7 @@ def test_concurrent_owner_upgrade_keeps_one_live_lease(legacy_storage):
         ):
             if name in _columns(storage, table):
                 storage.conn.execute(f"ALTER TABLE {table} DROP COLUMN {name}")
+        storage.conn.execute("PRAGMA user_version = 0")  # pre-ledger database
         storage.conn.commit()
         before = _legacy_state(storage)
         ready = Barrier(2)

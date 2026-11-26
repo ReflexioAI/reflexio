@@ -492,7 +492,7 @@ def test_resume_worker_resumes_profile_run_and_consumes_dependency(
                 "profiles": [
                     {
                         "content": "User deployment target is AWS ECS.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }
@@ -545,7 +545,7 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
                 "profiles": [
                     {
                         "content": "User deployment target is AWS ECS.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             }
@@ -716,7 +716,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             "profiles": [
                 {
                     "content": "User deployment target is AWS ECS.",
-                    "time_to_live": "infinity",
+                    "explicit_storage_deadline": None,
                 }
             ]
         }
@@ -813,7 +813,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
                         ),
                     )
                 )
-                optimize = aggregate = None
+                aggregate = None
             else:
                 stack.enter_context(
                     patch.object(
@@ -831,12 +831,6 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
                             [],
                             [],
                         ),
-                    )
-                )
-                optimize = stack.enter_context(
-                    patch.object(
-                        PlaybookGenerationService,
-                        "_enqueue_user_playbook_optimization",
                     )
                 )
                 aggregate = stack.enter_context(
@@ -929,8 +923,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             durable_run_created_at.timestamp(),
         ]
         schedule_tagging.assert_called_once()
-        if optimize is not None and aggregate is not None:
-            optimize.assert_called_once()
+        if aggregate is not None:
             aggregate.assert_called_once()
     finally:
         configure_usage_event_recorder(None)
@@ -1063,7 +1056,7 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
                 "profiles": [
                     {
                         "content": "User deployment target is AWS ECS.",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                     }
                 ]
             },
@@ -1150,16 +1143,11 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
             ),
             patch.object(
                 PlaybookGenerationService,
-                "_enqueue_user_playbook_optimization",
-            ) as enqueue_optimization,
-            patch.object(
-                PlaybookGenerationService,
                 "_trigger_playbook_aggregation",
             ) as trigger_aggregation,
         ):
 
             def assert_playbook_scheduler_calls() -> None:
-                enqueue_optimization.assert_called_once()
                 trigger_aggregation.assert_called_once()
 
             _run_failed_then_retried(
@@ -1239,6 +1227,7 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
 
 
 def _seed_completed_output(storage, run, payload):
+    """Author a fresh receipt; historical TTL replay uses saved bytes separately."""
     from reflexio.server.services.playbook.playbook_service_utils import (
         StructuredPlaybookList,
     )
@@ -1270,7 +1259,7 @@ def _commit_resumed_output(
     *,
     before_model: Callable[[AgentRunRecord], AgentRunRecord] | None = None,
 ):
-    """Script output; retain the active caller's attempt and real output writer."""
+    """Author fresh schema-valid output through the active caller's real writer."""
     from dataclasses import asdict
 
     from reflexio.server.llm.tools import ToolLoopResult, ToolLoopTrace
@@ -1405,9 +1394,6 @@ def test_empty_output_receipt_retries_without_redispatch(storage, kind):
             side_effect=service_type._resolve_write_plan,
         ) as resolve,
         patch.object(
-            PlaybookGenerationService, "_enqueue_user_playbook_optimization"
-        ) as optimize,
-        patch.object(
             PlaybookGenerationService, "_trigger_playbook_aggregation"
         ) as aggregate,
         patch(
@@ -1442,7 +1428,6 @@ def test_empty_output_receipt_retries_without_redispatch(storage, kind):
         no_dispatch.assert_not_called()
         tagging.assert_called_once()
         resolve.assert_called_once()
-        optimize.assert_not_called()
         aggregate.assert_not_called()
         assert (
             storage.get_agent_run_finalization_receipt(
@@ -1826,7 +1811,9 @@ def test_readiness_defers_committed_finalization_without_spending_budget(
 
     _seed_interactions(storage)
     output = {
-        "profiles": [{"content": "Deploy to AWS ECS.", "time_to_live": "infinity"}]
+        "profiles": [
+            {"content": "Deploy to AWS ECS.", "explicit_storage_deadline": None}
+        ]
     }
     initial_resume = stage != "retry"
     _seed_ready_run(storage)
@@ -2530,7 +2517,7 @@ def test_normal_finalization_uses_actual_committed_output_witness(
         else StructuredPlaybookList
     )
     stored_entry = (
-        {"content": "Committed content", "time_to_live": "infinity"}
+        {"content": "Committed content", "explicit_storage_deadline": None}
         if field == "profiles"
         else {
             "content": "Committed content",
@@ -2647,7 +2634,9 @@ def test_conversion_failure_retries_saved_output_without_another_agent_call(
         lambda _self, **kw: kw["messages"],
     )
     calls = []
-    payload = {"profiles": [{"content": "Saved content", "time_to_live": "infinity"}]}
+    payload = {
+        "profiles": [{"content": "Saved content", "explicit_storage_deadline": None}]
+    }
 
     def resume(_agent, *, run, before_model, **_kwargs):
         calls.append(run.id)
@@ -2717,10 +2706,24 @@ def test_profile_output_conversion_does_not_construct_runtime_extractor(
     request_context.configurator.get_agent_context.side_effect = AssertionError(
         "pure conversion loaded agent context"
     )
+    from reflexio.server.services.extraction.resume_worker import (
+        _request_interaction_models_from_ids,
+    )
+
+    saved_output = {
+        "profiles": [{"content": "Saved content", "time_to_live": "infinity"}]
+    }
+    run = replace(run, committed_output=saved_output)
     items, pending = worker._profile_items_from_output(
         run,
         request_context.configurator.get_config().profile_extractor_config,
-        {"profiles": [{"content": "Saved content", "time_to_live": "infinity"}]},
+        saved_output,
+        request_interaction_data_models=_request_interaction_models_from_ids(
+            storage,
+            run.binding.source_interaction_ids,
+            fallback_source=run.binding.source,
+            fallback_agent_version=run.binding.agent_version,
+        ),
     )
     assert [item.content for item in items] == ["Saved content"]
     assert items[0].user_id == run.binding.user_id

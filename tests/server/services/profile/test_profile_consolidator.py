@@ -44,11 +44,12 @@ from reflexio.server.services.profile.components.consolidator import (
     _format_profile_timestamp,
     validate_profile_dedup_output,
 )
+from reflexio.server.services.profile.lifecycle import KEY, metadata
 
 
 @pytest.mark.parametrize("phase", ["embedding", "search"])
 def test_readiness_refusal_never_consolidates_incomplete_history(
-    mock_request_context, mock_llm_client, mock_site_var_manager, phase
+    mock_request_context, mock_llm_client, configured_generation_model, phase
 ):
     from reflexio.server.services.storage.error import ReadinessUnavailableError
 
@@ -119,7 +120,6 @@ def test_merged_profiles_preserve_all_canonical_evidence_and_perspectives(
             ProfileDuplicateGroup(
                 item_ids=labels,
                 merged_content="Concise answers with examples",
-                merged_time_to_live="infinity",
             )
         ]
     )
@@ -148,7 +148,8 @@ def test_merged_profiles_preserve_all_canonical_evidence_and_perspectives(
         if group_kind == "mixed"
         else {"topic": "answers", "format": "examples"}
     )
-    assert merged.custom_features == expected_customs
+    assert expected_customs is not None
+    assert merged.custom_features == {**expected_customs, KEY: metadata(merged)}
     # Repeated merges preserve complete values without repeatedly JSON-escaping
     # a prior collection or losing perspectives of consumed NEW-only members.
     initial_length = len(merged.source_span)
@@ -163,7 +164,6 @@ def test_merged_profiles_preserve_all_canonical_evidence_and_perspectives(
                     ProfileDuplicateGroup(
                         item_ids=["EXISTING-0", "NEW-0"],
                         merged_content="Concise answers",
-                        merged_time_to_live="infinity",
                     )
                 ]
             ),
@@ -218,6 +218,19 @@ def mock_request_context():
     context.prompt_manager.render_prompt.return_value = "test prompt"
     context.storage = MagicMock()
     context.storage.search_user_profile.return_value = []
+
+    def selected_native_rows(user_id, profile_ids, status_filter):
+        # This fake search uses full native profiles. Hydrate exactly the
+        # requested scoped IDs; missing/foreign/stale rows still fail closed.
+        return [
+            profile.model_copy(deep=True)
+            for profile in context.storage.search_user_profile.return_value
+            if profile.user_id == user_id
+            and profile.profile_id in profile_ids
+            and profile.status in status_filter
+        ]
+
+    context.storage.get_profiles_by_ids.side_effect = selected_native_rows
     # Set up configurator chain for model resolution
     mock_config = MagicMock()
     mock_config.api_key_config = None
@@ -227,12 +240,10 @@ def mock_request_context():
 
 
 @pytest.fixture
-def mock_site_var_manager():
-    """Mock the SiteVarManager to return model settings."""
-    with patch("reflexio.server.services.deduplication_utils.SiteVarManager") as mock:
-        instance = mock.return_value
-        instance.get_site_var.return_value = {"default_generation_model_name": "gpt-4"}
-        yield mock
+def configured_generation_model(mock_request_context):
+    mock_request_context.configurator.get_config.return_value.llm_config = LLMConfig(
+        generation_model_name="gpt-4"
+    )
 
 
 @pytest.fixture
@@ -283,11 +294,10 @@ class TestPydanticModels:
         group = ProfileDuplicateGroup(
             item_ids=["NEW-0", "NEW-1", "EXISTING-0"],
             merged_content="User prefers dark mode",
-            merged_time_to_live="one_month",
         )
         assert group.item_ids == ["NEW-0", "NEW-1", "EXISTING-0"]
         assert group.merged_content == "User prefers dark mode"
-        assert group.merged_time_to_live == "one_month"
+        assert group.erase_replaced_payloads is False
 
     def test_duplicate_group_forbids_extra_fields(self):
         """Test that ProfileDuplicateGroup allows extra fields at runtime (for LLM robustness)
@@ -296,7 +306,6 @@ class TestPydanticModels:
         group = ProfileDuplicateGroup(
             item_ids=["NEW-0"],
             merged_content="test",
-            merged_time_to_live="one_day",
             extra_field="not allowed",  # pyright: ignore[reportCallIssue]
         )
         assert group.item_ids == ["NEW-0"]
@@ -311,7 +320,6 @@ class TestPydanticModels:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="merged",
-                    merged_time_to_live="one_week",
                 )
             ],
             unique_ids=["NEW-2", "NEW-3"],
@@ -382,7 +390,6 @@ class TestPydanticModels:
                 {
                     "item_ids": ["NEW-0", "NEW-1", "EXISTING-0"],
                     "merged_content": "test",
-                    "merged_time_to_live": "one_day",
                 }
             ],
             "unique_ids": ["NEW-2"],
@@ -419,7 +426,7 @@ class TestProfileConsolidatorInit:
     """Tests for ProfileConsolidator initialization."""
 
     def test_init_sets_attributes(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """Test that __init__ sets all required attributes."""
         deduplicator = ProfileConsolidator(
@@ -450,16 +457,11 @@ class TestProfileConsolidatorInit:
         ]:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        with patch(
-            "reflexio.server.services.deduplication_utils.SiteVarManager"
-        ) as mock:
-            instance = mock.return_value
-            instance.get_site_var.return_value = {}
-            deduplicator = ProfileConsolidator(
-                request_context=mock_request_context,
-                llm_client=mock_llm_client,
-            )
-            assert deduplicator.model_name == "gpt-5.5"
+        deduplicator = ProfileConsolidator(
+            request_context=mock_request_context,
+            llm_client=mock_llm_client,
+        )
+        assert deduplicator.model_name == "gpt-5.5"
 
 
 # ===============================
@@ -474,7 +476,7 @@ class TestFormatProfilesForPrompt:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """Test that profiles are formatted correctly with NEW prefix."""
@@ -489,15 +491,16 @@ class TestFormatProfilesForPrompt:
         assert "[NEW-2]" in result
         assert "User prefers dark mode for coding" in result
         assert "User likes dark theme in their IDE" in result
-        assert "one_month" in result
-        assert "one_week" in result
+        assert "one_month" not in result
+        assert "TTL:" not in result
+        assert "one_week" not in result
         assert "extractor_a" in result
         assert "extractor_b" in result
 
-    def test_format_profiles_uses_ttl_value(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+    def test_format_profiles_omits_legacy_estimated_ttl(
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
-        """Test formatting shows TTL value from profile."""
+        """Legacy stored TTL is not presented as authoring or retention authority."""
         timestamp = int(datetime.now(UTC).timestamp())
         profiles = [
             UserProfile(
@@ -514,10 +517,10 @@ class TestFormatProfilesForPrompt:
             llm_client=mock_llm_client,
         )
         result = deduplicator._format_items_for_prompt(profiles)
-        assert "TTL: one_quarter" in result
+        assert "TTL:" not in result
 
     def test_format_profiles_with_missing_source(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """Test formatting with profiles that have no source."""
         timestamp = int(datetime.now(UTC).timestamp())
@@ -542,7 +545,7 @@ class TestFormatProfilesForPrompt:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """Test that existing profiles are formatted with EXISTING prefix."""
@@ -555,7 +558,7 @@ class TestFormatProfilesForPrompt:
         assert "[EXISTING-1]" in result
 
     def test_format_empty_profiles(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """Test formatting empty profile list returns (None)."""
         deduplicator = ProfileConsolidator(
@@ -566,7 +569,7 @@ class TestFormatProfilesForPrompt:
         assert result == "(None)"
 
     def test_format_profiles_includes_last_modified_utc(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """Test that formatted profiles include the last-modified timestamp in UTC."""
         # 1704067200 == 2024-01-01 00:00:00 UTC
@@ -589,7 +592,7 @@ class TestFormatProfilesForPrompt:
         assert "Last Modified: 2024-01-01 00:00 UTC" in result
 
     def test_format_profiles_timestamp_fallback_on_invalid(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """Test formatting degrades gracefully when the timestamp is out of range."""
         # Absurdly large value that overflows datetime.fromtimestamp on every
@@ -632,7 +635,7 @@ class TestMergeCustomFeatures:
     """Tests for custom features merging."""
 
     def test_merge_custom_features_empty(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """Test merging when no profiles have custom features."""
         timestamp = int(datetime.now(UTC).timestamp())
@@ -662,7 +665,7 @@ class TestMergeCustomFeatures:
         assert result is None
 
     def test_merge_custom_features_single(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """Test merging when only one profile has custom features."""
         timestamp = int(datetime.now(UTC).timestamp())
@@ -692,7 +695,7 @@ class TestMergeCustomFeatures:
         assert result == {"key1": "value1"}
 
     def test_merge_custom_features_multiple(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """Test merging custom features from multiple profiles."""
         timestamp = int(datetime.now(UTC).timestamp())
@@ -734,7 +737,7 @@ class TestBuildDeduplicatedResults:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """Test that duplicates are merged into a single profile."""
@@ -743,7 +746,6 @@ class TestBuildDeduplicatedResults:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="User prefers dark mode in their IDE",
-                    merged_time_to_live="one_month",
                 )
             ],
             unique_ids=["NEW-2"],
@@ -779,7 +781,7 @@ class TestBuildDeduplicatedResults:
         assert merged_profile is not None
         assert uuid.UUID(merged_profile.profile_id).version == 4
         assert str(uuid.UUID(merged_profile.profile_id)) == merged_profile.profile_id
-        assert merged_profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
+        assert merged_profile.profile_time_to_live == ProfileTimeToLive.INFINITY
 
     @pytest.mark.parametrize(
         ("item_ids", "expected_source_ids"),
@@ -795,7 +797,7 @@ class TestBuildDeduplicatedResults:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
         item_ids,
         expected_source_ids,
@@ -826,7 +828,6 @@ class TestBuildDeduplicatedResults:
                 ProfileDuplicateGroup(
                     item_ids=item_ids,
                     merged_content="Merged profile",
-                    merged_time_to_live="one_month",
                 )
             ],
         )
@@ -853,7 +854,7 @@ class TestBuildDeduplicatedResults:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """Test that unique profiles are preserved."""
@@ -878,50 +879,22 @@ class TestBuildDeduplicatedResults:
 
         assert len(result_profiles) == 3
 
-    def test_build_deduplicated_results_handles_invalid_ttl(
-        self,
-        mock_request_context,
-        mock_llm_client,
-        mock_site_var_manager,
-        sample_profiles,
-    ):
-        """Test that invalid TTL from LLM falls back to template TTL."""
-        dedup_output = ProfileDeduplicationOutput(
-            duplicate_groups=[
-                ProfileDuplicateGroup(
-                    item_ids=["NEW-0", "NEW-1"],
-                    merged_content="merged content",
-                    merged_time_to_live="invalid_ttl",
-                )
-            ],
-            unique_ids=["NEW-2"],
-        )
-
-        deduplicator = ProfileConsolidator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
-        )
-        result_profiles, _, _ = deduplicator._build_deduplicated_results(
-            new_profiles=sample_profiles,
-            existing_profiles=[],
-            dedup_output=dedup_output,
-            user_id="test_user",
-            request_id="test_request",
-        )
-
-        merged_profile = next(
-            (p for p in result_profiles if p.content == "merged content"),
-            None,
-        )
-        assert merged_profile is not None
-        # Should fall back to template profile's TTL (first profile in group)
-        assert merged_profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
+    def test_build_deduplicated_results_rejects_estimated_ttl(self):
+        """Old model-authored estimated TTL is rejected, never repaired by a fallback."""
+        with pytest.raises(ValueError, match="cannot author estimated lifetime"):
+            ProfileDuplicateGroup.model_validate(
+                {
+                    "item_ids": ["NEW-0", "NEW-1"],
+                    "merged_content": "merged content",
+                    "merged_time_to_live": "invalid_ttl",
+                }
+            )
 
     def test_build_deduplicated_results_handles_unmentioned_profiles(
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """Test that profiles not mentioned by LLM are added as-is."""
@@ -931,7 +904,6 @@ class TestBuildDeduplicatedResults:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="merged",
-                    merged_time_to_live="one_week",
                 )
             ],
             unique_ids=[],  # LLM forgot to mention index 2
@@ -956,7 +928,7 @@ class TestBuildDeduplicatedResults:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """Test that existing profiles marked for deletion are collected."""
@@ -974,7 +946,6 @@ class TestBuildDeduplicatedResults:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "EXISTING-0"],
                     merged_content="User prefers dark mode (updated)",
-                    merged_time_to_live="one_month",
                 )
             ],
             unique_ids=["NEW-1", "NEW-2"],
@@ -1003,7 +974,7 @@ class TestBuildDeduplicatedResults:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """A deletion directive erases the EXISTING profile without writing a replacement.
@@ -1072,7 +1043,7 @@ class TestBuildDeduplicatedResults:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """A deletion directive with empty existing_ids still consumes the NEW.
@@ -1126,7 +1097,7 @@ class TestDeduplicate:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
     ):
         """Test that empty input returns empty output."""
         deduplicator = ProfileConsolidator(
@@ -1147,7 +1118,7 @@ class TestDeduplicate:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """Test that original profiles are returned when LLM finds no duplicates."""
@@ -1176,7 +1147,7 @@ class TestDeduplicate:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """Test that original profiles are returned when LLM call fails."""
@@ -1200,7 +1171,7 @@ class TestDeduplicate:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """Test that duplicates are properly merged."""
@@ -1210,7 +1181,6 @@ class TestDeduplicate:
                     ProfileDuplicateGroup(
                         item_ids=["NEW-0", "NEW-1"],
                         merged_content="User prefers dark mode",
-                        merged_time_to_live="one_month",
                     )
                 ],
                 unique_ids=["NEW-2"],
@@ -1235,7 +1205,7 @@ class TestDeduplicate:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """Test deduplication that supersedes existing profiles."""
@@ -1259,7 +1229,6 @@ class TestDeduplicate:
                     ProfileDuplicateGroup(
                         item_ids=["NEW-0", "EXISTING-0"],
                         merged_content="User prefers dark mode (updated)",
-                        merged_time_to_live="one_month",
                     )
                 ],
                 unique_ids=["NEW-1", "NEW-2"],
@@ -1285,7 +1254,7 @@ class TestDeduplicate:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
     ):
         """A deletion-only LLM response must still erase the EXISTING profile.
@@ -1353,7 +1322,7 @@ class TestDeduplicate:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
     ):
         """When the LLM call raises, fallback must strip canonical deletion markers.
 
@@ -1409,7 +1378,7 @@ class TestDeduplicate:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
     ):
         """Empty dedup output (no groups, no deletions) still strips markers.
 
@@ -1473,7 +1442,7 @@ class TestIntegration:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
     ):
         """Test a complete deduplication flow with realistic data."""
         timestamp = int(datetime.now(UTC).timestamp())
@@ -1517,7 +1486,6 @@ class TestIntegration:
                     ProfileDuplicateGroup(
                         item_ids=["NEW-0", "NEW-1"],
                         merged_content="User works in the financial services industry",
-                        merged_time_to_live="one_year",
                     )
                 ],
                 unique_ids=["NEW-2"],
@@ -1545,9 +1513,13 @@ class TestIntegration:
         )
         assert merged is not None
         assert merged.user_id == "user"
-        assert merged.profile_time_to_live == ProfileTimeToLive.ONE_YEAR
+        assert merged.profile_time_to_live == ProfileTimeToLive.INFINITY
         # Custom features should be merged
-        assert merged.custom_features == {"sector": "finance", "job_type": "analyst"}
+        assert merged.custom_features == {
+            "sector": "finance",
+            "job_type": "analyst",
+            KEY: metadata(merged),
+        }
 
         # Find unique profile
         unique = next((p for p in result_profiles if "Python" in p.content), None)
@@ -1583,7 +1555,7 @@ class TestRetrieveExistingProfilesStatusFilter:
         )
 
     def test_normal_mode_searches_current_profiles(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """Default (output_pending_status=False) searches CURRENT profiles."""
         deduplicator = ProfileConsolidator(
@@ -1604,7 +1576,7 @@ class TestRetrieveExistingProfilesStatusFilter:
         assert search_request.threshold == 0.4
 
     def test_rerun_mode_searches_pending_profiles_only(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """output_pending_status=True searches PENDING profiles, not CURRENT."""
         from reflexio.models.api_schema.service_schemas import Status
@@ -1624,7 +1596,7 @@ class TestRetrieveExistingProfilesStatusFilter:
         assert call_kwargs["status_filter"] == [Status.PENDING]
 
     def test_rerun_mode_default_init_value_is_false(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """ProfileConsolidator.output_pending_status defaults to False to
         preserve the pre-R1-fix behavior for normal extraction callers."""
@@ -1635,7 +1607,7 @@ class TestRetrieveExistingProfilesStatusFilter:
         assert deduplicator.output_pending_status is False
 
     def test_fallback_embeddings_use_storage_model_and_query_prefix(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """Fallback batch embeddings stay compatible with stored profile vectors."""
         mock_request_context.storage._get_embedding = None
@@ -1660,7 +1632,7 @@ class TestRetrieveExistingProfilesStatusFilter:
         )
 
     def test_rerun_mode_dedup_against_existing_pending(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         """When in rerun mode and an existing PENDING profile is similar to
         a new one, the LLM call sees the PENDING profile in EXISTING set --
@@ -1755,7 +1727,7 @@ class TestSupersedeAlwaysHasReplacement:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         sample_profiles,
         existing_profiles,
         item_ids,
@@ -1766,7 +1738,6 @@ class TestSupersedeAlwaysHasReplacement:
                 ProfileDuplicateGroup(
                     item_ids=item_ids,
                     merged_content="MERGED",
-                    merged_time_to_live="one_month",
                 )
             ],
         )
@@ -1805,7 +1776,7 @@ class TestSupersedeAlwaysHasReplacement:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         existing_profiles,
     ):
         """An EXISTING-only merge must not drop custom_features/extractor_names."""
@@ -1818,7 +1789,6 @@ class TestSupersedeAlwaysHasReplacement:
                 ProfileDuplicateGroup(
                     item_ids=["EXISTING-0", "EXISTING-1"],
                     merged_content="MERGED",
-                    merged_time_to_live="one_year",
                 )
             ],
         )
@@ -1836,9 +1806,9 @@ class TestSupersedeAlwaysHasReplacement:
         assert len(result_profiles) == 1
         merged = result_profiles[0]
         assert merged.content == "MERGED"
-        assert merged.custom_features == {"theme": "dark"}
+        assert merged.custom_features == {"theme": "dark", KEY: metadata(merged)}
         assert merged.extractor_names == ["extractor_a", "extractor_b"]
-        assert merged.profile_time_to_live == ProfileTimeToLive.ONE_YEAR
+        assert merged.profile_time_to_live == ProfileTimeToLive.INFINITY
         # Both originals superseded, one replacement written.
         assert set(delete_ids) == {"p-existing-0", "p-existing-1"}
 
@@ -1846,7 +1816,7 @@ class TestSupersedeAlwaysHasReplacement:
         self,
         mock_request_context,
         mock_llm_client,
-        mock_site_var_manager,
+        configured_generation_model,
         existing_profiles,
     ):
         """
@@ -1913,7 +1883,6 @@ class TestValidateProfileDedupOutput:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "EXISTING-1"],
                     merged_content="merged",
-                    merged_time_to_live="one_month",
                 )
             ],
             unique_ids=["NEW-1", "NEW-2"],
@@ -1926,7 +1895,6 @@ class TestValidateProfileDedupOutput:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-7", "EXISTING-9"],
                     merged_content="merged",
-                    merged_time_to_live="one_month",
                 )
             ],
             unique_ids=["NEW-0", "NEW-1", "NEW-2"],
@@ -1953,7 +1921,6 @@ class TestValidateProfileDedupOutput:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="merged",
-                    merged_time_to_live="one_month",
                 )
             ],
             unique_ids=["NEW-0", "NEW-2"],
@@ -1994,7 +1961,7 @@ class TestDedupFailureHandling:
 
     @pytest.fixture
     def consolidator(
-        self, mock_request_context, mock_llm_client, mock_site_var_manager
+        self, mock_request_context, mock_llm_client, configured_generation_model
     ):
         mock_request_context.org_id = "org-test"
         return ProfileConsolidator(
@@ -2046,7 +2013,6 @@ class TestDedupFailureHandling:
                 ProfileDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="MERGED",
-                    merged_time_to_live="one_month",
                 )
             ],
             # NEW-2 deliberately uncovered — the semantic error the validator

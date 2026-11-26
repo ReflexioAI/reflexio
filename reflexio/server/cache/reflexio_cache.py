@@ -147,10 +147,11 @@ def prefetch_config_version(org_id: str) -> Future[Any] | None:
     """Check a warm search instance while independent request reads run.
 
     This only warms the request memo: eviction and construction remain owned
-    by get_reflexio after billing passes. Non-search and cold requests do nothing.
+    by get_reflexio after billing passes. Cold requests and a busy worker pool
+    skip speculation and leave freshness validation to the normal cache lookup.
     """
     from reflexio.server import search_runtime
-    from reflexio.server.services.unified_search_service import submit_search_work
+    from reflexio.server.services.unified_search_service import try_submit_search_work
 
     if search_runtime.current() is None:
         return None
@@ -158,7 +159,7 @@ def prefetch_config_version(org_id: str) -> Future[Any] | None:
         entry = _reflexio_cache.get((org_id, None))
     if entry is None or entry.cached_version is None:
         return None
-    return submit_search_work(lambda: _probe_version_safe(entry.reflexio))
+    return try_submit_search_work(lambda: _probe_version_safe(entry.reflexio))
 
 
 def _entry_is_fresh(entry: _CacheEntry) -> bool:

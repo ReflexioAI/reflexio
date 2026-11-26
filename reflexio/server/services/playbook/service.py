@@ -32,8 +32,12 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
 )
 from reflexio.models.config_schema import PlaybookConfig
+from reflexio.models.extraction_window import (
+    ExtractionWindow,
+    get_extractor_window_params,
+)
 from reflexio.server.llm._litellm_types import ModelProvenance
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
@@ -106,7 +110,6 @@ class PlaybookGenerationServiceConfig:
         agent_version: The agent version
         user_id: The user ID for per-user playbook extraction
         source: Source of the interactions
-        allow_manual_trigger: Whether to allow extractors with manual_trigger=True
         rerun_start_time: Optional start time filter for rerun flows (Unix timestamp)
         rerun_end_time: Optional end time filter for rerun flows (Unix timestamp)
         auto_run: True for regular flow (checks stride_size), False for rerun/manual (skips stride_size)
@@ -116,7 +119,6 @@ class PlaybookGenerationServiceConfig:
     agent_version: str
     user_id: str
     source: str | None = None
-    allow_manual_trigger: bool = False
     rerun_start_time: int | None = None
     rerun_end_time: int | None = None
     auto_run: bool = True
@@ -124,6 +126,8 @@ class PlaybookGenerationServiceConfig:
     window_interactions: list[RequestInteractionDataModel] | None = None
     extraction_window_id: str | None = None
     frozen_extractor_config: dict[str, Any] | None = None
+    output_pending_status: bool = False
+    skip_aggregation: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.user_id, str):
@@ -162,7 +166,7 @@ class PlaybookGenerationService(
         self,
         llm_client: LiteLLMClient,
         request_context: RequestContext,
-        allow_manual_trigger: bool = False,
+        *,
         output_pending_status: bool = False,
         skip_aggregation: bool = False,
     ) -> None:
@@ -172,12 +176,10 @@ class PlaybookGenerationService(
         Args:
             llm_client: Unified LLM client supporting both OpenAI and Claude
             request_context: Request context with storage, configurator, and org_id
-            allow_manual_trigger: Whether to allow extractors with manual_trigger=True
             output_pending_status: Whether to output entries with PENDING status (for rerun)
             skip_aggregation: Whether to skip playbook aggregation (extract only, no agent playbooks)
         """
         super().__init__(llm_client=llm_client, request_context=request_context)
-        self.allow_manual_trigger = allow_manual_trigger
         self.output_pending_status = output_pending_status
         self.skip_aggregation = skip_aggregation
         self._review_window_cache: list[RequestInteractionDataModel] | None = None
@@ -205,11 +207,12 @@ class PlaybookGenerationService(
             agent_version=request.agent_version,
             user_id=request.user_id,
             source=request.source,
-            allow_manual_trigger=self.allow_manual_trigger,
             rerun_start_time=request.rerun_start_time,
             rerun_end_time=request.rerun_end_time,
             auto_run=request.auto_run,
             force_extraction=request.force_extraction,
+            output_pending_status=self.output_pending_status,
+            skip_aggregation=self.skip_aggregation,
         )
 
     def _configured_playbook_config(self) -> PlaybookConfig | None:
@@ -324,6 +327,20 @@ class PlaybookGenerationService(
         all_interactions = extract_interactions_from_request_interaction_data_models(
             session_data_models
         )
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+        from reflexio.server.services.playbook.procedural.input_scope import (
+            is_ordinary_text,
+        )
+
+        if (
+            is_ordinary_text(session_data_models)
+            and current_overflow_coordinator.get() is None
+        ):
+            # Normal procedural extraction owns its source-reader NOOP gate.
+            # Keep the existing deterministic cadence/window/cheap checks.
+            return None
         if has_expert_content(all_interactions):
             agent_context = self.configurator.get_agent_context()
             comparison_pairs = (
@@ -412,6 +429,26 @@ class PlaybookGenerationService(
         ``save_user_playbooks``/``merge_records``/``supersede_*`` — the write is
         the persist half's job (compute is write-free).
         """
+        run = self._review_run or self._last_extraction_run
+        if (
+            run is not None
+            and run.generation_request_snapshot.get("output_schema_name")
+            == "ProceduralOutput"
+        ):
+            from reflexio.server.services.playbook.procedural.inline import (
+                retained_plan,
+            )
+
+            plan = retained_plan(run)
+            if plan is not None and plan.new_playbooks:
+                # Retain the reviewed business result first. Native output
+                # preparation owns fallible embeddings and its exact cache, so
+                # an embedding retry never redraws successful semantic stages.
+                self.storage.precompute_user_playbook_embeddings(  # type: ignore[reportOptionalMemberAccess]
+                    plan.new_playbooks, expand_documents=False
+                )
+            return plan
+
         from reflexio.server.services.playbook.playbook_service_utils import (
             dedupe_and_drop_empty,
         )
@@ -430,7 +467,7 @@ class PlaybookGenerationService(
         )
 
         coordinator = current_overflow_coordinator.get()
-        saved_output = (
+        saved_output = (run is not None and run.committed_output is not None) or (
             coordinator is not None
             and coordinator.saved_run is not None
             and coordinator.saved_run.committed_output is not None
@@ -497,9 +534,26 @@ class PlaybookGenerationService(
                     "Skipping normal candidate reviewer for expert-content batch"
                 )
             else:
-                strict_normal = uses_evidence_grounded_extraction(
-                    self.request_context.prompt_manager,
-                    expert=False,
+                saved_schema = (
+                    run.generation_request_snapshot.get("output_schema_name")
+                    if run is not None
+                    else None
+                )
+                # Replay uses the admitted producer contract in conversion and
+                # review alike; current prompt activation cannot erase or reject
+                # a valid older result for evidence its schema never requested.
+                strict_normal = (
+                    saved_schema != "StructuredPlaybookList"
+                    if saved_schema
+                    in {
+                        "StructuredPlaybookList",
+                        "StructuredExtractedPlaybookList",
+                        "StructuredReferencedExtractedPlaybookList",
+                    }
+                    else uses_evidence_grounded_extraction(
+                        self.request_context.prompt_manager,
+                        expert=False,
+                    )
                 )
                 if not strict_normal:
                     logger.info(
@@ -688,7 +742,7 @@ class PlaybookGenerationService(
             is_source_quoted_playbook(row)
             for row in self.storage.get_user_playbooks_by_ids_any_user(sorted(targets))  # type: ignore[reportOptionalMemberAccess]
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Automatic consolidation cannot replace source-quoted rules"
             )
         try:
@@ -716,23 +770,16 @@ class PlaybookGenerationService(
             raise
 
     def _dispatch_playbook_schedulers(self, plan: PlaybookWritePlan) -> None:
-        """Fire the off-thread optimization + aggregation schedulers post-persist.
+        """Fire the off-thread aggregation scheduler post-persist.
 
         Phantom-billing gate: on the durable / ``.run()`` path this is invoked
         from ``emit_generation_side_effects`` (post-commit), so a fence-lost
-        (superseded) job never enqueues optimization or triggers aggregation. On
+        (superseded) job never triggers aggregation. On
         the synchronous direct-mutation path ``_finalize_extracted_items`` invokes
         it after persistence. Dispatch is best-effort and at most once per
         committed finalization attempt; derived scheduler work has no durable
         replay idempotency.
         """
-        try:
-            self._enqueue_user_playbook_optimization(plan.new_playbooks)
-        except Exception:
-            logger.exception(
-                "Failed to schedule post-persist playbook optimization for request %s",
-                sanitise_for_log(plan.request_id),
-            )
         if not plan.output_pending_status and not plan.skip_aggregation:
             try:
                 logger.info("Trigger playbook aggregation")
@@ -863,43 +910,6 @@ class PlaybookGenerationService(
                 logger.exception("Failed to supersede split-source existing entries")
                 raise
 
-    def _enqueue_user_playbook_optimization(
-        self, saved_playbooks: list[UserPlaybook]
-    ) -> None:
-        config = self.configurator.get_config().playbook_optimizer_config
-        if config.allows_target("user_playbook") is not True or not saved_playbooks:
-            return
-        from reflexio.server.services.playbook_optimizer import (
-            PlaybookOptimizationScheduler,
-            PlaybookOptimizationTarget,
-            PlaybookOptimizer,
-        )
-
-        scheduler = PlaybookOptimizationScheduler.get_instance()
-        from reflexio.server.services.playbook.source_quoted_overflow import (
-            is_source_quoted_playbook,
-        )
-
-        for playbook in saved_playbooks:
-            if (
-                not playbook.user_playbook_id
-                or playbook.status is not None
-                or not playbook.source_interaction_ids
-                or is_source_quoted_playbook(playbook)
-            ):
-                continue
-            target = PlaybookOptimizationTarget(
-                kind="user_playbook", target_id=playbook.user_playbook_id
-            )
-            scheduler.enqueue(
-                org_id=self.request_context.org_id,
-                target=target,
-                policy=config.scheduling_policy,
-                callback=lambda target=target: PlaybookOptimizer(
-                    self.request_context, self.client
-                ).optimize(target),
-            )
-
     def _get_extractor_state_service_name(self) -> str:
         """
         Get the service name for stride_size bookmark lookups.
@@ -908,6 +918,11 @@ class PlaybookGenerationService(
             str: "playbook_extractor" for OperationStateManager stride_size checks
         """
         return "playbook_extractor"
+
+    def _get_extraction_window(self) -> ExtractionWindow:
+        return get_extractor_window_params(
+            self.request_context.configurator.get_config(), "playbook"
+        )
 
     def _get_service_name(self) -> str:
         """

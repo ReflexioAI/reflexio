@@ -301,42 +301,6 @@ def test_invalid_source_projection_vectors_cannot_be_sealed(component):
         _embedding_digest(row)
 
 
-def test_source_quoted_playbooks_are_not_automatically_enqueued_for_optimization():
-    import json
-    from types import SimpleNamespace
-    from unittest.mock import Mock, patch
-
-    from reflexio.models.api_schema.service_schemas import UserPlaybook
-    from reflexio.models.config_schema import PlaybookOptimizerConfig
-    from reflexio.server.services.playbook.service import PlaybookGenerationService
-    from reflexio.server.services.playbook.source_quoted_overflow import POLICY
-    from reflexio.server.services.playbook_optimizer import (
-        PlaybookOptimizationScheduler,
-    )
-
-    service = object.__new__(PlaybookGenerationService)
-    service.configurator = Mock(
-        get_config=lambda: SimpleNamespace(
-            playbook_optimizer_config=PlaybookOptimizerConfig(
-                metric_call_budget=20,
-                user_playbooks_enabled=True,
-            )
-        )
-    )
-    row = UserPlaybook(
-        user_playbook_id=3,
-        user_id="u",
-        agent_version="v",
-        request_id="r",
-        content="Keep the approval gate.",
-        source_interaction_ids=[1],
-        notes=json.dumps({"policy": POLICY}),
-    )
-    with patch.object(PlaybookOptimizationScheduler, "get_instance") as scheduler:
-        service._enqueue_user_playbook_optimization([row])
-    scheduler.return_value.enqueue.assert_not_called()
-
-
 @pytest.mark.parametrize(
     "notes",
     [

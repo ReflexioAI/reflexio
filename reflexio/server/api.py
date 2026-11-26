@@ -16,10 +16,16 @@ internal route tree and no longer lists the included handlers.
 ``reflexio.server.middleware`` for backwards-compatible imports.
 """
 
+from reflexio.server import initialize_server_runtime
+
+initialize_server_runtime()
+
+# isort: split
+
 from reflexio.cli.env_loader import block_implicit_dotenv_walkup
 from reflexio.native_compute import configure_tokenizer_compute
 
-# Explicit serving startup, after parent-package env loading and before native
+# Explicit serving startup, after explicit runtime initialization and before native
 # imports. Direct SDK users still configure at each actual operation.
 block_implicit_dotenv_walkup()
 configure_tokenizer_compute()
@@ -30,6 +36,7 @@ import inspect
 import logging
 import math
 from collections.abc import Callable, Iterable
+from functools import cache
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -41,7 +48,6 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware import Middleware
 
@@ -73,8 +79,15 @@ from reflexio.server.middleware import (
     _resolve_cors_origins,
 )
 from reflexio.server.operation_limiter import log_publish_hardware_capacity
-from reflexio.server.publish_timing import PublishHttpTimingMiddleware
-from reflexio.server.rate_limit import configure_rate_limiter, limiter
+from reflexio.server.publish_timing import (
+    PublishHttpTimingMiddleware,
+    http_org_resolved,
+)
+from reflexio.server.rate_limit import (
+    configure_rate_limiter,
+    limiter,
+    rate_limit_exceeded_handler,
+)
 from reflexio.server.routes import (
     braintrust,
     config,
@@ -471,6 +484,7 @@ def create_app(  # noqa: C901
 
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.auth import (
+        configured_local_org_id,
         default_billing_gate,
         default_get_caller_type,
         default_get_org_id,
@@ -486,6 +500,10 @@ def create_app(  # noqa: C901
     from reflexio.server.services.lineage.vector_backfill_sweep import (
         install_missing_vector_backfill_sweep,
     )
+
+    # A local app and its background services must use one dataset until the
+    # next launch. Custom request and lifespan resolvers keep their own policy.
+    local_org_id = configured_local_org_id() if get_org_id is None else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
@@ -512,11 +530,18 @@ def create_app(  # noqa: C901
         )
         try:
             if mounts_data_plane:
+                from reflexio.server.services.retrieval.judge_client import judge_mode
+
+                judge_mode()  # Validate the explicit mode without constructing a client.
                 log_publish_hardware_capacity()
                 validate_llm_availability()
                 # Window execution and deferred recovery share the durable owner
                 # below. Bootstrap seeds only the default single-ref discovery.
-                bootstrap_org_id = _resolve_lifespan_org_id(get_org_id)
+                bootstrap_org_id = (
+                    local_org_id
+                    if local_org_id is not None
+                    else _resolve_lifespan_org_id(get_org_id)
+                )
                 # Register bounded missing-vector repair BEFORE starting the GC
                 # scheduler so its per-org hook participates in start conditions.
                 # A zero REFLEXIO_MISSING_VECTOR_BACKFILL_CAP skips registration.
@@ -588,6 +613,15 @@ def create_app(  # noqa: C901
             )
 
             stop_search_metering_worker(timeout=5.0)
+            if mounts_data_plane:
+                from reflexio.server.services.retrieval.judge_client import (
+                    close_judge_client,
+                )
+
+                try:
+                    close_judge_client()
+                except Exception:
+                    logger.warning("Search judge HTTP cleanup failed", exc_info=True)
             if capabilities is None:
                 from reflexio.server.usage_metrics import (
                     configure_usage_event_recorder,
@@ -641,7 +675,7 @@ def create_app(  # noqa: C901
 
     # Configure rate limiter
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[reportArgumentType]
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)  # type: ignore[reportArgumentType]
 
     # Reject oversized requests before they reach endpoint handlers.
     app.add_middleware(BodySizeLimitMiddleware)
@@ -652,9 +686,15 @@ def create_app(  # noqa: C901
     # Bot protection
     app.add_middleware(BotProtectionMiddleware)
 
-    # Override get_org_id dependency if custom one provided
     if get_org_id is not None:
         app.dependency_overrides[default_get_org_id] = get_org_id
+    elif local_org_id is not None:
+
+        def get_bound_local_org_id() -> str:
+            http_org_resolved(local_org_id)
+            return local_org_id
+
+        app.dependency_overrides[default_get_org_id] = get_bound_local_org_id
 
     # Override get_caller_type dependency if custom one provided
     if get_caller_type is not None:
@@ -738,17 +778,28 @@ def create_app(  # noqa: C901
     return app
 
 
-# The standalone OSS app allows no-key access only from loopback. Embedded
-# hosts use create_app's existing authentication seams instead.
-from reflexio.server.local_access import LocalAccessMiddleware
+if TYPE_CHECKING:
+    app: FastAPI
 
-app = create_app()
-_add_openapi_security(app, allow_local_access=True)
-# Reject before the request reaches data middleware, but keep CORS, security
-# headers and correlation around authentication failures too.
-_cors_index = next(
-    index
-    for index, item in enumerate(app.user_middleware)
-    if item.cls is CORSMiddleware
-)
-app.user_middleware.insert(_cors_index + 1, Middleware(LocalAccessMiddleware))
+
+@cache
+def _standalone_app() -> FastAPI:
+    """Apply the standalone access policy when the local app is requested."""
+    from reflexio.server.local_access import LocalAccessMiddleware
+
+    app = create_app()
+    _add_openapi_security(app, allow_local_access=True)
+    # Keep CORS, security headers and correlation around authentication failures.
+    cors_index = next(
+        index
+        for index, item in enumerate(app.user_middleware)
+        if item.cls is CORSMiddleware
+    )
+    app.user_middleware.insert(cors_index + 1, Middleware(LocalAccessMiddleware))
+    return app
+
+
+def __getattr__(name: str) -> FastAPI:
+    if name == "app":
+        return _standalone_app()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

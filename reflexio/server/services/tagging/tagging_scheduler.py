@@ -106,7 +106,14 @@ class TaggingScheduler:
                 scheduled = bool(self._scheduled)
             if not scheduled:
                 remaining = max(0.0, deadline - time.monotonic())
-                return drain_callbacks(timeout_seconds=remaining)
+                if not drain_callbacks(timeout_seconds=remaining):
+                    return False
+                # A completed callback may have retained itself as scheduled
+                # work after a seal/busy refusal. Executor idle is not quiescence.
+                with self._mutex:
+                    if not self._scheduled:
+                        return True
+                continue
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
@@ -174,6 +181,20 @@ class TaggingScheduler:
                 user_id=key[2],
             )
         except Exception as exc:
+            from reflexio.server.services.durable_learning.learning_admission import (
+                learning_transition_is_held,
+            )
+            from reflexio.server.services.durable_learning.user_lease import (
+                UserLeaseBusyError,
+            )
+
+            if learning_transition_is_held(exc) or isinstance(exc, UserLeaseBusyError):
+                # An operational hold is not a failed provider call or a dropped
+                # best-effort callback. Retain this exact existing debounce key.
+                TaggingScheduler.get_instance().schedule(
+                    key, callback, delay_seconds=TAGGING_DELAY_SECONDS
+                )
+                return
             # Same classification as durable extraction: while the provider's
             # breaker is open the pass waits for it instead of being dropped.
             outage = classify_llm_failure(exc)

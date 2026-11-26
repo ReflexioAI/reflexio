@@ -809,7 +809,7 @@ def test_48_chunk_restart_counts_only_uncached_children(
                             "profiles": [
                                 {
                                     "content": "shared lesson",
-                                    "time_to_live": "infinity",
+                                    "explicit_storage_deadline": None,
                                     "source_span": chunk.spans[0].text,
                                 }
                             ]
@@ -875,7 +875,7 @@ def test_48_chunk_restart_counts_only_uncached_children(
                         "profiles": [
                             {
                                 "content": "shared lesson",
-                                "time_to_live": "infinity",
+                                "explicit_storage_deadline": None,
                                 "source_span": prepared.chunks[0].spans[0].text,
                             }
                         ],
@@ -959,7 +959,7 @@ def test_48_chunk_restart_counts_only_uncached_children(
                 "profiles": [
                     {
                         "content": "shared lesson",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                         "source_span": prepared.chunks[0].spans[0].text,
                     }
                 ]
@@ -1328,12 +1328,12 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
                 "profiles": [
                     {
                         "content": "first supported lesson",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                         "source_span": spans[0].text,
                     },
                     {
                         "content": "second supported lesson",
-                        "time_to_live": "infinity",
+                        "explicit_storage_deadline": None,
                         "source_span": spans[-1].text,
                     },
                 ]
@@ -2497,8 +2497,10 @@ def pipeline(tmp_path, monkeypatch):
     config.set_config(
         Config(
             storage_config=StorageConfigSQLite(db_path=str(tmp_path / "stream.db")),
-            window_size=10,
-            stride_size=5,
+            profile_window_size=10,
+            profile_stride_size=5,
+            playbook_window_size=10,
+            playbook_stride_size=5,
             profile_extractor_config=ProfileExtractorConfig(
                 extraction_definition_prompt="Extract user preferences"
             ),
@@ -2509,6 +2511,9 @@ def pipeline(tmp_path, monkeypatch):
     engine = Reflexio(
         org_id="stream-test", storage_base_dir=str(tmp_path), configurator=config
     )
+    from reflexio.test_support.learning_transition import qualify_empty_learning_scope
+
+    qualify_empty_learning_scope(engine.get_storage())
     monkeypatch.setattr(
         "reflexio.server.cache.reflexio_cache.get_reflexio", lambda **_: engine
     )
@@ -3120,7 +3125,7 @@ def test_enabled_overflow_profile_uses_real_window_commit_once(
                             "profiles": [
                                 {
                                     "content": "The user prefers concise answers.",
-                                    "time_to_live": "infinity",
+                                    "explicit_storage_deadline": None,
                                     "source_span": "I prefer concise answers with details 0",
                                 }
                             ]
@@ -3354,7 +3359,7 @@ def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
                     "profiles": [
                         {
                             "content": "The user requires separate deployment approval.",
-                            "time_to_live": "infinity",
+                            "explicit_storage_deadline": None,
                             "source_span": source_text,
                         }
                     ]
@@ -4281,6 +4286,9 @@ def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=Non
     from reflexio.server.services.playbook.playbook_service_utils import (
         StructuredPlaybookList,
     )
+    from reflexio.server.services.profile.committed_output import (
+        read_saved_structured_output,
+    )
     from reflexio.server.services.profile.profile_generation_service_utils import (
         StructuredProfilesOutput,
     )
@@ -4330,7 +4338,8 @@ def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=Non
             }
         )
         if kind == "playbook"
-        else StructuredProfilesOutput.model_validate(
+        else read_saved_structured_output(
+            StructuredProfilesOutput,
             {
                 "profiles": []
                 if empty
@@ -4340,7 +4349,7 @@ def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=Non
                         "time_to_live": "infinity",
                     }
                 ]
-            }
+            },
         )
     )
     run = build_extractor_agent_run_record(
@@ -4354,7 +4363,10 @@ def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=Non
         extractor_config=config,
         service_config=service.service_config,
         agent_context=engine.request_context.configurator.get_agent_context(),
-        output_schema_name=schema or type(output).__name__,
+        output_schema_name=schema
+        or (
+            StructuredPlaybookList if kind == "playbook" else StructuredProfilesOutput
+        ).__name__,
     )
     run = replace(
         run,
@@ -4514,11 +4526,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         if "Select original evidence needed" in prompt:
             name = "ProtectedRecordSelection"
         elif "reason_code" in prompt:
-            name = (
-                "EvidenceFirstReviewOutput"
-                if "supporting_evidence" in prompt
-                else "ReviewOutput"
-            )
+            name = "ReviewOutput"
         elif "unique_ids" in prompt:
             name = "ProfileDeduplicationOutput"
         schemas.append(name)
@@ -4565,13 +4573,6 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
                         "rationale": "The model inferred a new approval rule.",
                     },
                 )
-            if "EvidenceFirstReviewOutput" in name:
-                result["supporting_evidence"] = [
-                    {
-                        "id": "C1",
-                        "excerpts": [{"evidence_id": "C1-E1", "text": span.text}],
-                    }
-                ]
         elif "ProfileDeduplicationOutput" in name or any(
             "unique_ids" in str(message.get("content", ""))
             for message in params["messages"]
@@ -4741,7 +4742,7 @@ def test_profile_consolidation_control_failure_preserves_extracted_window_withou
                                 "profiles": [
                                     {
                                         "content": "The user prefers concise explanations.",
-                                        "time_to_live": "infinity",
+                                        "explicit_storage_deadline": None,
                                         "source_span": quote,
                                     }
                                 ]

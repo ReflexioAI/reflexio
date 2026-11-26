@@ -1,5 +1,7 @@
 import datetime
+import json
 import os
+import re
 import tempfile
 from datetime import UTC
 from pathlib import Path
@@ -28,10 +30,13 @@ from reflexio.models.api_schema.service_schemas import (
     Request,
     RerunProfileGenerationRequest,
 )
-from reflexio.models.config_schema import ProfileExtractorConfig
+from reflexio.models.config_schema import LLMConfig, ProfileExtractorConfig
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.profile.components.consolidator import (
+    ProfileDeduplicationOutput,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileAddItem,
     ProfileGenerationRequest,
@@ -48,6 +53,38 @@ def _storage(service):
     storage = service.storage
     assert storage is not None
     return storage
+
+
+def _original_source_quote(messages):
+    """Echo an actual immutable source excerpt, never a fabricated quotation."""
+    decoder = json.JSONDecoder()
+    for message in messages:
+        body = message.get("content", "")
+        texts = (
+            [body]
+            if isinstance(body, str)
+            else [
+                part.get("text", "")
+                for part in body
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+        )
+        for text in texts:
+            # Direct synchronous extraction uses the original fenced history;
+            # durable source packages use their immutable JSON presentation.
+            if "[User Interactions to Analyze]" in text:
+                source = text.split("[User Interactions to Analyze]", 1)[1]
+                quote = re.search(r"(?im)^User: ```([\s\S]*?)```", source)
+                if quote is not None:
+                    return quote.group(1)
+            start = text.find('{"protected_record":')
+            if start < 0:
+                continue
+            original, _ = decoder.raw_decode(text[start:])
+            for row in original.get("original_chunk", {}).get("evidence", []):
+                if row.get("text"):
+                    return row["text"]
+    raise AssertionError("Extraction fake requires original source evidence")
 
 
 @pytest.fixture
@@ -74,14 +111,23 @@ def mock_chat_completion():
             return "true"
         # Extraction turn: a response_format is requested, so return the parsed
         # structured output model directly (the structured-response terminus).
+        if (
+            kwargs.get("response_format") is ProfileDeduplicationOutput
+            or "profile deduplication assistant" in prompt_content
+        ):
+            return ProfileDeduplicationOutput(unique_ids=["NEW-0"])
         if kwargs.get("response_format"):
             return StructuredProfilesOutput(
                 profiles=[
-                    ProfileAddItem(content="like sushi", time_to_live="one_month")
+                    ProfileAddItem(
+                        content="like sushi",
+                        explicit_storage_deadline=None,
+                        source_span=_original_source_quote(messages),
+                    )
                 ]
             )
         # Fallback: non-structured JSON string (legacy non-loop callers).
-        return '```json\n{\n    "add": [{\n        "content": "like sushi",\n        "time_to_live": "one_month"\n    }]\n}\n```'
+        return '```json\n{\n    "add": [{\n        "content": "like sushi",\n        "explicit_storage_deadline": null\n    }]\n}\n```'
 
     def mock_generate_with_provenance(*args, **kwargs):
         return CompletionResult(
@@ -128,7 +174,9 @@ def test_refresh_profiles_for_user(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         # Create a PublishUserInteractionRequest first
         publish_request = PublishUserInteractionRequest(
@@ -170,7 +218,7 @@ def test_refresh_profiles_for_user(mock_chat_completion):
         assert len(profiles) == 1
         profile = profiles[0]
         assert profile.content == "like sushi"
-        assert profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
+        assert profile.profile_time_to_live == ProfileTimeToLive.INFINITY
 
 
 def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion):
@@ -201,7 +249,9 @@ def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         # Create a PublishUserInteractionRequest first
         publish_request = PublishUserInteractionRequest(
@@ -243,7 +293,7 @@ def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion
         assert len(profiles) == 1
         profile = profiles[0]
         assert profile.content == "like sushi"
-        assert profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
+        assert profile.profile_time_to_live == ProfileTimeToLive.INFINITY
 
 
 def test_profile_extraction_message_construction():
@@ -290,7 +340,7 @@ def test_profile_extraction_message_construction():
                 "profile_extractor_config", profile_extractor_config
             )
             profile_generation_service.configurator.set_config_by_name(
-                "window_size", 100
+                "profile_window_size", 100
             )
 
             # Create a PublishUserInteractionRequest
@@ -336,16 +386,24 @@ def test_profile_extraction_message_construction():
                     return "true"
                 # This is the actual profile extraction call
                 # Check if parse_structured_output is True in kwargs
-                if kwargs.get("parse_structured_output", False):
+                if (
+                    kwargs.get("response_format") is ProfileDeduplicationOutput
+                    or "profile deduplication assistant" in prompt_content
+                ):
+                    return ProfileDeduplicationOutput(unique_ids=["NEW-0"])
+                if kwargs.get("response_format") or kwargs.get(
+                    "parse_structured_output", False
+                ):
                     return StructuredProfilesOutput(
                         profiles=[
                             ProfileAddItem(
                                 content="like Italian food and sushi",
-                                time_to_live="one_month",
+                                explicit_storage_deadline=None,
+                                source_span=_original_source_quote(messages),
                             )
                         ]
                     )
-                return '```json\n{\n    "add": [{\n        "content": "like Italian food and sushi",\n        "time_to_live": "one_month"\n    }]\n}\n```'
+                return '```json\n{\n    "add": [{\n        "content": "like Italian food and sushi",\n        "explicit_storage_deadline": null\n    }]\n}\n```'
 
             def mock_generate_with_provenance(*args, **kwargs):
                 return CompletionResult(
@@ -465,7 +523,9 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         # First, create CURRENT profiles (output_pending_status=False)
         publish_request1 = PublishUserInteractionRequest(
@@ -547,7 +607,6 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         profile_generation_service_rerun = ProfileGenerationService(
             llm_client=profile_generation_service.client,
             request_context=profile_generation_service.request_context,
-            allow_manual_trigger=True,
             output_pending_status=True,
         )
 
@@ -594,7 +653,6 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
         profile_generation_service = ProfileGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -651,7 +709,6 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
         profile_generation_service = ProfileGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -665,7 +722,9 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         from reflexio.models.api_schema.service_schemas import (
             ManualProfileGenerationRequest,
@@ -691,7 +750,6 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         profile_generation_service = ProfileGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -705,7 +763,12 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_stride_size", 0
+        )
 
         # First, add some interactions to storage
         interaction = InteractionData(
@@ -767,7 +830,6 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         profile_generation_service = ProfileGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -781,7 +843,9 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
         )
-        profile_generation_service.configurator.set_config_by_name("window_size", 100)
+        profile_generation_service.configurator.set_config_by_name(
+            "profile_window_size", 100
+        )
 
         # Add interactions with source_a
         interaction_a = InteractionData(
@@ -1130,7 +1194,7 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        service.configurator.set_config_by_name("window_size", 240)
+        service.configurator.set_config_by_name("profile_window_size", 240)
         service.service_config = service._load_generation_service_config(
             ProfileGenerationRequest(
                 user_id=user_id,
@@ -1170,9 +1234,9 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
         api_config = ProfileExtractorConfig(
             extraction_definition_prompt="communication preferences",
             request_sources_enabled=["api"],
-            window_size_override=150,
         )
 
+        service.configurator.set_config_by_name("profile_window_size", 150)
         scoped_groups, scoped_config = (
             service._collect_scoped_interactions_for_precheck(api_config)
         )
@@ -1193,9 +1257,9 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
         web_config = ProfileExtractorConfig(
             extraction_definition_prompt="shopping preferences",
             request_sources_enabled=["web"],
-            window_size_override=90,
         )
 
+        service.configurator.set_config_by_name("profile_window_size", 90)
         empty_groups, web_scoped_config = (
             service._collect_scoped_interactions_for_precheck(web_config)
         )
@@ -1314,7 +1378,17 @@ def test_should_run_before_extraction_includes_extractor_definition_and_override
             ),
         )
 
+        config = service.request_context.configurator.get_config().model_copy(
+            update={"llm_config": LLMConfig(should_run_model_name="openai/check")}
+        )
         with (
+            patch.object(
+                service.request_context.configurator, "get_config", return_value=config
+            ),
+            patch(
+                "reflexio.server.site_var.site_var_manager.SiteVarManager.get_site_var",
+                side_effect=AssertionError("Extraction check read bundled settings"),
+            ),
             patch.object(
                 service,
                 "_collect_scoped_interactions_for_precheck",
@@ -1334,6 +1408,7 @@ def test_should_run_before_extraction_includes_extractor_definition_and_override
 
         assert should_run is True
         mock_generate.assert_called_once()
+        assert mock_generate.call_args.kwargs["model"] == "openai/check"
         prompt = mock_generate.call_args.kwargs["messages"][0]["content"]
         assert "career goals and projects" in prompt
         assert "work projects, deadlines, or role changes" in prompt

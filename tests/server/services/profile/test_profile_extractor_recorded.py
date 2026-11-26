@@ -40,6 +40,16 @@ class TestRecordedProfileExtraction:
             assert isinstance(profile["content"], str)
             assert len(profile["content"]) > 0
 
+    def test_legacy_recording_is_rejected_by_current_author_schema(self):
+        """Preserve the historical recording and explicitly identify schema drift."""
+        from reflexio.server.services.profile.profile_generation_service_utils import (
+            StructuredProfilesOutput,
+        )
+
+        data = json.loads(load_llm_fixture_content("profile_extraction"))
+        with pytest.raises(ValueError, match="cannot author estimated lifetime"):
+            StructuredProfilesOutput.model_validate(data)
+
     def test_fixture_mock_has_correct_structure(self):
         """load_llm_fixture returns a mock with the expected litellm structure."""
         mock = load_llm_fixture("profile_extraction")

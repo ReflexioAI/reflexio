@@ -176,8 +176,10 @@ def reflexio_instance(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         skip_should_run_check=True,
-        window_size=_CUSTOMER_SUPPORT_WINDOW_SIZE,
-        stride_size=_E2E_STRIDE_SIZE,
+        profile_window_size=_CUSTOMER_SUPPORT_WINDOW_SIZE,
+        playbook_window_size=_CUSTOMER_SUPPORT_WINDOW_SIZE,
+        profile_stride_size=_E2E_STRIDE_SIZE,
+        playbook_stride_size=_E2E_STRIDE_SIZE,
         # Single configured profile extractor (the list-valued field is retired and
         # the Config constructor would ignore it, dropping tagging_definition_prompt).
         profile_extractor_config=ProfileExtractorConfig.model_validate(
@@ -230,11 +232,13 @@ def reflexio_instance_profile_only(
 ) -> Reflexio:
     """Create an Reflexio instance with only profile extraction config."""
     config = Config(
-        stride_size=_E2E_STRIDE_SIZE,
+        profile_stride_size=_E2E_STRIDE_SIZE,
+        playbook_stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        window_size=_CUSTOMER_SUPPORT_WINDOW_SIZE,
+        profile_window_size=_CUSTOMER_SUPPORT_WINDOW_SIZE,
+        playbook_window_size=_CUSTOMER_SUPPORT_WINDOW_SIZE,
         user_playbook_extractor_config=None,
         profile_extractor_config=ProfileExtractorConfig.model_validate(
             {
@@ -267,7 +271,8 @@ def reflexio_instance_lifestyle_profile(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a personal assistant that learns about the user over time",
-        stride_size=_E2E_STRIDE_SIZE,
+        profile_stride_size=_E2E_STRIDE_SIZE,
+        playbook_stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
         profile_extractor_config=ProfileExtractorConfig.model_validate(
             {
@@ -336,7 +341,8 @@ def reflexio_instance_playbook_only(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        stride_size=_E2E_STRIDE_SIZE,
+        profile_stride_size=_E2E_STRIDE_SIZE,
+        playbook_stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
         user_playbook_extractor_config=PlaybookConfig.model_validate(
             {
@@ -363,7 +369,8 @@ def reflexio_instance_agent_success_only(
 ) -> Reflexio:
     """Create an Reflexio instance with only agent success config."""
     config = Config(
-        stride_size=_E2E_STRIDE_SIZE,
+        profile_stride_size=_E2E_STRIDE_SIZE,
+        playbook_stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
@@ -515,7 +522,8 @@ def reflexio_instance_playbook_source_filtering(
 ) -> Reflexio:
     """Create an Reflexio instance with playbook configs using request_sources_enabled filtering."""
     config = Config(
-        stride_size=_E2E_STRIDE_SIZE,
+        profile_stride_size=_E2E_STRIDE_SIZE,
+        playbook_stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
@@ -553,17 +561,18 @@ def reflexio_instance_manual_profile(
 
     This config has:
     - window_size set (required for manual generation)
-    - manual_trigger=True on the extractor
+    - profile_stride_size=0 keeps publishing manual-only
     """
     config = Config(
-        stride_size=_E2E_STRIDE_SIZE,
+        profile_stride_size=0,
+        playbook_stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        window_size=10,  # Required for manual generation
+        profile_window_size=10,
+        playbook_window_size=10,  # Required for manual generation
         profile_extractor_config=ProfileExtractorConfig.model_validate(
             {
-                "extractor_name": "manual_trigger_extractor",
                 "context_prompt": """
 Conversation between sales agent and user, extract any information from the interaction if contains any information listed under definition
 """,
@@ -573,7 +582,6 @@ name, age, intent of the conversations
                 "tagging_definition_prompt": """
 choice of ['basic_info', 'conversation_intent']
 """,
-                "manual_trigger": True,  # Required for manual generation
             }
         ),
     )
@@ -599,11 +607,13 @@ def reflexio_instance_manual_playbook(
     - window_size set (required for manual generation)
     """
     config = Config(
-        stride_size=_E2E_STRIDE_SIZE,
+        profile_stride_size=_E2E_STRIDE_SIZE,
+        playbook_stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        window_size=10,  # Required for manual generation
+        profile_window_size=10,
+        playbook_window_size=10,  # Required for manual generation
         user_playbook_extractor_config=PlaybookConfig.model_validate(
             {
                 "extractor_name": "manual_trigger_playbook",
@@ -638,11 +648,13 @@ def reflexio_instance_multiple_profile_extractors(
     under the singleton profile name regardless of the configured extractor_name.
     """
     config = Config(
-        stride_size=_E2E_STRIDE_SIZE,
+        profile_stride_size=_E2E_STRIDE_SIZE,
+        playbook_stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        window_size=20,
+        profile_window_size=20,
+        playbook_window_size=20,
         profile_extractor_config=ProfileExtractorConfig.model_validate(
             {
                 "extractor_name": "extractor_basic_info",
@@ -679,11 +691,13 @@ def reflexio_instance_multiple_playbook_extractors(
     extractor_name, and the extractor runs for all sources.
     """
     config = Config(
-        stride_size=_E2E_STRIDE_SIZE,
+        profile_stride_size=_E2E_STRIDE_SIZE,
+        playbook_stride_size=_E2E_STRIDE_SIZE,
         skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        window_size=20,
+        profile_window_size=20,
+        playbook_window_size=20,
         user_playbook_extractor_config=PlaybookConfig.model_validate(
             {
                 "extractor_name": "general_playbook",

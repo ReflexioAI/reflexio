@@ -17,6 +17,7 @@ from typing import Any
 
 from reflexio.server.env_utils import env_str
 from reflexio.server.llm.input_budget import (
+    ExtractionInputIntegrityError,
     InputBudgetConfigurationError,
     check_request_input_budget,
     declared_context_limits,
@@ -198,7 +199,7 @@ def _validate_source_owner(actor: Any) -> None:
         "project_id": coordinator.window.project_id,
         "user_id": coordinator.window.user_id,
     }:
-        raise InputBudgetConfigurationError("Consolidation source owner changed")
+        raise ExtractionInputIntegrityError("Consolidation source owner changed")
     coordinator.validate_current_parent()
 
 
@@ -241,7 +242,7 @@ def _bind_plan(coordinator: Any, plan: Any) -> None:
         # with nothing built from it may be replaced; storage enforces the same
         # rule (reconciliation_journal.validate_advance).
         if plan_derived_artifacts(checkpoint):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Consolidation compression plan changed"
             )
         logger.warning(
@@ -264,7 +265,7 @@ def prepare_context(
     )
 
     if actor.source_scope is None:
-        raise InputBudgetConfigurationError(
+        raise ExtractionInputIntegrityError(
             "Authorized consolidation source scope required"
         )
     payload = deepcopy(payload)
@@ -336,7 +337,7 @@ def prepare_context(
                 or node["input_refs_digest"] != active.input_refs_digest
                 or node["request_contract_digest"] != plan.request_contract_digest
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Consolidation selection binding changed"
                 )
             return node["output"]
@@ -345,7 +346,7 @@ def prepare_context(
             if coordinator is None:
                 return
             if active is None or active.key != key:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Consolidation selection lacks its node"
                 )
             coordinator.save_reconciliation_selection(

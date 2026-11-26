@@ -19,6 +19,11 @@ from reflexio.models.api_schema.service_schemas import (
     Interaction,
     Status,
 )
+from reflexio.models.config_schema import Config
+from reflexio.models.extraction_window import (
+    ExtractionWindow,
+    get_extractor_window_params,
+)
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.base_generation_service import (
@@ -45,9 +50,6 @@ class MockExtractorConfig:
 
     extractor_name: str
     request_sources_enabled: list[str] | None = None
-    manual_trigger: bool = False
-    window_size_override: int | None = None
-    stride_size_override: int | None = None
 
 
 @dataclass
@@ -58,7 +60,6 @@ class MockServiceConfig:
     request_id: str = "test_request"
     request_interaction_data_models: list | None = None
     source: str | None = None
-    allow_manual_trigger: bool = False
     auto_run: bool = True
     force_extraction: bool = False
 
@@ -86,6 +87,9 @@ class MockExtractor:
 
 class ConcreteGenerationService(BaseGenerationService):
     """Concrete implementation of BaseGenerationService for testing."""
+
+    def _get_extraction_window(self) -> ExtractionWindow:
+        return get_extractor_window_params(self.configurator.get_config(), "profile")
 
     def __init__(
         self, llm_client, request_context, extractor_config=None, extractor_configs=None
@@ -278,39 +282,15 @@ class TestFilterExtractorConfigByServiceConfig:
 
         assert result is None
 
-    def test_filter_by_manual_trigger(self, base_service):
-        """Test filtering extractor by manual_trigger flag."""
-        config = MockExtractorConfig(extractor_name="extractor1", manual_trigger=True)
-
-        service_config = MockServiceConfig(allow_manual_trigger=False)
-        result = base_service._filter_extractor_config_by_service_config(
-            config, service_config
-        )
-
-        assert result is None
-
-    def test_manual_trigger_allowed_when_allow_manual_trigger_true(self, base_service):
-        """Test that manual_trigger extractor is allowed when requested."""
-        config = MockExtractorConfig(extractor_name="extractor1", manual_trigger=True)
-
-        service_config = MockServiceConfig(allow_manual_trigger=True)
-        result = base_service._filter_extractor_config_by_service_config(
-            config, service_config
-        )
-
-        assert result is config
-
     def test_combined_filtering(self, base_service):
         """Test that all filter conditions are applied together."""
         config = MockExtractorConfig(
             extractor_name="extractor1",
             request_sources_enabled=["api"],
-            manual_trigger=False,
         )
 
         service_config = MockServiceConfig(
             source="api",
-            allow_manual_trigger=False,
         )
         result = base_service._filter_extractor_config_by_service_config(
             config, service_config
@@ -433,7 +413,9 @@ class TestFilterConfigByStride:
         """
         # Mock configurator and storage BEFORE creating service so __init__ picks them up
         request_context.configurator = MagicMock()
-        request_context.configurator.get_config.return_value = None
+        request_context.configurator.get_config.return_value = Config(
+            storage_config=None
+        )
 
         mock_storage = MagicMock()
         new_interactions = self._make_request_interaction_models(
@@ -492,12 +474,16 @@ class TestFilterConfigByStride:
         result = service._filter_config_by_stride(config)
         assert result is None
 
-    def test_uses_per_extractor_stride_size_override(self, llm_client, request_context):
-        """Verify per-extractor stride_size override is respected."""
+    def test_uses_profile_stride_policy(self, llm_client, request_context):
+        """The service selects its explicit per-kind root policy."""
         service = self._setup_stride_size_service(llm_client, request_context, 3)
         service.service_config = MockServiceConfig(auto_run=True, source="api")
 
-        config = MockExtractorConfig(extractor_name="ext1", stride_size_override=2)
+        current = request_context.configurator.get_config()
+        request_context.configurator.get_config.return_value = current.model_copy(
+            update={"profile_stride_size": 2}
+        )
+        config = MockExtractorConfig(extractor_name="ext1")
         result = service._filter_config_by_stride(config)
         assert result is config
 

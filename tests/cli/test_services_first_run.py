@@ -60,7 +60,7 @@ class TestEnsureLlmConfigured:
         mock_emb.assert_not_called()
 
     def test_prompts_when_no_providers_and_tty(self, tmp_path: Path) -> None:
-        """No keys + interactive stdin → both wizard helpers run, env reloads with override=True (file wins)."""
+        """Both prompts run, and unchanged dotenv settings are never replayed."""
         env = tmp_path / ".env"
         env.write_text("")
         with (
@@ -80,53 +80,33 @@ class TestEnsureLlmConfigured:
             patch("reflexio.cli.env_loader._load_dotenv_pruned") as mock_load,
         ):
             _ensure_llm_configured(env)
-        mock_llm.assert_called_once_with(env)
-        mock_emb.assert_called_once_with(env, "openai")
-        mock_load.assert_called_once_with(env, override=True)
+        mock_llm.assert_called_once_with(env, activate=True)
+        mock_emb.assert_called_once_with(env, "openai", activate=True)
+        mock_load.assert_not_called()
 
-    def test_wizard_key_reaches_os_environ_after_reload(
+    def test_wizard_activates_the_entered_key_even_when_it_matches_dotenv(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The key the wizard writes to the .env FILE must win over the shipped
-        empty placeholder already in ``os.environ`` after the reload.
+        import os
 
-        This is the F002 regression guard: with ``override=False`` the empty
-        ``OPENAI_API_KEY`` placeholder would shadow the file value and the key
-        the operator just entered would be lost. ``load_dotenv`` runs for real
-        here (only the prompt helpers are mocked) so we exercise the actual
-        file-wins behaviour.
-        """
         env = tmp_path / ".env"
-
-        # A fresh install ships an empty placeholder already present in the
-        # process env; that is exactly what must NOT shadow the file value.
+        env.write_text(
+            "REFLEXIO_API_KEY=file-fixture\nOPENAI_API_KEY=fixture-entered-key\n"
+        )
         monkeypatch.setenv("OPENAI_API_KEY", "")
-
-        def _write_real_key(_env_path: Path) -> tuple[str, str, str]:
-            # Stand in for the wizard's set_env_var: write to the FILE only.
-            env.write_text("OPENAI_API_KEY=sk-real-entered-key\n")
-            return ("OpenAI", "gpt-5.4-mini", "openai")
-
+        monkeypatch.setenv("REFLEXIO_API_KEY", "process-fixture")
         with (
             patch(
                 "reflexio.server.llm.model_defaults.detect_available_providers",
                 return_value=[],
             ),
             patch("sys.stdin.isatty", return_value=True),
-            patch(
-                "reflexio.cli.commands.setup_cmd._prompt_llm_provider",
-                side_effect=_write_real_key,
-            ),
-            patch(
-                "reflexio.cli.commands.setup_cmd._prompt_embedding_provider",
-                return_value=None,
-            ),
+            patch("typer.prompt", side_effect=[1, "fixture-entered-key"]),
         ):
             _ensure_llm_configured(env)
 
-        import os
-
-        assert os.environ["OPENAI_API_KEY"] == "sk-real-entered-key"
+        assert os.environ["OPENAI_API_KEY"] == "fixture-entered-key"
+        assert os.environ["REFLEXIO_API_KEY"] == "process-fixture"
 
     def test_exits_cleanly_when_no_providers_and_non_tty(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -215,8 +195,8 @@ class TestEnsureLlmConfigured:
         ):
             _ensure_llm_configured(env)
         # Wizard ran — we did not silently fall through on the embedder-only state.
-        mock_llm.assert_called_once_with(env)
-        mock_emb.assert_called_once_with(env, "openai")
+        mock_llm.assert_called_once_with(env, activate=True)
+        mock_emb.assert_called_once_with(env, "openai", activate=True)
 
     def test_local_only_provider_non_tty_exits_with_generation_message(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -300,7 +280,7 @@ def test_embedding_only_start_skips_first_run_llm_guard(monkeypatch) -> None:
         called_args = args
 
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
-    monkeypatch.setattr("reflexio.cli.env_loader.load_reflexio_env", lambda: None)
+    monkeypatch.setattr("reflexio.cli.env_loader.load_local_launch_env", lambda: None)
     monkeypatch.setattr(
         "reflexio.cli.bootstrap_config.resolve_storage", lambda _: "sqlite"
     )

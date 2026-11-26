@@ -3,7 +3,7 @@
 Resolution order (highest priority first):
     1. LLMConfig override (org-level configuration)
     2. For embeddings, Reflexio's local default model
-    3. For other roles, llm_model_setting.json site var and provider autodetection
+    3. For other roles, provider autodetection when there is no explicit model
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reflexio.models.config_schema import APIKeyConfig, LLMConfig
 
-# Env var opting into the Claude Code CLI provider (registered in
-# reflexio.server.llm.providers.claude_code_provider). When set to "1"
-# *and* the active host CLI is available, the provider is auto-detected
-# with highest priority — reflexio will route extraction/evaluation
-# calls through the local CLI instead of requiring an API key.
-_CLAUDE_CODE_ENABLE_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
-_CLAUDE_CODE_PROVIDER = "claude-code"
+from reflexio.server.llm._native_model_ref import (
+    ENV_NATIVE_MODEL,
+    configured_native_model,
+)
+from reflexio.server.llm._native_model_ref import (
+    PROVIDER_KEY as _NATIVE_PROVIDER,
+)
 
 # Installed local embedding capability is advertised without activating it.
 # resolve_model_name owns the embedding-role default independently of provider
@@ -54,12 +54,12 @@ _ENV_TO_PROVIDER: dict[str, str] = {
     "ZAI_API_KEY": "zai",
 }
 
-# When multiple keys are set, prefer providers in this order. The
-# claude-code CLI provider sits at the top — when it's available, users
-# are explicitly opting into local-auth extraction and should not be
-# surprised by an OpenAI/Anthropic API bill from a leftover env var.
+# When multiple credentials exist, use this priority order.
+# An operator-selected native target takes priority over automatic API
+# credentials, even if its executable is missing. Availability must not
+# silently substitute a paid provider for that explicit selection.
 _PROVIDER_PRIORITY: list[str] = [
-    _CLAUDE_CODE_PROVIDER,
+    _NATIVE_PROVIDER,
     _OPENCLAW_PROVIDER,
     _LOCAL_EMBEDDING_PROVIDER,
     "anthropic",
@@ -137,13 +137,10 @@ def detect_available_providers(
         is_local_embedder_available,
     )
 
-    if env_truthy(os.environ.get(_CLAUDE_CODE_ENABLE_ENV, "")):
-        from reflexio.server.llm.providers.claude_code_provider import (
-            is_claude_code_available,
-        )
-
-        if is_claude_code_available():
-            available.add(_CLAUDE_CODE_PROVIDER)
+    # Explicit operator intent reserves the native route even if its binary
+    # is unavailable. Never fall through to an unrelated API credential.
+    if configured_native_model() is not None:
+        available.add(_NATIVE_PROVIDER)
     if env_truthy(os.environ.get("OPENCLAW_SMART_USE_LOCAL_CLI", "")):
         from reflexio.server.llm.providers.openclaw_provider import (
             is_openclaw_available,
@@ -168,7 +165,7 @@ class ProviderDefaults:
 
     Any field may be ``None`` for a role the provider does not support.
     For example, the ``local`` ONNX embedder has no generation model;
-    the ``claude-code`` CLI has no embedding endpoint. ``_auto_detect_model``
+    the ``local-cli`` adapter has no embedding endpoint. ``_auto_detect_model``
     falls through to the next provider in priority order when the
     requested role is missing.
 
@@ -190,18 +187,6 @@ class ProviderDefaults:
 
 
 _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
-    # claude-code routes through the local Claude Code CLI via LiteLLM's
-    # custom provider mechanism (see providers/claude_code_provider.py).
-    # The model-name suffix after "claude-code/" is opaque — the CLI
-    # picks whichever model the user has auth for.
-    _CLAUDE_CODE_PROVIDER: ProviderDefaults(
-        generation="claude-code/default",
-        evaluation="claude-code/default",
-        should_run="claude-code/default",
-        pre_retrieval="claude-code/default",
-        embedding=None,
-        extraction_agent="claude-code/default",
-    ),
     # openclaw routes through `openclaw infer model run`; "default" lets
     # OpenClaw pick its configured model. No embedding endpoint.
     _OPENCLAW_PROVIDER: ProviderDefaults(
@@ -214,7 +199,7 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
     ),
     # local is an embedding-only provider that routes through an
     # in-process ONNX model (all-MiniLM-L6-v2). Generation
-    # roles stay None — use claude-code for those.
+    # roles stay None — text roles use an independently selected provider.
     _LOCAL_EMBEDDING_PROVIDER: ProviderDefaults(
         generation=None,
         evaluation=None,
@@ -225,8 +210,8 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
     "openai": ProviderDefaults(
         generation="gpt-5.5",
         evaluation="gpt-5.4-mini",
-        should_run="gpt-5-nano",
-        pre_retrieval="gpt-5-nano",
+        should_run="gpt-6-luna",
+        pre_retrieval="gpt-6-luna",
         embedding="text-embedding-3-small",
         extraction_agent="gpt-5.5",
     ),
@@ -246,10 +231,10 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         embedding="gemini/gemini-embedding-001",
     ),
     "deepseek": ProviderDefaults(
-        generation="deepseek/deepseek-chat",
-        evaluation="deepseek/deepseek-chat",
-        should_run="deepseek/deepseek-chat",
-        pre_retrieval="deepseek/deepseek-chat",
+        generation="deepseek/deepseek-flash",
+        evaluation="deepseek/deepseek-flash",
+        should_run="deepseek/deepseek-flash",
+        pre_retrieval="deepseek/deepseek-flash",
         embedding=None,
     ),
     "openrouter": ProviderDefaults(
@@ -275,15 +260,15 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
     "dashscope": ProviderDefaults(
         generation="dashscope/qwen-plus",
         evaluation="dashscope/qwen-plus",
-        should_run="dashscope/qwen-turbo",
-        pre_retrieval="dashscope/qwen-turbo",
+        should_run="dashscope/qwen3.8-flash",
+        pre_retrieval="dashscope/qwen3.8-flash",
         embedding=None,
     ),
     "xai": ProviderDefaults(
-        generation="xai/grok-3-mini",
-        evaluation="xai/grok-3-mini",
-        should_run="xai/grok-3-mini",
-        pre_retrieval="xai/grok-3-mini",
+        generation="xai/grok-4.3",
+        evaluation="xai/grok-4.3",
+        should_run="xai/grok-4.3",
+        pre_retrieval="xai/grok-4.3",
         embedding=None,
     ),
     "moonshot": ProviderDefaults(
@@ -369,14 +354,11 @@ EMBEDDING_CAPABLE_PROVIDERS: frozenset[str] = frozenset(
 
 GENERATION_CAPABLE_PROVIDERS: frozenset[str] = frozenset(
     p for p, d in _PROVIDER_DEFAULTS.items() if d.generation is not None
-)
+) | {_NATIVE_PROVIDER}
 
 
 def _local_cli_provider_hint() -> str:
-    return (
-        f"or set {_CLAUDE_CODE_ENABLE_ENV}=1 with the active host CLI "
-        "(claude for Claude Code, codex for Codex) available."
-    )
+    return f"or configure {ENV_NATIVE_MODEL} with an explicitly selected native host."
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +412,11 @@ def _auto_detect_model(
     # for this role is non-None. Lets embedding-only providers (e.g.
     # "local") sit in the priority list without breaking generation.
     for provider in providers:
+        if provider == _NATIVE_PROVIDER:
+            target = configured_native_model()
+            if target is not None and role != ModelRole.EMBEDDING:
+                return target.reference
+            continue
         defaults = _PROVIDER_DEFAULTS[provider]
         model_name = getattr(defaults, role.value)
         if model_name:
@@ -451,13 +438,13 @@ def resolve_model_name(
 
     Resolution order (highest priority first):
         1. config_override, then the matching llm_config role choice
-        2. For custom gateways, inherit their generation model for text roles
+        2. Evaluation and custom-gateway text roles inherit a configured generation model
         3. For EMBEDDING, the OSS local MiniLM model
         4. For other roles, site_var_value then auto-detect from available API keys
 
     Args:
         role: The model role to resolve.
-        site_var_value: Value from llm_model_setting.json. Ignored for embeddings.
+        site_var_value: Legacy caller-provided fallback. Ignored for embeddings.
         config_override: Value from org-level LLMConfig.
         api_key_config: Optional org-level API key configuration for provider detection.
         llm_config: Existing organization role choices. Custom gateways inherit
@@ -474,7 +461,7 @@ def resolve_model_name(
     if llm_config is not None:
         field = {
             ModelRole.GENERATION: "generation_model_name",
-            ModelRole.EVALUATION: "generation_model_name",
+            ModelRole.EVALUATION: "evaluation_model_name",
             ModelRole.SHOULD_RUN: "should_run_model_name",
             ModelRole.PRE_RETRIEVAL: "pre_retrieval_model_name",
             ModelRole.EMBEDDING: "embedding_model_name",
@@ -482,6 +469,8 @@ def resolve_model_name(
         selected = getattr(llm_config, field) if field else None
         if selected:
             return selected
+        if role == ModelRole.EVALUATION and llm_config.generation_model_name:
+            return llm_config.generation_model_name
         if (
             role != ModelRole.EMBEDDING
             and api_key_config is not None
@@ -555,7 +544,7 @@ def validate_llm_availability(
 
     logger.info("Auto-detected LLM providers (priority order): %s", providers)
     generation_provider = next(
-        (p for p in providers if _PROVIDER_DEFAULTS[p].generation), None
+        (p for p in providers if p in GENERATION_CAPABLE_PROVIDERS), None
     )
     if generation_provider is None:
         # Configurations that surface only embedding-capable providers
@@ -578,7 +567,7 @@ def validate_llm_availability(
     # no remote endpoint is configured. API workers never import or construct
     # the local model.
     embedding_provider = next(
-        (p for p in providers if _PROVIDER_DEFAULTS[p].embedding), None
+        (p for p in providers if p in EMBEDDING_CAPABLE_PROVIDERS), None
     )
     if embedding_provider:
         logger.info(

@@ -58,7 +58,7 @@ def profiles(quote):
             "profiles": [
                 {
                     "content": "A supported preference",
-                    "time_to_live": "infinity",
+                    "explicit_storage_deadline": None,
                     "source_span": quote,
                 }
             ]

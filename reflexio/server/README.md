@@ -46,6 +46,14 @@ than every 300s, background failures stay at WARNING; request-path errors and
 health alarms still page in that case.
 
 
+Runtime startup is explicit: `initialize_server_runtime()` in `__init__.py`
+loads operator policy and configures logging once. API, inference, launcher,
+library and direct SQLite-construction entrypoints call it before runtime work.
+Importing control/schema or pure logging modules stays passive; the existing
+server constants lazily use the same startup owner. SQLite metadata code imports
+capacity/integrity exception types from `_litellm_types.py`, keeping provider
+setup in actual model-client construction.
+
 - [Main Entry Points](#main-entry-points)
 - [Cache](#cache)
 - [API Endpoints](#api-endpoints)
@@ -62,7 +70,7 @@ health alarms still page in that case.
   - [Durable Learning Queue](#durable-learning-queue)
   - [Async Extraction](#async-extraction)
   - [Shadow Comparison and Evaluation Overview](#shadow-comparison-and-evaluation-overview)
-  - [Playbook Optimizer and Braintrust](#playbook-optimizer-and-braintrust)
+  - [Braintrust](#braintrust)
   - [Lineage](#lineage)
   - [Query Reformulator](#query-reformulator)
   - [Unified Search Service](#unified-search-service)
@@ -77,6 +85,7 @@ health alarms still page in that case.
 ## Main Entry Points
 
 
+- **HTTP quotas**: `rate_limit.py` owns off-loop admission and the 429 protocol; `rate_limit_policy.py` resolves canonical settings. SlowAPI retains counters and registration; see [upgrade guidance](../../developer.md#http-quota-ownership).
 - **API composer**: `api.py` - `create_app()` factory, middleware/capability wiring, OpenAPI auth decoration, and `core_router` aggregation
 - **Search request runtime**: `search_runtime.py` - explicit search-work budget bounded by the original HTTP deadline, accepted-write finalization on that remaining HTTP budget, unsampled phase timing (including completed monotonic landmarks), bounded worker ownership and connection cancellation; embedded calls have no request scope
   - `search.deps_to_body` reuses the final-dependency stamp through the endpoint profiling boundary. It includes dispatch and setup (such as experiment lookup), not pure pool wait. It is absent for missing stamps, holdout early returns and timeouts before that boundary; completed-landmark recording does not track still-queued endpoints.
@@ -107,7 +116,7 @@ Compose the shared HTTP API, resolve request dependencies, and coordinate durabl
 **Key Functions**:
 
 - `get_reflexio(org_id)` - Get or create cached instance
-- `prefetch_config_version(org_id)` - Check a warm instance concurrently with independent search-request reads using the shared search executor and deadline. The request memo retains the fresh version; `get_reflexio` still owns invalidation and reconstruction. Cold and non-search requests are unchanged.
+- `prefetch_config_version(org_id)` - Check a warm instance concurrently with independent search-request reads using the shared search executor and deadline. The request memo retains the fresh version; `get_reflexio` still owns invalidation and reconstruction. Cold and non-search requests do not prefetch. If retrieval workers are occupied, the request skips prefetch and validates the revision during the regular cache lookup.
 - `invalidate_reflexio_cache(org_id)` - Invalidate after config changes
 - `clear_reflexio_cache()` - Clear entire cache (testing/admin)
 
@@ -169,7 +178,19 @@ turnover bound is not a substitute for proving configuration freshness.
 - **Operations/admin**: `GET /api/get_operation_status`, `GET /api/generation_operations/{service_name}`, `GET /api/generation_operations/{service_name}/{operation_id}`, `POST /api/cancel_operation`, `POST /api/cancel_operation/{operation_id}`, `POST /api/admin/cache/invalidate`, `POST /api/session_outcome`, `POST /api/get_session_outcomes`, `DELETE /api/delete_interaction`, `DELETE /api/delete_request`, `DELETE /api/delete_session`, `DELETE /api/delete_requests_by_ids`, `DELETE /api/delete_all_interactions`, `POST /api/clear_user_data`
 - **Human clarification/stall state**: `GET /api/pending_tool_calls`, `GET /api/pending_tool_calls/{pending_tool_call_id}`, `POST /api/pending_tool_calls/{pending_tool_call_id}/resolve`, `PATCH /api/pending_tool_calls/{pending_tool_call_id}/answer`, `POST /api/pending_tool_calls/{pending_tool_call_id}/not_applicable`, `POST /api/pending_tool_calls/{pending_tool_call_id}/cancel`, `GET /api/stall_state`, `POST /api/stall_state/notified`
 
-**Authentication Pattern**: The standalone open-source `api:app` uses `default_get_org_id` and `DEFAULT_ORG_ID`, with `LocalAccessMiddleware` limiting no-key data access to loopback peers, hostnames, and browser origins. Setting `REFLEXIO_API_KEY` requires matching Bearer authentication for all data clients. Its launcher binds loopback by default. Embedded hosts composing `create_app()` own their access policy; enterprise deployments supply authenticated org resolution, additional account routers, admin checks, observability hooks, and usage metrics.
+Apply-mode `POST /api/review_user_playbooks` reserves aggregation capacity before
+acknowledging that a review started. Saturated requests receive 503 and start no
+review; clients can retry after capacity becomes available. Construction stays
+off the event loop behind a cancellation-aware result handoff, so an abandoned
+constructor or result reclaims its reservation without relying on cyclic GC.
+The admitted response owns the reservation until its background thread starts,
+then that physical worker owns it through completion. Failed delivery releases an unstarted
+reservation; cancelling a response cannot release a still-running review's slot.
+This acknowledgement does not make review work durable across process restarts.
+Report-only review and synchronous manual aggregation retain their separate
+supported admission wait.
+
+**Authentication Pattern**: The standalone open-source `api:app` captures the configured organization when it is created and uses that identity for requests and background work, with `LocalAccessMiddleware` limiting no-key data access to loopback peers, hostnames, and browser origins. Setting `REFLEXIO_API_KEY` requires matching Bearer authentication for all data clients. Its launcher binds loopback by default. Embedded hosts composing `create_app()` own their access policy; enterprise deployments supply authenticated org resolution, additional account routers, admin checks, observability hooks, and usage metrics.
 
 **User-playbook exposure boundary**: Authenticated enterprise deployments install `ExposureLedgerRecorder` through their capability registry. In those deployments, `POST /api/search` and `POST /api/search_user_playbooks` synchronously record the final served user-playbook set through `services/search_exposure.py` before metering or releasing success. Shared `create_app()` intentionally installs no default recorder; local/no-auth OSS and custom shared app constructions persist exposures only when their deployment registers `SEARCH_EXPOSURE_RECORDER`. Because that absence is legal, `record_search_exposures()` reports it rather than raising: it returns `SearchExposureOutcome.RECORDED`, `SearchExposureOutcome.RECORDED_UNCORRELATED`, `SearchExposureOutcome.RECORDER_FAILED`, or `SearchExposureOutcome.NO_RECORDER`, so callers that depend on the batch reaching the ledger (corpus reconstruction, replay tooling) can assert on the outcome instead of assuming a silent no-op was a durable write. Only the first two mean the batch is durable.
 
@@ -215,6 +236,7 @@ diagnostics never change product control flow; exceptions raised by code inside 
 Key files:
 
 - `litellm_client.py`: Stable import surface, client config/credential resolution, and `LiteLLMClient` facade
+- `_served_model_identity.py`: Shared exact/snapshot and native CLI alias admission. Host model remapping stays in the LLM layer; the open-world tuner consumes its decisions without reading deployment environment policy.
 - `_litellm_text_generation.py`, `_litellm_embedding.py`, `_litellm_structured_output.py`: Completion/tool-call, embedding, and structured-output mixins
 - `_model_compat.py`: Qualified provider capabilities, request parameter rules, and signed Claude tool-history preservation
 - `_azure_transport.py`: Explicit Azure v1 resource-base compilation shared by completion and embedding dispatch
@@ -225,7 +247,7 @@ Key files:
 - `call_deadline.py`: Shared `model_deadline(...)` scope, `model_call_deadline` timestamp, and cooperative remaining-time checks for text generation and embeddings. Provider admission and cloud/service embeddings honor the tighter compute/search budget at dispatch, chunk, reconnect and result boundaries. Expired results are rejected; calls without a compute deadline retain their configured budgets. This does not interrupt synchronous DNS, I/O or parsing, establish a new precompute budget, or change worker retirement, transport pools or document expansion.
   Completion attempts count worker construction/startup and all result waits against the same deadline. Received responses go through existing usage accounting before expired output is rejected, including when synchronous receiving or parsing finishes late. The public return also checks the enclosing deadline after validation. Running workers retain provider admission through actual retirement; these checks do not forcibly interrupt startup or deserialization and create no embedding worker.
 - `providers/`: Optional local/provider adapters (`claude-code/` for Claude/Codex/OpenCode hosts, OpenClaw, local embedding, Nomic embedding, and GPU-only multilingual E5); registration is opt-in via environment/config
-- `providers/_opencode_cli.py`: Native OpenCode wire format, caller-budgeted launch and sanitized failure metadata. Uses the shared immediate-process/scratch owner; existing named plugin bridges remain compatible pending producer migration.
+- `providers/_opencode_cli.py`: Native OpenCode wire format, caller-budgeted capability discovery and launch, and sanitized failure metadata. Successful help declarations are read from stdout or stderr. Advertised `--standalone` selects a private server and retains the full model reference; recognized attach/variant help keeps the in-process path and passes model/variant separately. Discovery and generation share one deadline and immediate-process/scratch owner. A non-content title avoids automatic title-generation work. Explicit OpenCode selections never fall back to another executable. Native credentials/configuration and deny rules remain host-owned; the private server uses OpenCode's stdin lease, without a general descendant-containment claim. Existing named plugin bridges remain compatible pending producer migration.
 
 - `llm_utils.py`: Helper functions for Pydantic model conversion; retains the compatibility export for `env_utils.positive_int_env`
 - `embedding_policy.py`: Schema-independent model prefixes and retrieval/clustering thresholds; `services.embedding_text` re-exports its public names
@@ -253,19 +275,22 @@ Key files:
   `REFLEXIO_EMBEDDING_BULK_TIMEOUT_MS` extends only bulk HTTP requests;
   search requests always retain their active search deadline.
 
-The Claude CLI provider passes `--model` only for a nonblank
-`CLAUDE_SMART_CLI_MODEL` override. Otherwise the host CLI owns model selection
-through its native configuration; Reflexio does not pin a model name. This
-intentionally replaces the former built-in model default and can change the
-selected model and its cost. Select an explicit override when a pin is needed.
-The provider's request slug remains opaque; served-model provenance comes from
-the CLI response. Local-CLI consent and timeout controls remain independent.
+The native CLI provider in `llm/providers/native_cli_provider.py` authorizes
+one exact `REFLEXIO_NATIVE_CLI_MODEL` target through `llm/_native_model_ref.py`.
+The reference owns host and optional physical-model selection; host-only means
+the CLI's configured default. Registration and binary availability grant no
+account access. Parent preparation, worker and provider entry enforce the same
+operator target; wrapped rejection cannot unlock HTTP fallback. Requested
+references never establish served-model provenance. OpenClaw and explicitly
+configured optimizer scripts retain independent authority. See the
+[native selection and explicit upgrade guide](../../docs/native-cli-model-selection.md).
+
 **Features**:
 
 - Uses LiteLLM for multi-provider support (OpenAI, Claude, Azure, OpenRouter, Gemini, custom endpoints, etc.)
 - **Custom endpoint support**: `CustomEndpointConfig` (api_key, api_base) supplies completion credentials (never embedding credentials); the existing client/request and organization role settings own model selection
 - **Gemini support**: Model names with `gemini/` prefix route through Google Gemini; API key from `api_key_config.gemini`
-- **OpenRouter support**: Model names with `openrouter/` prefix (e.g., `openrouter/openai/gpt-5-nano`) route through OpenRouter; API key from `api_key_config.openrouter`
+- **OpenRouter support**: Model names with `openrouter/` prefix (e.g., `openrouter/openai/gpt-6-luna`) route through OpenRouter; API key from `api_key_config.openrouter`
 - **Z.ai support**: `zai/*` completions default to the coding endpoint at `https://api.z.ai/api/coding/paas/v4` unless a custom endpoint or per-call `api_base` overrides it. Z.ai structured output uses a guarded schema instruction plus JSON-object mode; tool turns leave `response_format` unset and validate the terminal result locally.
 - API keys read from environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY) or `ApiKeyConfig`
 - Interface: `generate_response()`, `generate_chat_response()`, `get_embedding()`
@@ -375,7 +400,7 @@ Pending tools require a positive `pending_tool_call_config.pending_ttl_seconds`;
 construction. Legacy non-neutral rollout files require explicit org-policy
 adoption; no constant enabled flag replaces their resolver.
 
-Access model/retrieval defaults with `SiteVarManager().get_site_var(key)`.
+Access retrieval defaults with `SiteVarManager().get_site_var(key)`. Model selection uses organization configuration and provider defaults.
 
 ## Services
 
@@ -397,7 +422,7 @@ Access model/retrieval defaults with `SiteVarManager().get_site_var(key)`.
 - **Async clarification**: `extraction/` manages resumable agent runs, pending tool calls, and prior-answer search. Matching requests attach until the question expires. Saved base and per-tool `dedup_cache_seconds` values are obsolete. Resolved answers retain their own reuse lifetime.
 - **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
 - **Retrieval experiments**: `retrieval_experiment.py` owns deterministic organization/experiment/user assignment, publish-attribution validation, and session-outcome metrics with user-clustered confidence intervals. Search routes bypass retrieval for holdout but return assignment metadata; publish persists only the experiment ID and assigned arm.
-- **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
+- **Integrations**: `braintrust/` handles Braintrust export/sync.
 - **Lineage**: `lineage/` resolves active records across superseded chains and schedules tombstone garbage collection for profile/playbook storage.
 - **Governance**: `governance/` defines subject-reference contracts and retention/barrier policy helpers used by storage and lineage paths.
 - **Persistence/config**: `storage/`, `configurator/`, and `operation_state_utils.py` provide storage abstractions, config loading, locks, bookmarks, progress, and cancellation.
@@ -442,7 +467,7 @@ software default changes; explicit conflicting retry labels remain conflicts.
 
 - `base_generation_service.py`: Stable `BaseGenerationService` import surface plus service-specific orchestration hooks (parallel extractor execution via ThreadPoolExecutor, `EXTRACTOR_TIMEOUT_SECONDS = 300` per-extractor safety timeout)
 - `base_generation/`: Mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing that keep `base_generation_service.py` navigable without changing caller imports
-- `extractor_config_utils.py`: Shared utility for filtering extractor configs by source, `allow_manual_trigger`, and extractor names
+- `extractor_config_utils.py`: Shared utility for filtering extractor configs by request source
 - `extractor_interaction_utils.py`: Per-extractor utilities for stride_size checking and source filtering
 - `operation_state_utils.py`: Centralized `OperationStateManager` for all `_operation_state` table interactions (progress tracking, concurrency locks, extractor/aggregator bookmarks, simple locks)
 - `deduplication_utils.py`: Shared utilities for LLM-based deduplication (used by ProfileConsolidator and PlaybookConsolidator)
@@ -491,6 +516,18 @@ Key files:
 - `service.py`: Service orchestrator and profile persistence/finalization
 - `components/extractor.py`: Extractor that generates profile updates
 - `components/consolidator.py`: Consolidates newly extracted profiles against existing DB profiles using LLM
+- `lifecycle.py`: Source-backed storage permission, inherited origin/ancestry and fixed 30-day attention math; no guessed lifetime authoring.
+- `lifecycle_deadlines.py`: Exact-payload erasure and due-deadline publication through storage-owned reads/locks/deletion. The service preserves serialized authority and observes execution time inside the writer transaction.
+- `services/profile/committed_output.py`: committed-only legacy profile output reader; preserves saved fields while new authoring stays TTL-free.
+- `attention.py`: Bounded owner-scoped access snapshots and final-response acceptance callbacks. Actual-access evidence is separate from profile facts; metadata is excluded from embedding text.
+
+New ordinary profiles use the infinity compatibility marker. Legacy profiles keep
+their existing visibility bounds and receive neutral attention when origin is
+unknown; mixed merges do not invent a new origin or deletion permission. Both
+SQLite and enterprise storage implement the same lifecycle/access contracts under
+their existing resource and transaction owners. Individual payload erasure can
+leave content-free access history needed by surviving descendants; whole-subject
+erasure clears it. No candidate/baseline router or alternate engine is retained.
 
 **Flow**: Interactions → ProfileExtractor (extraction-only) → ProfileConsolidator (deduplicates new vs existing DB profiles) → ProfileGenerationService → Storage
 
@@ -512,7 +549,7 @@ Key files:
 
 **Constructor Flags** (`ProfileGenerationService`):
 
-- `allow_manual_trigger`: Include `manual_trigger=True` extractors (default: False)
+- Manual generation and reruns use `auto_run=False`, independently of automatic cadence. Zero workspace `profile_stride_size` holds new automatic profile work.
 - `output_pending_status`: Set output profiles to PENDING status (default: False)
 
 **Profile Versioning Workflow**:
@@ -615,7 +652,7 @@ for storage contracts and failure dispositions.
 
 **Constructor Flags** (`PlaybookGenerationService`):
 
-- `allow_manual_trigger`: Include `manual_trigger=True` extractors (default: False)
+- Manual generation and reruns use `auto_run=False`, independently of automatic cadence. Zero workspace `profile_stride_size` holds new automatic profile work.
 - `output_pending_status`: Set output user playbooks to PENDING status (default: False)
 
 **User Playbook Versioning Workflow**:
@@ -666,16 +703,20 @@ Key files:
 
 - `admission.py`: Atomic publish admission and eligibility snapshots.
 - `scheduler.py` / `worker.py`: Always-on discovery, bounded worker turns and renewable user leases.
+- `window_disposition.py`: `classify_window_failure(exc)` returns the one verdict for a failed window (`YieldTurn`, `DeferSetup`, `Suspend`, `Recompute`, `HoldInput`, `ProviderWait`, `Retry`), in that precedence; `worker.py` executes it. Provider outages come from `classify_llm_failure`, and the chain is read through `exception_chain`.
 - `user_lease.py`: The execution owner's shared context and live fencing. Native adapters use `current_user_work_token(storage)` to bind transaction-local ownership for the exact storage instance; absent or unrelated contexts return `None`, while a cancelled matching owner raises. The token does not replace the live database fence and must never be logged or retained beyond the transaction. Legacy playbook runs with a missing user binding acquire the proven user ID atomically with their execution claim only after all original interaction and request ownership is verified under source locks.
 - `discovery.py`: Fixed `WorkDiscovery` turn/expiry facts. Iteration retains the execution-org provider contract; the shared scheduler consumes expiry separately. Partial reads retain both known sets and their original cause without declaring idle.
 - `expiry.py`: Bounded housekeeping on the shared scheduler thread, outside user/model admission. Original-project APP expiry revalidates one metadata descriptor and advances a finite private sweep even on opt-out/refusal; failure in one org does not stop another.
 - `storage/storage_base/_pending_tool_expiry.py`: Canonical metadata-only question selection and narrow, atomic APP question/dependency expiry. It never sweeps unrelated runs or changes executing run phases, attempts, ownership or output.
 - `resume_selection.py`: Admitted user/class opportunities with route-bound fleet inspection and persisted per-user cursors. Successful APP adoption and private progress commit together under the actual user lease; owned resume execution reuses the same process permit. The unshipped consolidation still requires telemetry, strict generation and upgrade cutover qualification.
 - `storage/storage_base/_resume_selection.py`: Canonical bounded resume predicates and fixed deferred-work SQL projection reused by per-org and enterprise batched source discovery. Metadata facts never grant execution authority. Selected recovery shares writer-backed owner observations and one exact-revision, fenced APP transition across SQLite and native storage; logical claim age is not authority.
+- `storage/storage_base/transition_inventory.py`: Bounded content-free pages across execution, cursor, dependency, preparation, receipt and work metadata. Unknown attribution stays explicit; inventory alone neither authorizes a drain nor proves transition readiness.
 - `window_executor.py` / `window_codec.py`: Model execution, saved outcomes and frozen window policies.
 - `llm/compute_admission.py`: Independent admission callback at external text/vector dispatch; ordinary preparation binds its actual execution without changing protected provider modes.
+- `learning_admission.py` / `selected_learning.py`: Typed learning roots and exact existing-work selection, composed with the normal user lease, worker and physical-compute admission. The storage-owned transition uses the existing `_operation_state` namespace, not a new schema, executor or capacity budget.
 - `services/write_plan_codec.py`: Shared business-plan JSON for window outcomes and output-bound publication preparation; execution authority remains outside the payload.
-- `user_lease.py`: Shared ownership for automatic, manual and resumed extraction.
+- `user_lease.py`: Shared ownership for automatic, manual and resumed extraction. Its heartbeat runs in a copied caller context while retaining the exact storage object. Native SQL adapters may implement `require_learning_operation_renewal_origin()`; renewal calls it on the same transaction after the live user-work row lock and before updating the lease. The adapter owns origin validation and lock lifetime; adapters without this hook retain ordinary renewal behavior.
+- `reflexio/learning_operation_protocol.py`: Passive SDK capability marker for heartbeat context propagation and the optional native renewal-origin fence. This is source compatibility metadata, not authority to change a dataset or bypass native admission.
 - `waiting.py` / `local.py`: Bounded HTTP coverage waits, standalone-library recovery and post-admission scheduler wake-ups. Pending-tool resolve/answer/N/A callbacks wake the existing server or matching local-directory owner after commit; they no longer create request background resume workers. Missing/stopped owners leave persisted work for restart discovery.
 - `_context_registry.py`: One ordered weak catalog for local context identity and directory liveness. Discovery uses the newest surviving handle per org/directory; collecting a newer handle reveals its live predecessor without retaining clients or growing on repeated registration.
 - `server/scheduling.py`: Shared interruptible polling, with wake signals retained during a tick and bounded stop joins.
@@ -699,6 +740,42 @@ resetting frozen evidence, output, provider quota or billing receipts; unchanged
 failures park again. Immediate input-budget/incompatible-output holds keep their
 existing stricter recovery path. Other users and sibling extractors retain their
 normal turns.
+
+Learning transition checks serialize user-work → transition → downstream run/window
+locks in short existing transactions. Every bound learning dispatch rechecks its
+admitted revision before the existing preparation/debit callback; publication,
+rerun preprocessing and empty/gate-false window completion recheck in their actual
+business transaction. Returned outputs, usage and preparation/overflow evidence
+can still be retained after sealing. Search and interaction intake remain
+independent. Compatible tag-only work keeps its existing handoff/ACK contract:
+tagging emits only `TagsOutput` and updates existing tags, never content, TTL or
+an erased profile row. This is not an all-model quiescence claim.
+
+The operational API is `preview_learning_work(context, run_id=... | window_id=...)`
+and `run_selected_learning_work(context, selection, operation_id=...,
+expected_nonce=..., expected_revision=...)`. `LearningWorkSelection` has strict
+`from_dict`, `to_dict`, `fingerprint`, `eligible` and `blockers`; the result has
+`to_dict` with content-free `completed`/`held` and a reason code. Preview never
+claims work. Run revalidates the exact source/config/payload revision and granted
+nonce/revision under the actual user owner; `ResumeSelection` cannot rotate to
+another root or new queued work. Existing source-backed saved-output finalization
+is supported. Generation is additionally supported for an existing profile-package
+v2 window whose persisted preparation, templates, schemas, native request contracts,
+source/plan/descriptor and original cursor reconstruct exactly through its existing
+`ProfilePackageWindowExecutor`. The exact selected turn uses that existing executor
+through the normal worker, preserves paid attempts and reuses saved receipts/output;
+it never prepares a new window or selects unrelated effects. It does not enable
+package execution for ordinary fleet work. V1/ordinary missing future-stage instruction
+witnesses remain **held**; an extraction-only policy hash does not prove the gate
+or consolidator's original contract. No generation is relabelled finalization.
+Knowing a digest is not execution authority.
+
+A compatible predecessor publisher must backport the same transition owner and
+runtime fences while retaining its original authoring prompts/output schema.
+Host tooling cannot add those guarantees to an unpatched frozen image, invent
+missing original instructions, or treat a zero-work observation as a durable seal.
+Native inventory, compatible publisher retirement and actual release qualification
+remain separate requirements; local synthetic SQLite checks do not establish them.
 
 ### Async Extraction
 
@@ -731,33 +808,15 @@ Key files:
 
 **Pattern**: Session-level agent success evaluation remains in `agent_success_evaluation/`; dashboard-facing rollups and per-turn shadow verdict analysis live in these companion directories.
 
-### Playbook Optimizer and Braintrust
+### Braintrust
 
-
-**Directories**: `services/playbook_optimizer/`, `services/braintrust/`
+**Directory**: `services/braintrust/`
 
 Key files:
 
-- `playbook_optimizer/optimizer.py`: Scenario-based playbook optimization loop
-- `playbook_optimizer/scheduler.py` and `rollout.py`: Scheduling and rollout helpers
-- `playbook_optimizer/judge.py`, `models.py`, `scenario_resolver.py`: Evaluation and scenario resolution models
-- `playbook_optimizer/assistant_webhook.py`: Assistant-facing webhook entry point for optimizer runs
-- `braintrust/service.py`, `braintrust/client.py`, `_cron.py`: Braintrust export/sync support
+- `braintrust/service.py`, `braintrust/client.py`: Braintrust export/sync support
 
-GEPA search and publication share `gepa_winner_adoption_result` for quality.
-The adapter retains successfully persisted evaluation facts for its run-local
-stopping callback; it does not reread storage or score another rollout there.
-Train and validation loaders use disjoint IDs in GEPA's shared evaluation cache.
-Search returns its current eligible winner or exhausts the existing metric
-budget. Current readers reject retired `early_stop_score` input for both enabled
-and disabled policies. Historical conversion validates and removes it while
-preserving activation, budgets and metadata; old job-authority snapshots stay
-unchanged. Standalone caller-selected files use the explicit converter, while
-versioned hosts must own conversion before serving and close older writers.
-See `docs/playbook_optimizer_assistant_backends.md` for the exploration change
-and rollout requirements.
-
-**Pattern**: These are evaluation/optimization integrations around the core playbook pipeline. Keep production extraction changes in `services/playbook/`; use optimizer/Braintrust modules for experiments, rollouts, and external eval sync.
+**Pattern**: Braintrust is an evaluation integration around the core playbook pipeline. Keep production extraction changes in `services/playbook/`.
 
 ### Lineage
 
@@ -778,7 +837,7 @@ and rollout requirements.
 
 Reformulates user search queries into clean, normalized natural language for improved search recall. Resolves conversation context, expands abbreviations, fixes grammar. Enabled per-request via `enable_reformulation` parameter.
 
-- Uses `pre_retrieval_model_name` from `llm_model_setting.json` (fast, cheap model)
+- Uses `llm_config.pre_retrieval_model_name`, the configured gateway generation model, or a provider-specific default
 - Supports conversation-aware reformulation via `conversation_history` (list of `ConversationTurn`)
 - Plain-text LLM output with robust extraction/validation
 - Falls back to original query on any failure
@@ -818,6 +877,17 @@ deadline or cancellation policy and retains its existing waits and cleanup.
 | `governance_validation.py` | Shared validation helpers for subject references and governance contracts before storage writes. |
 | `retention.py`, `retention_mixin.py` | Data retention and cleanup helpers |
 | `constants.py`, `error.py` | Storage constants and shared errors |
+
+`sqlite_storage/_learning_policy_authority.py` also owns the explicit
+`reflexio data upgrade-local` operation. It uses an existing-only metadata
+connection and the inspectable `_historical_schema_70daf32c.json` contract,
+never the normal constructor or business migrations. Unknown schema, scope,
+independent work and financial debt remain held. See developer.md's learning
+policy authority section for its stopped-host prerequisite and bounded cohort.
+The exact unclaimed explicit-path predecessor additionally requires `--org-id`
+to select its namespace; it never infers ownership or overrides a retained claim.
+The existing identity owner writes that claim in the same transaction as policy
+publication, after all scope and closure checks.
 
 SQLite bootstrap executes the base schema in one explicit transaction, avoiding
 a durable commit per CREATE statement. A base-schema failure rolls back that
@@ -907,7 +977,7 @@ waiting only observes committed cursor coverage.
 Generation services follow `BaseGenerationService`; focused search and read-side services have their own entry points:
 1. Load extractor configs from YAML
 2. Load generation service config from request (runtime parameters)
-3. Filter extractors by source, `allow_manual_trigger`, and extractor names (via `extractor_config_utils`)
+3. Filter extractors by request source, then admit automatic work through per-kind cadence (zero profile cadence selects manual-only)
 4. Create extractors with both configs
 5. Run extractors in parallel (ThreadPoolExecutor)
 6. Process and save results to storage
@@ -1130,3 +1200,9 @@ exclude the unshown expert field. Audited reconciliation renders every turn
 with its expert correction shown and bound as evidence, because it audits
 expert-derived candidates. Prepared overflow presentations keep their own exact
 source spans and bypass ordinary rendering as before.
+
+
+For an eligible Jev unified search, the shared joint selector consumes the native
+USER anchors directly; it does not compose the legacy USER ranking hook first.
+Jev-off and unsupported request/model/floor shapes retain that hook. Eligibility
+continues to use the shared search policy and immutable native retrieval scope.

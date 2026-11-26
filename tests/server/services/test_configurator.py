@@ -121,22 +121,16 @@ def test_manual_window_round_trip_does_not_acquire_automatic_stride_gate(
     config = configurator.get_config()
     profile = config.profile_extractor_config
     assert profile is not None
-    # Manual API calls do not require manual_trigger=True. Preserve that policy.
-    patch = {
-        **profile.model_dump(),
-        "window_size_override": 2,
-        "stride_size_override": None,
-        "manual_trigger": False,
-    }
+    # Manual-only selects zero cadence; no dormant automatic value is hidden.
     configurator.set_config(
-        configurator.prepare_config_patch({"profile_extractor_config": patch})
+        configurator.prepare_config_patch(
+            {"profile_window_size": 2, "profile_stride_size": 0}
+        )
     )
     reloaded = DefaultConfigurator(org_id=test_org_id, base_dir=temp_dir).get_config()
-    window = get_extractor_window_params(
-        reloaded.profile_extractor_config, reloaded.window_size, reloaded.stride_size
-    )
-    assert window == (2, 8)
+    window = get_extractor_window_params(reloaded, "profile")
+    assert window == (2, 0)
     assert reloaded.profile_extractor_config is not None
-    assert reloaded.profile_extractor_config.manual_trigger is False
+    assert reloaded.profile_stride_size == 0
     with pytest.raises(ValueError, match="stride_size must be <= window_size"):
         window.require_automatic()

@@ -1,0 +1,141 @@
+"""Actual historical publish/drain owner, current closure, owned synthetic SQLite."""
+import hashlib,json,os,subprocess,tarfile,tempfile,gzip
+from pathlib import Path
+A=Path(__file__).resolve().parent;CAPTURE=A/'sqlite-maintenance-predecessor-fixtures-20261117';CAPTURE.mkdir(exist_ok=True);S=A/'enterprise-authenticated-rate-identity-work/open_source/reflexio'
+OLD='70daf32c2b47b35dd0fe7be1d6f64d648a67eb8a'
+NEW=subprocess.check_output(['git','rev-parse','HEAD'],cwd=S,text=True).strip()
+COMMON='''import json,sys,hashlib
+from pathlib import Path
+import litellm
+def deny(*a,**k):raise AssertionError("Provider dispatch forbidden")
+for k in ('completion','acompletion','embedding','aembedding'):setattr(litellm,k,deny)
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+def retained_snapshot(s,columns=None):
+ tables=('requests','interactions','profiles','_agent_runs','extraction_windows','extraction_cursors','_agent_output_receipts','_agent_run_finalization_receipts','_agent_output_preparations','learning_work','_dataset_identity')
+ result={}
+ for table in tables:
+  present=s.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone()
+  if present is None:continue
+  names=[row[1] for row in s.conn.execute(f'PRAGMA table_info({table})')] if columns is None else columns.get(table,[])
+  if not names:continue
+  assert all(name.replace('_','').isalnum() for name in names)
+  query='SELECT '+','.join(chr(34)+name+chr(34) for name in names)+' FROM '+table+' ORDER BY rowid LIMIT 101'
+  rows=[tuple(row) for row in s.conn.execute(query)]
+  assert len(rows)<=100
+  result[table]={'columns':names,'rows':rows}
+ return result
+def fingerprint(s):
+ with s._stream_sql(read_only=True) as db:
+  rows={
+   'requests':db.query('SELECT request_id,user_id,created_at,source,session_id,learning_admission FROM requests ORDER BY request_id LIMIT 100'),
+   'interactions':db.query('SELECT interaction_id,user_id,request_id,content,role,created_at,ingestion_seq FROM interactions ORDER BY interaction_id LIMIT 100'),
+  }
+ return {'sha256':hashlib.sha256(json.dumps(rows,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'request_count':len(rows['requests']),'interaction_count':len(rows['interactions'])}
+root=Path(sys.argv[1]);cohort=sys.argv[2];org='historical_http'
+'''
+PRODUCER=COMMON+'''
+from unittest.mock import patch
+from fastapi.testclient import TestClient
+print('PHASE import-engine',flush=True)
+from reflexio.lib.reflexio_lib import Reflexio
+from reflexio.models.config_schema import Config,ProfileExtractorConfig,StorageConfigSQLite
+from reflexio.server.api import create_app
+from reflexio.server.services.configurator.configurator import DefaultConfigurator
+from reflexio.server.services.durable_learning.worker import DurableLearningWorker
+print('PHASE configure',flush=True)
+config=DefaultConfigurator(org_id=org,base_dir=str(root))
+config.set_config(Config(storage_config=StorageConfigSQLite(db_path=str(root/'state.db') if cohort.startswith('unclaimed_') else None),window_size=10,stride_size=5,profile_extractor_config=ProfileExtractorConfig(extraction_definition_prompt='Extract preferences',request_sources_enabled=['allowed']),user_playbook_extractor_config=None,agent_success_config=None))
+with patch('reflexio.server.services.durable_learning.local.ensure_local_extraction',lambda _:None),patch('reflexio.server.services.tagging.tagging_scheduler.schedule_tagging',lambda **_:None):
+ print('PHASE create-engine',flush=True)
+ engine=Reflexio(org_id=org,storage_base_dir=str(root),configurator=config)
+with patch('reflexio.server.cache.reflexio_cache.get_reflexio',lambda **_:engine),patch('reflexio.server.api_endpoints.publisher_api.get_reflexio',lambda **_:engine),patch('reflexio.server.services.durable_learning.local.ensure_local_extraction',lambda _:None),patch('reflexio.server.services.tagging.tagging_scheduler.schedule_tagging',lambda **_:None):
+ if cohort not in ('empty','unclaimed_empty'):
+  client=TestClient(create_app(get_org_id=lambda:org),client=(cohort,50000))
+  response=client.post('/api/publish_interaction',json={'user_id':'synthetic-user','request_id':'synthetic-request','session_id':'synthetic-session','source':'allowed' if cohort in ('eligible_queued','completed','unclaimed_completed','billing_pending','window_pending') else 'filtered','force_extraction':cohort in ('completed','unclaimed_completed','billing_pending','window_pending'),'interaction_data_list':[{'role':'User','content':f'Synthetic preference {i}','created_at':1700000000+i} for i in range(10)]})
+  assert response.status_code==200,(response.status_code,response.text)
+  assert response.json()['success'],response.json()
+  client.close()
+ if cohort in ('filtered_drained','completed','unclaimed_completed','billing_pending'):
+  from reflexio.server.services.durable_learning.window_executor import WindowExecutor
+  from contextlib import nullcontext
+  worker=DurableLearningWorker(lambda _:engine.request_context)
+  def refuse_bill(*args):raise RuntimeError('Owned synthetic billing transport outage')
+  with patch.object(WindowExecutor,'_bill',refuse_bill) if cohort=='billing_pending' else nullcontext():
+   for _ in range(3):worker.drain_org(org,1,300)
+ if cohort=='window_pending':
+  s=engine.get_storage()
+  user,token=s.claim_extraction('owned-historical-holder',600)
+  assert user=='synthetic-user' and token
+  assert s.prepare_extraction(user,token) is not None
+ print('PHASE storage',flush=True)
+ s=engine.get_storage()
+ (root/'dataset-name.json').write_text(json.dumps(Path(s.db_path).name))
+ snapshot=retained_snapshot(s)
+ (root/'retained-snapshot.json').write_text(json.dumps(snapshot))
+ print('PROBE_JSON '+json.dumps({'fingerprint':fingerprint(s),'profiles':s.count_all_profiles(),'retained_tables':{t:len(v['rows']) for t,v in snapshot.items()}}))
+ s.conn.close()
+'''
+CONSUMER=COMMON+'''
+from dataclasses import asdict
+from reflexio.server.services.storage.storage_base.transition_closure import derive_project_transition_closure_db
+from reflexio.server.services.storage.storage_base.learning_transition import LearningTransitionBlockedError
+s=SQLiteStorage(org_id=org,db_path=str(root/json.loads((root/'dataset-name.json').read_text())))
+assert s.read_learning_policy_authority() is None
+before=fingerprint(s)
+saved=json.loads((root/'retained-snapshot.json').read_text())
+observed=retained_snapshot(s,{t:v['columns'] for t,v in saved.items()})
+assert json.loads(json.dumps(observed))==saved,'Current constructor rewrote retained historical business state'
+with s._learning_policy_authority_scope() as (db,authority):
+ assert authority is None
+ closure=derive_project_transition_closure_db(db,org_id=org,project_id='')
+assert fingerprint(s)==before
+assert json.loads(json.dumps(retained_snapshot(s,{t:v['columns'] for t,v in saved.items()})))==saved
+try:
+ with s.commit_scope():s.fence_learning_transition()
+except LearningTransitionBlockedError:pass
+else:raise AssertionError('Historical authority was invented')
+assert s.read_learning_policy_authority() is None
+print('PROBE_JSON '+json.dumps({'fingerprint':before,'closure':asdict(closure),'authority':'absent, admission remains held','retained_tables_unchanged':sorted(saved)}))
+s.conn.close()
+'''
+results={'old_sdk':OLD,'current_sdk':NEW,'model_scope':'scripted SDK mock responses; embedding provider off; actual provider dispatch forbidden','cohorts':{}}
+with tempfile.TemporaryDirectory(prefix='rx-historical-http-') as tmp:
+ root=Path(tmp);archived=root/'sdk';archived.mkdir();home=root/'home';home.mkdir();(home/'empty.env').touch()
+ archive=root/'sdk.tar'
+ with archive.open('wb') as handle:subprocess.run(['git','archive',OLD],cwd=S,stdout=handle,check=True)
+ with tarfile.open(archive) as handle:handle.extractall(archived,filter='data')
+ env={k:v for k,v in os.environ.items() if k in ('PATH','TMPDIR','LANG')}
+ env.update(MOCK_LLM_RESPONSE='true',REFLEXIO_EMBEDDING_PROVIDER='off',OPENBLAS_NUM_THREADS='1',OMP_NUM_THREADS='1',MKL_NUM_THREADS='1',HOME=str(home),USERPROFILE=str(home),REFLEXIO_ENV_FILE=str(home/'empty.env'),PYTHON_DOTENV_DISABLED='1',REFLEXIO_NATIVE_COMPUTE_THREADS='1',TOKENIZERS_PARALLELISM='false',OPENAI_API_KEY='sk-test-not-real',LITELLM_LOCAL_MODEL_COST_MAP='true')
+ for cohort in ('empty','filtered_queued','filtered_drained','eligible_queued','completed','billing_pending','window_pending','unclaimed_empty','unclaimed_completed'):
+  work=root/cohort;work.mkdir();results['cohorts'][cohort]={}
+  for label,source,code in [('producer',archived,PRODUCER),('consumer',S,CONSUMER)]:
+   env['PYTHONPATH']=str(source)
+   run=subprocess.run([str(A/'sdk-adoption-test-env/bin/python'),'-u','-c',code,str(work),cohort],cwd=work,env=env,text=True,capture_output=True)
+   (A/f'sqlite-maintenance-predecessor-{cohort}-{label}-20261117.log').write_text(f'EXIT_CODE {run.returncode}\n'+run.stdout+run.stderr)
+   if run.returncode:raise RuntimeError(f'{cohort}/{label} failed; inspect owned log')
+   values=[json.loads(l.removeprefix('PROBE_JSON ')) for l in run.stdout.splitlines() if l.startswith('PROBE_JSON ')]
+   assert len(values)==1,values
+   results['cohorts'][cohort][label]=values[0]
+   if label=='producer':
+    database=work/json.loads((work/'dataset-name.json').read_text())
+    raw=database.read_bytes(); compressed=gzip.compress(raw,mtime=0)
+    (CAPTURE/f'{cohort}.sqlite.gz').write_bytes(compressed)
+    results['cohorts'][cohort]['fixture']={'raw_sha256':hashlib.sha256(raw).hexdigest(),'gzip_sha256':hashlib.sha256(compressed).hexdigest(),'raw_bytes':len(raw),'gzip_bytes':len(compressed)}
+  assert results['cohorts'][cohort]['producer']['fingerprint']==results['cohorts'][cohort]['consumer']['fingerprint']
+for name in ('empty','filtered_queued','filtered_drained'):
+ assert results['cohorts'][name]['consumer']['closure']['ready'],name
+queued=results['cohorts']['eligible_queued']['consumer']['closure']
+assert queued['ready'] and queued['counts']['queued_admissions']==1
+for name in ('completed','unclaimed_completed','billing_pending'):
+ assert results['cohorts'][name]['producer']['profiles']>0,(name,results['cohorts'][name])
+assert results['cohorts']['completed']['consumer']['closure']['ready']
+assert results['cohorts']['unclaimed_completed']['consumer']['closure']['ready']
+for name in ('unclaimed_empty','unclaimed_completed'):
+ assert '_dataset_identity' not in results['cohorts'][name]['consumer']['retained_tables_unchanged']
+for name in ('billing_pending','window_pending'):
+ assert not results['cohorts'][name]['consumer']['closure']['ready'],name
+results.update(scope='Actual old HTTP publish/drain and current closure; no upgrade or dataset authority grant',cleanup='Owned source archive, HOME, configs and databases removed',provider_dispatch='forbidden')
+results['producer_script_sha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+(CAPTURE/'provenance.json').write_text(json.dumps(results,indent=2)+'\n')
+(CAPTURE/'producer.py.txt').write_text(Path(__file__).read_text())
+print(json.dumps(results,indent=2))

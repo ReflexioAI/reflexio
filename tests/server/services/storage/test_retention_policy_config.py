@@ -6,7 +6,6 @@ from reflexio.server.services.storage import retention
 
 OPERATIONAL = (
     "retrieved_learning_evaluation",
-    "offline_tuner_reward_label",
     "share_links",
     "playbook_optimization_history",
     "playbook_retrieval_logs",
@@ -224,3 +223,13 @@ def test_removed_interaction_cap_requires_explicit_migration(value):
                 "REFLEXIO_ROW_LIMIT_INTERACTIONS": "11",
             }
         )
+
+
+@pytest.mark.parametrize("value", ["", "17"])
+def test_retired_reward_label_cap_does_not_configure_cleanup(value):
+    key = "REFLEXIO_ROW_LIMIT_OFFLINE_TUNER_REWARD_LABEL"
+    with pytest.raises(ValueError, match=key):
+        retention.get_row_retention_limits(env={key: value})
+    assert "offline_tuner_reward_label" not in retention.get_row_retention_limits(
+        env={}
+    )

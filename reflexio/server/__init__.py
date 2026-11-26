@@ -5,10 +5,12 @@ import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from threading import RLock
+from typing import TYPE_CHECKING, Any, cast
 
 import colorlog
 
-from reflexio.cli.env_loader import load_existing_reflexio_env
+from reflexio.cli.env_loader import load_local_launch_env
 from reflexio.cli.paths import reflexio_home
 from reflexio.durable_learning_policy import (
     validate_aggregation_timing_env,
@@ -18,27 +20,6 @@ from reflexio.pending_tool_policy import warn_retired_resume_timing
 from reflexio.removed_env import reject_removed_env
 from reflexio.server.env_utils import env_str, env_truthy
 from reflexio.server.ops_log import OPS_LOGGER_NAME
-
-# Load environment variables using shared discovery logic
-load_existing_reflexio_env()
-validate_discovery_timing_env(os.environ)
-validate_aggregation_timing_env(os.environ)
-warn_retired_resume_timing(os.environ)
-
-# Default user data directory: ~/.reflexio/data/ (or REFLEXIO_LOG_DIR/.reflexio/data/).
-_DEFAULT_DATA_DIR = str(reflexio_home() / "data")
-
-# OpenAI related
-OPENAI_API_KEY = os.environ.get(
-    "OPENAI_API_KEY",
-    "",
-).strip()
-
-# Local storage directory — houses the SQLite DB file.
-
-LOCAL_STORAGE_PATH = (
-    os.environ.get("LOCAL_STORAGE_PATH", "").strip() or _DEFAULT_DATA_DIR
-)
 
 # Logging
 
@@ -308,30 +289,32 @@ def _build_verbose_handlers(root: logging.Logger) -> None:
     # crash when the resolved directory doesn't yet exist.
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    # General log file -- everything except LLM_PROMPT (those go to llm_io.log)
-    file_handler = logging.handlers.RotatingFileHandler(
-        DEV_LOG_FILE, maxBytes=10_000_000, backupCount=3, encoding="utf-8"
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(
-        _TZAwareFormatter(
-            "%(asctime)s %(correlation_tag)s%(name)s %(levelname)s %(message)s"
+    if _managed_handler(root, "devlog") is None:
+        # General log file -- everything except LLM_PROMPT (those go to llm_io.log)
+        file_handler = logging.handlers.RotatingFileHandler(
+            DEV_LOG_FILE, maxBytes=10_000_000, backupCount=3, encoding="utf-8"
         )
-    )
-    file_handler.addFilter(_ExcludeLLMPrompt())
-    file_handler.addFilter(cid_filter)
-    setattr(file_handler, _MANAGED_HANDLER_ATTR, "devlog")
-    root.addHandler(file_handler)
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(
+            _TZAwareFormatter(
+                "%(asctime)s %(correlation_tag)s%(name)s %(levelname)s %(message)s"
+            )
+        )
+        file_handler.addFilter(_ExcludeLLMPrompt())
+        file_handler.addFilter(cid_filter)
+        setattr(file_handler, _MANAGED_HANDLER_ATTR, "devlog")
+        root.addHandler(file_handler)
 
-    # LLM I/O log file -- only LLM_PROMPT level, with structured delimiters
-    llm_io_handler = logging.handlers.RotatingFileHandler(
-        LLM_IO_LOG_FILE, maxBytes=10_000_000, backupCount=3, encoding="utf-8"
-    )
-    llm_io_handler.setLevel(logging.DEBUG)
-    llm_io_handler.setFormatter(_LLMIOFormatter())
-    llm_io_handler.addFilter(_LLMPromptOnly())
-    setattr(llm_io_handler, _MANAGED_HANDLER_ATTR, "llmio")
-    root.addHandler(llm_io_handler)
+    if _managed_handler(root, "llmio") is None:
+        # LLM I/O log file -- only LLM_PROMPT level, with structured delimiters
+        llm_io_handler = logging.handlers.RotatingFileHandler(
+            LLM_IO_LOG_FILE, maxBytes=10_000_000, backupCount=3, encoding="utf-8"
+        )
+        llm_io_handler.setLevel(logging.DEBUG)
+        llm_io_handler.setFormatter(_LLMIOFormatter())
+        llm_io_handler.addFilter(_LLMPromptOnly())
+        setattr(llm_io_handler, _MANAGED_HANDLER_ATTR, "llmio")
+        root.addHandler(llm_io_handler)
 
 
 #: Names the ROLE of a handler this module attached, so a later call finds its own
@@ -512,6 +495,67 @@ def configure_logging(
 #: Kept for backwards compatibility: modules imported this name.
 root_logger = logging.getLogger()
 
-#: The import still configures logging, so nothing downstream changes. What is
-#: new is that the work now has a NAME, takes arguments, and returns what it did.
-LOGGING_REPORT = configure_logging(**resolve_logging_env())  # type: ignore[arg-type]
+# reload() retains the module dictionary; old startup values must not make a
+# freshly imported runtime appear initialized before its new owner runs.
+for _cached_runtime_name in ("OPENAI_API_KEY", "LOCAL_STORAGE_PATH", "LOGGING_REPORT"):
+    globals().pop(_cached_runtime_name, None)
+del _cached_runtime_name
+
+if TYPE_CHECKING:
+    OPENAI_API_KEY: str
+    LOCAL_STORAGE_PATH: str
+    LOGGING_REPORT: LoggingReport
+
+
+@dataclass(frozen=True)
+class _ServerRuntime:
+    api_key: str
+    storage_path: str
+    logging_report: LoggingReport
+
+
+_runtime_lock = RLock()
+_runtime_initializing = False
+_runtime_state: _ServerRuntime | None = None
+
+
+def initialize_server_runtime() -> LoggingReport:
+    """Load operator policy and configure logging at an actual runtime entrypoint.
+
+    Control/schema imports stay passive. Failed or reentrant startup never
+    publishes cached values; another attempt can retry after its cause is fixed.
+    """
+    global _runtime_state, _runtime_initializing  # noqa: PLW0603
+    with _runtime_lock:
+        if _runtime_state is not None:
+            return _runtime_state.logging_report
+        if _runtime_initializing:
+            raise RuntimeError("Server runtime initialization cannot reenter")
+        _runtime_initializing = True
+        try:
+            load_local_launch_env(provision=False)
+            validate_discovery_timing_env(os.environ)
+            validate_aggregation_timing_env(os.environ)
+            warn_retired_resume_timing(os.environ)
+            api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+            storage_path = os.environ.get("LOCAL_STORAGE_PATH", "").strip() or str(
+                reflexio_home() / "data"
+            )
+            report = configure_logging(**resolve_logging_env())  # type: ignore[arg-type]
+            _runtime_state = _ServerRuntime(api_key, storage_path, report)
+            return report
+        finally:
+            _runtime_initializing = False
+
+
+def __getattr__(name: str) -> Any:
+    if name in {"OPENAI_API_KEY", "LOCAL_STORAGE_PATH", "LOGGING_REPORT"}:
+        initialize_server_runtime()
+        # The initializer returns only after publishing the full snapshot.
+        state = cast(_ServerRuntime, _runtime_state)
+        if name == "OPENAI_API_KEY":
+            return state.api_key
+        if name == "LOCAL_STORAGE_PATH":
+            return state.storage_path
+        return state.logging_report
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

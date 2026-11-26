@@ -74,10 +74,10 @@ def test_actual_mutation_workspace_collects_repository_script_tests(
         "setup_source_paths()\nos.chdir('mutants')\n"
         "import pytest\n"
         "code = pytest.main(['-o', 'addopts=', '--collect-only', '-q', "
-        "'tests/scripts/test_review_reason_evaluation.py'])\n"
+        "'tests/scripts/test_upstream_canary.py'])\n"
         "if code == 0:\n"
-        "    from scripts import evaluate_review_reason_codes as evaluation\n"
-        "    expected = (Path.cwd() / 'scripts/evaluate_review_reason_codes.py').resolve()\n"
+        "    from scripts import upstream_canary as evaluation\n"
+        "    expected = (Path.cwd() / 'scripts/upstream_canary.py').resolve()\n"
         "    assert Path(evaluation.__file__).resolve() == expected, "
         "'script imported outside mutation workspace'\n"
         "raise SystemExit(code)\n"
@@ -91,10 +91,7 @@ def test_actual_mutation_workspace_collects_repository_script_tests(
         env=child_env,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert (
-        "test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately"
-        in result.stdout
-    )
+    assert "test_main_reports_lowercase_booleans" in result.stdout
 
 
 def test_actual_mutation_workspace_collects_the_whole_selection(tmp_path, monkeypatch):

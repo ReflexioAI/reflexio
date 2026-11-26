@@ -1,6 +1,7 @@
 """The admitted MiniMax endpoint is the one its isolated worker dispatches."""
 
 import multiprocessing
+import os
 import socket
 import time
 from unittest.mock import patch
@@ -140,6 +141,9 @@ def _capture_worker(params, queue, deadline):
 
     # Exercise the pinned LiteLLM transformation, stopping only at HTTP send.
     with (
+        # This mocked transport must not query host proxy settings. macOS'
+        # CoreFoundation proxy discovery is unsafe in a forked child.
+        patch.dict(os.environ, {"NO_PROXY": "*"}),
         patch.object(httpx.Client, "send", send),
         patch.object(
             socket.socket, "connect", side_effect=AssertionError("Network forbidden")

@@ -405,16 +405,7 @@ class TestPromptManager:
         [
             (
                 "playbook_extraction_context",
-                "4.5.0",
-                {
-                    "agent_context_prompt": "Agent context.",
-                    "extraction_definition_prompt": "Extract playbooks.",
-                    "tool_can_use": "Tools.",
-                },
-            ),
-            (
-                "playbook_extraction_context",
-                "4.6.0",
+                "4.6.1",
                 {
                     "agent_context_prompt": "Agent context.",
                     "extraction_definition_prompt": "Extract playbooks.",
@@ -423,12 +414,7 @@ class TestPromptManager:
             ),
             (
                 "playbook_extraction_main",
-                "1.4.0",
-                {"interactions": "[T1] user: example"},
-            ),
-            (
-                "playbook_extraction_main",
-                "1.5.0",
+                "1.5.1",
                 {"interactions": "[T1] user: example"},
             ),
             (

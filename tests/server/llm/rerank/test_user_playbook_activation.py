@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 import httpx
@@ -142,7 +143,7 @@ def test_endpoint_uses_existing_owner_search_queue_and_returns_revision():
     client = TestClient(
         create_embedding_app(
             reranker_model=MULTILINGUAL_RERANK_MODEL,
-            reranker_runner=runner,
+            reranker_runner=cast(CrossEncoderRunner, runner),
             inference_submit=submit,
         )
     )
@@ -170,7 +171,7 @@ def test_query_worker_refuses_activation_without_dispatch():
     client = TestClient(
         create_embedding_app(
             reranker_model=MULTILINGUAL_RERANK_MODEL,
-            reranker_runner=runner,
+            reranker_runner=cast(CrossEncoderRunner, runner),
             query_only=True,
         )
     )
@@ -196,9 +197,10 @@ def test_query_worker_refuses_activation_without_dispatch():
     ],
 )
 def test_client_refuses_wrong_identity_or_invalid_scores(monkeypatch, body):
-    monkeypatch.setattr(activation_client, "search_reranker_service_url", lambda: None)
     monkeypatch.setattr(
-        activation_client, "inference_service_url", lambda: "http://inference"
+        activation_client,
+        "validate_search_reranker_service",
+        lambda: "http://inference",
     )
     response = httpx.Response(
         200,
@@ -213,9 +215,6 @@ def test_client_refuses_wrong_identity_or_invalid_scores(monkeypatch, body):
 
 
 def test_client_keeps_search_route_and_no_local_model(monkeypatch):
-    monkeypatch.setattr(
-        activation_client, "search_reranker_service_url", lambda: "http://search"
-    )
     monkeypatch.setattr(
         activation_client, "validate_search_reranker_service", lambda: "http://search"
     )
@@ -239,9 +238,6 @@ def test_client_keeps_search_route_and_no_local_model(monkeypatch):
 
 
 def test_client_wraps_unavailable_search_route(monkeypatch):
-    monkeypatch.setattr(
-        activation_client, "search_reranker_service_url", lambda: "http://search"
-    )
     monkeypatch.setattr(
         activation_client,
         "validate_search_reranker_service",

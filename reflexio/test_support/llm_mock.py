@@ -315,7 +315,7 @@ if hasattr(os, "register_at_fork"):
 
 
 def _activate_litellm_mock(module: Any) -> None:
-    global _litellm_patcher, _litellm_hook_pending, _completion_transport_hook_pending
+    global _litellm_patcher, _litellm_hook_pending
     _litellm_hook_pending = False
     # An already-present module may still be initializing on another thread.
     # Match patch's normal import barrier before touching its attributes.
@@ -327,17 +327,6 @@ def _activate_litellm_mock(module: Any) -> None:
             module, "completion", side_effect=_mock_completion
         )
         _litellm_patcher.start()
-        if (
-            _completion_transport_patcher is None
-            and not _completion_transport_hook_pending
-        ):
-            from wrapt import register_post_import_hook
-
-            _completion_transport_hook_pending = True
-            register_post_import_hook(
-                _activate_completion_transport,
-                "reflexio.server.llm._litellm_text_generation",
-            )
 
 
 def inline_test_completion(params: dict[str, Any], _deadline: float) -> Any:
@@ -378,11 +367,24 @@ def _activate_completion_transport(module: Any) -> None:
 
 def configure_llm_mock(config: Any) -> None:
     """Arm the non-e2e session mock before any code receives LiteLLM."""
-    global _litellm_patcher, _litellm_mock_requested, _litellm_hook_pending
+    global _litellm_mock_requested, _litellm_hook_pending
+    global _completion_transport_hook_pending
     if _is_e2e_test_run(config):
         return
     os.environ["MOCK_LLM_RESPONSE"] = "true"
     _litellm_mock_requested = True
+    from wrapt import register_post_import_hook
+
+    # Register both hooks before imports begin. The transport can itself
+    # import LiteLLM, so registering its hook from LiteLLM's callback may
+    # inspect the partially initialized transport module.
+    if _completion_transport_patcher is None and not _completion_transport_hook_pending:
+        _completion_transport_hook_pending = True
+        register_post_import_hook(
+            _activate_completion_transport,
+            "reflexio.server.llm._litellm_text_generation",
+        )
+
     option = getattr(config, "option", None)
     distributed_controller = (
         not hasattr(config, "workerinput")
@@ -397,8 +399,6 @@ def configure_llm_mock(config: Any) -> None:
         return
     if _litellm_hook_pending or _litellm_patcher is not None:
         return
-    from wrapt import register_post_import_hook
-
     _litellm_hook_pending = True
     register_post_import_hook(_activate_litellm_mock, "litellm")
 

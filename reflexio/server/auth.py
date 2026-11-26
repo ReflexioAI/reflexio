@@ -14,18 +14,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from functools import cache
 
-DEFAULT_ORG_ID = "self-host-org"
+from reflexio.local_instance import (
+    DEFAULT_ORG_ID as DEFAULT_ORG_ID,
+)
+from reflexio.local_instance import (
+    configured_local_org_id as configured_local_org_id,
+)
 
 
 def default_get_org_id() -> str:
     """Return the default organization ID for local hosting.
 
-    Reads ``REFLEXIO_DEFAULT_ORG_ID`` (unset/blank falls back to
-    :data:`DEFAULT_ORG_ID`) so a no-auth deployment can run under a distinct
-    org id without colliding with another local backend that shares
-    ``~/.reflexio/configs/``. claude-smart and the self-host backend otherwise
-    both default to ``self-host-org`` and fight over the same
-    ``config_self-host-org.json``.
+    The saved binding identifies the local config and its SQLite scope.
+    An unbound standalone launch uses :data:`DEFAULT_ORG_ID`.
 
     Enterprise deployments never reach this: they override the dependency via
     ``app.dependency_overrides[default_get_org_id] = <bearer_auth_resolver>``
@@ -37,9 +38,8 @@ def default_get_org_id() -> str:
     # Lazy import keeps this deliberately cycle-free module independent of the
     # ``reflexio.server`` package init (see module docstring).
     from reflexio.server import publish_timing
-    from reflexio.server.env_utils import env_str
 
-    org_id = env_str("REFLEXIO_DEFAULT_ORG_ID", DEFAULT_ORG_ID)
+    org_id = configured_local_org_id()
     publish_timing.http_org_resolved(org_id)
     return org_id
 

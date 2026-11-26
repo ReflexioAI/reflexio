@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from reflexio.models.api_schema.service_schemas import UserProfile
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.services.extraction.profile_package_state import profile_witness
 from tests.server.services.storage.test_storage_contract_extraction_stream import (
     publish,
@@ -76,7 +76,7 @@ def test_changed_old_profile_blocks_publication(storage, mutation):
             )
     with (
         pytest.raises(
-            InputBudgetConfigurationError,
+            ExtractionInputIntegrityError,
             match="Historical profile is malformed"
             if mutation == "malformed"
             else "Historical profile changed",
@@ -105,7 +105,7 @@ def test_profile_witness_read_normalization_and_project_scope(storage):
     assert profile_witness(
         row.model_copy(update={"source": "", "tags": ["derived"]})
     ) == profile_witness(row)
-    with pytest.raises(InputBudgetConfigurationError, match="scope changed"):
+    with pytest.raises(ExtractionInputIntegrityError, match="scope changed"):
         storage.validate_extraction_historical_profiles(
             replace(window, project_id="other"), witnesses
         )

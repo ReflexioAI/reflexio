@@ -115,7 +115,7 @@ class TestSetConfig:
         """Saving non-storage config changes should not run migrations."""
         mixin = _make_config_mixin()
         storage_config = StorageConfigSQLite(db_path="/var/data/current.db")
-        config = Config(storage_config=storage_config, window_size=25)
+        config = Config(storage_config=storage_config, profile_window_size=25)
 
         _get_configurator(
             mixin
@@ -285,7 +285,7 @@ class TestSetConfig:
         """CAS conflicts must reach routes so callers receive HTTP 409."""
         mixin = _make_config_mixin()
         storage_config = StorageConfigSQLite(db_path="/var/data/current.db")
-        config = Config(storage_config=storage_config, window_size=25)
+        config = Config(storage_config=storage_config, profile_window_size=25)
         configurator = _get_configurator(mixin)
         configurator.get_current_storage_configuration.return_value = storage_config
         configurator.set_config.side_effect = ConfigWriteConflictError(

@@ -1,0 +1,45 @@
+{
+  "purpose": "Native CLI capability fixture; actual release help, not generated expected options",
+  "release": "https://github.com/anomalyco/opencode/releases/tag/v1.19.6",
+  "asset": {
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v1.19.6/opencode-darwin-arm64.zip",
+    "digest": "sha256:c0be3f34dde2fdcb31b25120f303c6ed5b69b828f16e5e0fbecff21a882adda1",
+    "name": "opencode-darwin-arm64.zip",
+    "size": 64493115
+  },
+  "command": [
+    "opencode",
+    "run",
+    "--help"
+  ],
+  "exit": 0,
+  "stdout_bytes": 0,
+  "stderr_bytes": 2952,
+  "stderr_sha256": "177277faec689a9ed77962dd130d68c045f279ee104ddebd9ab59d1ec22217ec",
+  "source": "https://github.com/anomalyco/opencode/blob/v1.19.6/packages/opencode/src/cli/cmd/run.ts",
+  "scope": "Captured in isolated HOME/empty project. No model prompts, credentials, shared service or provider execution. CI reads this text and uses inert owned child processes; it never downloads/runs OpenCode.",
+  "option_binding_probe": {
+    "release_declared_yargs": "18.0.0",
+    "scope": "Actual declared Yargs parser and released option declarations; no provider/CLI execution or remote server contact",
+    "results": {
+      "variantPair": {
+        "model": "provider/model",
+        "variant": "",
+        "attach": "https://example.invalid"
+      },
+      "variantBound": {
+        "model": "provider/model",
+        "variant": "--attach=https://example.invalid"
+      },
+      "modelPair": {
+        "model": "",
+        "attach": "https://example.invalid"
+      },
+      "modelBound": {
+        "model": "--attach=https://example.invalid"
+      }
+    },
+    "fix": "Bind model and variant with --name=value",
+    "model_calls": 0
+  }
+}

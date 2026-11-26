@@ -404,74 +404,6 @@ def emit_learnings_generated(
         )
 
 
-def emit_learnings_generated_records(
-    *,
-    org_id: str,
-    configurator: Any,
-    learning_ids: list[str],
-    source: str,
-    pipeline: str | None = None,
-    user_id: str | None = None,
-    request_id: str | None = None,
-    agent_version: str | None = None,
-    playbook_name: str | None = None,
-    entity_type: str | None = None,
-    metadata: Mapping[str, Any] | None = None,
-) -> None:
-    """Resolve ``platform_llm`` from config and emit one event per learning id.
-
-    Ordinary fail-open per-record counterpart to
-    :func:`emit_learnings_generated`. Receipt-backed resumable finalization uses
-    :func:`emit_learnings_generated_records_strict`; items without durable ids
-    are not billable on that path. Online extraction uses the count-based
-    :func:`record_learnings_generated` helper because it does not retain a safe
-    1:1 id per generated unit. Config resolution and emission are wrapped and
-    any exception is logged and swallowed — the product path must never fail
-    because metering failed. No-op when ``learning_ids`` is empty.
-
-    Args:
-        org_id: Organisation identifier.
-        configurator: Object exposing ``get_config()`` for platform-LLM resolution.
-        learning_ids: Ids of the learnings durably produced by this path.
-        source: Metering source/path label (e.g. ``"resumable_extraction"``).
-        pipeline: Optional pipeline tag (e.g. ``"playbook"``).
-        user_id: Optional user ID tied to the generated learning.
-        request_id: Optional request correlation ID.
-        agent_version: Optional agent version tied to the generated learning.
-        playbook_name: Optional playbook name for playbook learnings.
-        entity_type: Optional entity type (e.g. ``"profile"``).
-        metadata: Optional path-specific usage metadata (shared across events).
-    """
-    if not learning_ids:
-        return
-    try:
-        from reflexio.server.metering_signals import platform_llm_from_config
-
-        config = configurator.get_config()
-        record_learnings_generated_records(
-            org_id=org_id,
-            learning_ids=learning_ids,
-            platform_llm=platform_llm_from_config(config),
-            platform_storage=None,
-            pipeline=pipeline,
-            user_id=user_id,
-            request_id=request_id,
-            source=source,
-            agent_version=agent_version,
-            playbook_name=playbook_name,
-            entity_type=entity_type,
-            metadata=metadata,
-        )
-    except Exception:
-        logger.warning(
-            "emit_learnings_generated_records failed for source=%s org=%s; "
-            "learnings_generated events not emitted",
-            source,
-            org_id,
-            exc_info=True,
-        )
-
-
 def emit_learnings_generated_records_strict(
     *,
     org_id: str,
@@ -604,15 +536,12 @@ def record_window_extraction_finances(
     original event clock remain identical when governance removes that metadata.
     """
     from reflexio.server.services.extraction.publication_receipts import (
-        window_handoff_facts,
+        window_delivery_facts,
     )
 
     # Both financial events use one validated, detached original descriptor.
     # A malformed second event must not leave a first event appended.
-    descriptor = dict(billing)
-    if "pipeline" in descriptor and descriptor.pop("pipeline") != pipeline:
-        raise ValueError("Window financial pipeline does not match its owner")
-    ids, facts = window_handoff_facts(pipeline, descriptor)
+    ids, facts = window_delivery_facts(pipeline, billing)
     record_learnings_generated_records_strict(
         org_id=org_id,
         learning_ids=ids,

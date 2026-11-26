@@ -275,12 +275,25 @@ def _salvage_complete_single_list_items(
         position = end
 
     if valid_items:
+        # Individually valid items can still violate aggregate limits or model
+        # validators. Early salvage runs before the ordinary parsing boundary;
+        # keep such failures on the same bounded repair path, never a raw
+        # ValidationError that the client treats as a provider failure.
+        try:
+            result = response_format.model_validate({field_name: valid_items})
+        except ValidationError as exc:
+            raise StructuredOutputParseError(
+                "Recovered structured output violates schema constraints",
+                raw_content=json_str,
+                validation_errors=_safe_validation_errors(exc),
+                validation_error_locations=_typed_validation_errors(exc),
+            ) from exc
         logger.warning(
             "event=structured_output_salvaged schema=%s salvaged=%d",
             response_format.__name__,
             len(valid_items),
         )
-        return response_format.model_validate({field_name: valid_items})
+        return result
     # Nothing complete survived. Never synthesize an empty-list success here:
     # the caller only reaches this path because the body looked truncated, and
     # an empty result would present a cut-off response as "the model found

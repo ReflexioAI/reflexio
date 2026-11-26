@@ -48,7 +48,7 @@ def test_backend_bind_host_reaches_spawned_command(host: str, monkeypatch) -> No
         ["--only", "backend", "--no-reload", "--workers", "1", "--backend-host", host]
     )
     captured = []
-    monkeypatch.setattr(run_services_module, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(run_services_module, "load_local_launch_env", lambda: None)
     monkeypatch.setattr(
         run_services_module,
         "run_services",
@@ -157,7 +157,7 @@ def test_backend_starts_shared_service_for_cloud_embeddings(monkeypatch) -> None
     captured = []
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "cloud")
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
-    monkeypatch.setattr(run_services_module, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(run_services_module, "load_local_launch_env", lambda: None)
     monkeypatch.setattr(
         run_services_module,
         "run_services",
@@ -175,7 +175,7 @@ def test_services_cli_forwards_backend_host(monkeypatch, runner, app) -> None:
     from reflexio.cli import bootstrap_config, env_loader
 
     captured = []
-    monkeypatch.setattr(env_loader, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(env_loader, "load_local_launch_env", lambda: None)
     monkeypatch.setattr(bootstrap_config, "resolve_storage", lambda _: "sqlite")
     monkeypatch.setattr(services_module, "_ensure_llm_configured", lambda _: None)
 

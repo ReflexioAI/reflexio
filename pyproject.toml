@@ -27,8 +27,9 @@ dependencies = [
     # Floor: 1.106.0-1.108.3 import the proxy-only `mcp` package for every
     # completion that passes `tools`, so tool calls fail with
     # ModuleNotFoundError on a base install (BerriAI/litellm#46045, fixed by
-    # #45961). 1.108.4 is the first stable release that carries the fix.
-    "litellm>=1.108.4,<2",
+    # #45961). The floor is the latest stable release the suite was qualified
+    # against (1.109.1); 1.108.4 is the first stable release carrying that fix.
+    "litellm>=1.109.1,<2",
     "cryptography>=50.0.1",
     "tenacity>=9.0.0",
     "bcrypt>=4.2.1",
@@ -44,11 +45,6 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic[email]>=2.13.0",
     "json-repair>=0.60.1",
-    # Ceiling: gepa is pre-1.0 and a 0.x minor may change the optimizer API
-    # (gepa.api.optimize, gepa.EvaluationBatch, and the type-only
-    # gepa.core.adapter.ProposalFn / gepa.core.state.GEPAState). Widen once the
-    # weekly upstream-canary workflow passes its next-major check for 0.2.
-    "gepa>=0.1.1,<0.2",
     # CLI
     "typer>=0.15.0",
     "rich>=13.0.0",

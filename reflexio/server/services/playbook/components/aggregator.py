@@ -4,7 +4,7 @@ import logging
 import math
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
@@ -1078,7 +1078,6 @@ class PlaybookAggregator:
             # separately so "succeeded, created nothing" can be read correctly.
             "embedding_pending": len(missing_embedding_ids),
         }
-        self._enqueue_playbook_optimization(saved_playbooks)
         record_usage_event(
             org_id=self.request_context.org_id,
             event_name="aggregation_succeeded",
@@ -2065,7 +2064,6 @@ class PlaybookAggregator:
                 effect_scope = None
                 completed_scope.__exit__(None, None, None)
 
-            self._enqueue_playbook_optimization(saved_playbook_list)
             record_usage_event(
                 org_id=self.request_context.org_id,
                 event_name="aggregation_succeeded",
@@ -2357,39 +2355,6 @@ class PlaybookAggregator:
                 )
             )
         return outcomes
-
-    def _enqueue_playbook_optimization(
-        self, saved_playbooks: Sequence[AgentPlaybook | None]
-    ) -> None:
-        config = self.configurator.get_config().playbook_optimizer_config
-        if config.allows_target("agent_playbook") is not True or not saved_playbooks:
-            return
-        from reflexio.server.services.playbook_optimizer import (
-            PlaybookOptimizationScheduler,
-            PlaybookOptimizationTarget,
-            PlaybookOptimizer,
-        )
-
-        scheduler = PlaybookOptimizationScheduler.get_instance()
-        for playbook in saved_playbooks:
-            if (
-                playbook is None
-                or not playbook.agent_playbook_id
-                or playbook.status is not None
-                or playbook.playbook_status != PlaybookStatus.PENDING
-            ):
-                continue
-            target = PlaybookOptimizationTarget(
-                kind="agent_playbook", target_id=playbook.agent_playbook_id
-            )
-            scheduler.enqueue(
-                org_id=self.request_context.org_id,
-                target=target,
-                policy=config.scheduling_policy,
-                callback=lambda target=target: PlaybookOptimizer(
-                    self.request_context, self.client
-                ).optimize(target),
-            )
 
     def _generate_playbook_from_cluster(
         self,

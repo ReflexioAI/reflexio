@@ -43,7 +43,7 @@ _FIRST_PARTY = ("reflexio", _DOWNSTREAM_ROOT)
 def isolated_logging() -> Iterator[None]:
     """Give each test the root logger back, handlers and every pinned level.
 
-    ``reflexio.server`` configured the root at import, and pytest attaches its
+    Runtime startup may have configured the root, and pytest attaches its
     own handlers, so without this every test would inherit whichever profile ran
     last -- and the order-dependent failures would look like real ones.
 

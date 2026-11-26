@@ -42,10 +42,6 @@ class SubjectWriteBarrierError(StorageError):
     """Raised when a write targets a subject with an active erasure barrier."""
 
 
-class OptimizationJobLeaseLiveError(StorageError):
-    """Raised when an optimizer recovery attempt finds a non-expired lease."""
-
-
 class OptimizationJobIdentityConflictError(StorageError):
     """Raised when one durable optimizer identity resolves to conflicting jobs."""
 

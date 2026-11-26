@@ -123,7 +123,7 @@ def test_inline_aggregation_default_path_schedules_durably():
     _storage(service).schedule_playbook_aggregation.assert_called_once_with("v1")
 
 
-def test_post_persist_scheduler_failures_are_best_effort(caplog):
+def test_post_persist_scheduler_failure_is_best_effort(caplog):
     configurator = MagicMock()
     configurator.get_config.return_value = _aggregation_enabled_config()
     service = _service_for_inline_aggregation(configurator)
@@ -131,20 +131,13 @@ def test_post_persist_scheduler_failures_are_best_effort(caplog):
     plan.new_playbooks = [MagicMock()]
     plan.output_pending_status = False
     plan.skip_aggregation = False
-    service._enqueue_user_playbook_optimization = MagicMock(
-        side_effect=RuntimeError("optimization unavailable")
-    )
     service._trigger_playbook_aggregation = MagicMock(
         side_effect=RuntimeError("aggregation unavailable")
     )
 
     service._dispatch_playbook_schedulers(plan)
 
-    service._enqueue_user_playbook_optimization.assert_called_once_with(
-        plan.new_playbooks
-    )
     service._trigger_playbook_aggregation.assert_called_once_with()
-    assert "optimization unavailable" in caplog.text
     assert "aggregation unavailable" in caplog.text
 
 
@@ -291,7 +284,9 @@ def test_generate_playbook(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
         )
-        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
+        playbook_generation_service.configurator.set_config_by_name(
+            "playbook_window_size", 100
+        )
 
         # Store interactions in storage first
         request_obj = Request(
@@ -519,9 +514,6 @@ def test_finalize_drops_empty_and_same_batch_duplicates_with_dedup_flag_off():
                 _storage(playbook_generation_service),
                 "save_user_playbooks",
             ) as save_user_playbooks,
-            patch.object(
-                playbook_generation_service, "_enqueue_user_playbook_optimization"
-            ),
         ):
             mock_dedup_cls.return_value.deduplicate.side_effect = (
                 lambda results, *_args, **_kwargs: (
@@ -575,7 +567,6 @@ def test_finalize_without_provenance_emits_create_with_null_model_fields():
                 "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator",
             ) as mock_dedup_cls,
             patch.object(_storage(service), "save_user_playbooks") as save,
-            patch.object(service, "_enqueue_user_playbook_optimization"),
         ):
             mock_dedup_cls.return_value.deduplicate.return_value = (
                 [playbook],
@@ -952,7 +943,6 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
         playbook_generation_service = PlaybookGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -1012,7 +1002,6 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
         playbook_generation_service = PlaybookGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -1029,7 +1018,9 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
         )
-        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
+        playbook_generation_service.configurator.set_config_by_name(
+            "playbook_window_size", 100
+        )
 
         from reflexio.models.api_schema.service_schemas import (
             ManualPlaybookGenerationRequest,
@@ -1057,7 +1048,6 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         playbook_generation_service = PlaybookGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -1074,7 +1064,9 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
         )
-        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
+        playbook_generation_service.configurator.set_config_by_name(
+            "playbook_window_size", 100
+        )
 
         # First, add some interactions to storage
         interaction = Interaction(
@@ -1120,7 +1112,6 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         playbook_generation_service = PlaybookGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -1137,7 +1128,9 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
         )
-        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
+        playbook_generation_service.configurator.set_config_by_name(
+            "playbook_window_size", 100
+        )
 
         # Add interactions with source_a
         interaction_a = Interaction(
@@ -1210,7 +1203,6 @@ def test_run_manual_regular_output_pending_status_false(mock_chat_completion):
         playbook_generation_service = PlaybookGenerationService(
             llm_client=llm_client,
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-            allow_manual_trigger=True,
             output_pending_status=False,
         )
 
@@ -1227,7 +1219,9 @@ def test_run_manual_regular_output_pending_status_false(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
         )
-        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
+        playbook_generation_service.configurator.set_config_by_name(
+            "playbook_window_size", 100
+        )
 
         # Add interaction
         interaction = Interaction(
@@ -1489,7 +1483,7 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        service.configurator.set_config_by_name("window_size", 200)
+        service.configurator.set_config_by_name("playbook_window_size", 200)
         service.service_config = service._load_generation_service_config(
             PlaybookGenerationRequest(
                 request_id="request-1",
@@ -1523,11 +1517,11 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
                 "extractor_name": "api_playbook",
                 "extraction_definition_prompt": "extract api-related playbook",
                 "request_sources_enabled": ["api"],
-                "window_size_override": 120,
                 "aggregation_config": PlaybookAggregatorConfig(min_cluster_size=2),
             }
         )
 
+        service.configurator.set_config_by_name("playbook_window_size", 120)
         (
             scoped_groups,
             scoped_config,

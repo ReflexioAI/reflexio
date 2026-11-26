@@ -735,9 +735,6 @@ class TestEmbeddingFailureDegradesToFTS(unittest.TestCase):
     def test_fts_mode_from_start_is_not_degraded(self, _reformulator_cls):
         """A request that asks for FTS outright never embedded, so it is a
         benign None — not a degrade."""
-        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
-            standalone_query="test query"
-        )
         storage = _fanout_storage()
 
         request = UnifiedSearchRequest(
@@ -754,7 +751,7 @@ class TestEmbeddingFailureDegradesToFTS(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertFalse(result.degraded)
         self.assertIsNone(result.search_mode_effective)
-        # FTS-only mode skips the embedder entirely.
+        _reformulator_cls.assert_not_called()
         storage._get_embedding.assert_not_called()
         self.assertEqual(_leg_search_modes(storage)["agent_playbooks"], SearchMode.FTS)
 

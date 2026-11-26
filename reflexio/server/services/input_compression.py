@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from reflexio.server.services._compression_token_counts import ExactTokenCounts
 
-VERSION = "source-compression-v6"
+VERSION = "source-compression-v7"
 CompressionPolicy = Literal["extraction", "offline_tuning"]
 logger = logging.getLogger(__name__)
 
@@ -444,6 +444,46 @@ def _priced_payloads(
 def _evidence_aliases(packets: list[EvidencePacket]) -> dict[str, EvidenceSource]:
     sources = {s.source_id: s for p in packets for s in p.evidence}
     return {f"e{index}": source for index, source in enumerate(sources.values(), 1)}
+
+
+def _parent_wire_tokens(
+    payloads: list[dict[str, Any]],
+    allowed: list[str],
+    maximum_alias_digits: int,
+    count_tokens: Callable[[str], int],
+) -> int:
+    aliases = list(allowed)
+    for payload in payloads:
+        aliases.extend(payload.get("source_origins", {}))
+        for source in payload["evidence"]:
+            aliases.extend((source["source_id"], source["origin_ref"]))
+        for point in payload["points"]:
+            aliases.extend(point["evidence_refs"])
+    # A sibling renumbers both eN and oN aliases. Their numeric components
+    # are separate cl100k regex pieces, bounded by one token per digit.
+    # Charge the possible growth at EVERY occurrence, including allowed
+    # selectors and origin-map keys, using the frozen source population.
+    # A fixed reserve cannot cover this overhead for large source sets.
+    alias_growth = sum(
+        max(0, maximum_alias_digits - count_tokens(alias[1:])) for alias in aliases
+    )
+    # Deduplicating even a one-character text can GROW the request: text_ref
+    # has a longer key and a globally numbered selector. Reserve a complete
+    # escaped field for every row, without assuming any text-saving benefit.
+    # This is admission headroom only; actual requests retain exact pricing.
+    reference_field = (
+        count_tokens(_json(_json({"text_ref": "e"}))) + maximum_alias_digits
+    )
+    text_reference_growth = reference_field * sum(
+        len(payload["evidence"]) for payload in payloads
+    )
+    return (
+        alias_growth
+        + text_reference_growth
+        + count_tokens(
+            _json(_json({"input_packets": payloads, "allowed_evidence_refs": allowed}))
+        )
+    )
 
 
 def _fragments(
@@ -962,27 +1002,30 @@ def plan_compression_input(
             * 1.2
         )
 
-    # Bound each non-final product's contribution after nested JSON escaping,
-    # without relying on duplicate-text savings. Leave room for two DISTINCT
-    # products plus fixed instructions/schema and boundary-token overhead.
+    # Bound each non-final product's complete variable wire contribution after
+    # nested JSON escaping, without relying on duplicate-text savings. Leave
+    # room for two DISTINCT products plus fixed instructions/schema and
+    # boundary-token overhead.
     fixed_cost = math.ceil(request_tokens([]) / 1.2)
     intermediate_limit = (math.floor(budget.input_tokens / 1.2) - fixed_cost - 256) // 2
     if intermediate_limit <= 0:
         raise CompressionError("Fixed compression instructions exceed input budget")
 
+    maximum_alias_digits = len(str(len(fragments)))
+
     def parent_cost(packet: EvidencePacket) -> int:
-        return count_tokens(
-            _json(
-                _json(
-                    _priced_payloads(
-                        [packet],
-                        price_output,
-                        evidence_costs,
-                        empty_cost,
-                        deduplicate=False,
-                    )
-                )
-            )
+        payloads = _priced_payloads(
+            [packet],
+            price_output,
+            evidence_costs,
+            empty_cost,
+            deduplicate=False,
+        )
+        return _parent_wire_tokens(
+            payloads,
+            list(_evidence_aliases([packet])),
+            maximum_alias_digits,
+            count_tokens,
         )
 
     sections = _sections(fragments, budget, request_tokens, count_tokens)

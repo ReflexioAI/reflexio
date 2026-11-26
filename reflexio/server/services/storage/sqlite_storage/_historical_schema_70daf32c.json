@@ -1,0 +1,3531 @@
+{
+  "schema_version": 1,
+  "producer_sdk": "70daf32c2b47b35dd0fe7be1d6f64d648a67eb8a",
+  "catalog": [
+    {
+      "type": "index",
+      "name": "extraction_admission_time",
+      "table": "requests",
+      "sql": "CREATE INDEX extraction_admission_time ON requests(json_extract(learning_admission,'$.admitted_at'),request_id,user_id)"
+    },
+    {
+      "type": "index",
+      "name": "extraction_completion_boundary",
+      "table": "requests",
+      "sql": "CREATE INDEX extraction_completion_boundary ON requests(user_id,json_extract(learning_admission,'$.max_seq')) WHERE json_extract(learning_admission,'$.session_finished')=1"
+    },
+    {
+      "type": "index",
+      "name": "extraction_force_barrier",
+      "table": "requests",
+      "sql": "CREATE INDEX extraction_force_barrier ON requests(user_id,json_extract(learning_admission,'$.max_seq')) WHERE json_extract(learning_admission,'$.force')=1"
+    },
+    {
+      "type": "index",
+      "name": "extraction_request_arrivals",
+      "table": "interactions",
+      "sql": "CREATE INDEX extraction_request_arrivals ON interactions(user_id,request_id,ingestion_seq)"
+    },
+    {
+      "type": "index",
+      "name": "extraction_session_activity",
+      "table": "requests",
+      "sql": "CREATE INDEX extraction_session_activity ON requests(user_id,session_id,json_extract(learning_admission,'$.max_seq') DESC)"
+    },
+    {
+      "type": "index",
+      "name": "extraction_window_completion",
+      "table": "extraction_windows",
+      "sql": "CREATE INDEX extraction_window_completion ON extraction_windows(user_id,kind,project_id,end_seq) WHERE completed=1"
+    },
+    {
+      "type": "index",
+      "name": "extraction_windows_effects",
+      "table": "extraction_windows",
+      "sql": "CREATE INDEX extraction_windows_effects ON extraction_windows(completed,effects_done)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_playbooks_agent_version",
+      "table": "agent_playbooks",
+      "sql": "CREATE INDEX idx_agent_playbooks_agent_version ON agent_playbooks(agent_version)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_playbooks_created_at",
+      "table": "agent_playbooks",
+      "sql": "CREATE INDEX idx_agent_playbooks_created_at ON agent_playbooks(created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_playbooks_playbook_name",
+      "table": "agent_playbooks",
+      "sql": "CREATE INDEX idx_agent_playbooks_playbook_name ON agent_playbooks(playbook_name)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_playbooks_retired_at",
+      "table": "agent_playbooks",
+      "sql": "CREATE INDEX idx_agent_playbooks_retired_at ON agent_playbooks(status, retired_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_playbooks_status",
+      "table": "agent_playbooks",
+      "sql": "CREATE INDEX idx_agent_playbooks_status ON agent_playbooks(status)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_runs_binding",
+      "table": "_agent_runs",
+      "sql": "CREATE INDEX idx_agent_runs_binding ON _agent_runs(org_id, extractor_kind, user_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_runs_ready",
+      "table": "_agent_runs",
+      "sql": "CREATE INDEX idx_agent_runs_ready ON _agent_runs(status, next_resume_at, updated_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_success_evaluation_result_governance_subject_ref",
+      "table": "agent_success_evaluation_result",
+      "sql": "CREATE INDEX idx_agent_success_evaluation_result_governance_subject_ref ON agent_success_evaluation_result(governance_subject_ref)"
+    },
+    {
+      "type": "index",
+      "name": "idx_aggregation_operation_active",
+      "table": "playbook_aggregation_operations",
+      "sql": "CREATE UNIQUE INDEX idx_aggregation_operation_active\n    ON playbook_aggregation_operations(agent_version)\n    WHERE status IN ('queued','running','retrying')"
+    },
+    {
+      "type": "index",
+      "name": "idx_apsup_agent",
+      "table": "agent_playbook_source_user_playbooks",
+      "sql": "CREATE INDEX idx_apsup_agent ON agent_playbook_source_user_playbooks(agent_playbook_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_apsup_user",
+      "table": "agent_playbook_source_user_playbooks",
+      "sql": "CREATE INDEX idx_apsup_user ON agent_playbook_source_user_playbooks(user_playbook_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_case_exposure_uses_group",
+      "table": "case_exposure_uses",
+      "sql": "CREATE INDEX idx_case_exposure_uses_group\n    ON case_exposure_uses(equivalence_group_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_eval_agent_version",
+      "table": "agent_success_evaluation_result",
+      "sql": "CREATE INDEX idx_eval_agent_version ON agent_success_evaluation_result(agent_version)"
+    },
+    {
+      "type": "index",
+      "name": "idx_eval_agent_version_created_at_desc",
+      "table": "agent_success_evaluation_result",
+      "sql": "CREATE INDEX idx_eval_agent_version_created_at_desc\n    ON agent_success_evaluation_result(agent_version, created_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_eval_created_at",
+      "table": "agent_success_evaluation_result",
+      "sql": "CREATE INDEX idx_eval_created_at ON agent_success_evaluation_result(created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_eval_created_at_desc",
+      "table": "agent_success_evaluation_result",
+      "sql": "CREATE INDEX idx_eval_created_at_desc\n    ON agent_success_evaluation_result(created_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_eval_identity_created_at_desc",
+      "table": "agent_success_evaluation_result",
+      "sql": "CREATE INDEX idx_eval_identity_created_at_desc\n    ON agent_success_evaluation_result(user_id, session_id, evaluation_name, agent_version, created_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_imported_score_session",
+      "table": "imported_score",
+      "sql": "CREATE INDEX idx_imported_score_session\n    ON imported_score (org_id, session_id) WHERE session_id IS NOT NULL"
+    },
+    {
+      "type": "index",
+      "name": "idx_imported_score_ts",
+      "table": "imported_score",
+      "sql": "CREATE INDEX idx_imported_score_ts ON imported_score (org_id, ts)"
+    },
+    {
+      "type": "index",
+      "name": "idx_interactions_created_at",
+      "table": "interactions",
+      "sql": "CREATE INDEX idx_interactions_created_at ON interactions(created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_interactions_governance_subject_ref",
+      "table": "interactions",
+      "sql": "CREATE INDEX idx_interactions_governance_subject_ref ON interactions(governance_subject_ref)"
+    },
+    {
+      "type": "index",
+      "name": "idx_interactions_request_id",
+      "table": "interactions",
+      "sql": "CREATE INDEX idx_interactions_request_id ON interactions(request_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_interactions_user_created_at_desc",
+      "table": "interactions",
+      "sql": "CREATE INDEX idx_interactions_user_created_at_desc\n    ON interactions(user_id, created_at DESC, interaction_id DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_interactions_user_id",
+      "table": "interactions",
+      "sql": "CREATE INDEX idx_interactions_user_id ON interactions(user_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_lineage_entity",
+      "table": "lineage_event",
+      "sql": "CREATE INDEX idx_lineage_entity ON lineage_event (entity_type, entity_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_open_world_invocations_user",
+      "table": "offline_tuner_open_world_invocations",
+      "sql": "CREATE INDEX idx_open_world_invocations_user\n    ON offline_tuner_open_world_invocations(user_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_open_world_sweep_progress_attempted_at",
+      "table": "open_world_sweep_progress",
+      "sql": "CREATE INDEX idx_open_world_sweep_progress_attempted_at\n    ON open_world_sweep_progress(user_playbook_id, attempted_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_pending_tool_calls_active",
+      "table": "_pending_tool_calls",
+      "sql": "CREATE INDEX idx_pending_tool_calls_active ON _pending_tool_calls(org_id, scope_hash, tool_name, dedup_key, status, cache_until)"
+    },
+    {
+      "type": "index",
+      "name": "idx_pending_tool_calls_prior",
+      "table": "_pending_tool_calls",
+      "sql": "CREATE INDEX idx_pending_tool_calls_prior ON _pending_tool_calls(org_id, scope_hash, tool_name, status, valid_until)"
+    },
+    {
+      "type": "index",
+      "name": "idx_playbook_aggregation_cluster_agent",
+      "table": "playbook_aggregation_cluster",
+      "sql": "CREATE INDEX idx_playbook_aggregation_cluster_agent\n    ON playbook_aggregation_cluster(agent_playbook_id)\n    WHERE agent_playbook_id IS NOT NULL"
+    },
+    {
+      "type": "index",
+      "name": "idx_playbook_aggregation_cluster_rebuild_due",
+      "table": "playbook_aggregation_cluster",
+      "sql": "CREATE INDEX idx_playbook_aggregation_cluster_rebuild_due ON playbook_aggregation_cluster(agent_version, rebuild_next_attempt_at, cluster_id) WHERE state = 'rebuilding'"
+    },
+    {
+      "type": "index",
+      "name": "idx_playbook_aggregation_cluster_version",
+      "table": "playbook_aggregation_cluster",
+      "sql": "CREATE INDEX idx_playbook_aggregation_cluster_version\n    ON playbook_aggregation_cluster(agent_version, state, cluster_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_playbook_aggregation_invalidation_pending",
+      "table": "playbook_aggregation_invalidation",
+      "sql": "CREATE INDEX idx_playbook_aggregation_invalidation_pending\n    ON playbook_aggregation_invalidation(agent_version, invalidation_id)\n    WHERE processed_at IS NULL"
+    },
+    {
+      "type": "index",
+      "name": "idx_playbook_aggregation_invalidation_retention",
+      "table": "playbook_aggregation_invalidation",
+      "sql": "CREATE INDEX idx_playbook_aggregation_invalidation_retention\n    ON playbook_aggregation_invalidation(processed_at)\n    WHERE processed_at IS NOT NULL"
+    },
+    {
+      "type": "index",
+      "name": "idx_playbook_aggregation_item_rebuild",
+      "table": "playbook_aggregation_item",
+      "sql": "CREATE INDEX idx_playbook_aggregation_item_rebuild\n    ON playbook_aggregation_item(agent_version, cluster_id, user_playbook_id DESC)\n    WHERE disposition = 'residual' AND cluster_id IS NOT NULL"
+    },
+    {
+      "type": "index",
+      "name": "idx_playbook_aggregation_item_residual",
+      "table": "playbook_aggregation_item",
+      "sql": "CREATE INDEX idx_playbook_aggregation_item_residual\n    ON playbook_aggregation_item(\n        agent_version, disposition, attempt_count, last_attempt_at, user_playbook_id\n    )"
+    },
+    {
+      "type": "index",
+      "name": "idx_playbook_aggregation_state_due",
+      "table": "playbook_aggregation_state",
+      "sql": "CREATE INDEX idx_playbook_aggregation_state_due\n    ON playbook_aggregation_state(pending, next_attempt_at, agent_version)"
+    },
+    {
+      "type": "index",
+      "name": "idx_poa_job",
+      "table": "playbook_optimization_artifacts",
+      "sql": "CREATE INDEX idx_poa_job\n    ON playbook_optimization_artifacts(job_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_poc_job",
+      "table": "playbook_optimization_candidates",
+      "sql": "CREATE INDEX idx_poc_job ON playbook_optimization_candidates(job_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_poe_candidate",
+      "table": "playbook_optimization_evaluations",
+      "sql": "CREATE INDEX idx_poe_candidate ON playbook_optimization_evaluations(candidate_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_poe_job",
+      "table": "playbook_optimization_evaluations",
+      "sql": "CREATE INDEX idx_poe_job ON playbook_optimization_evaluations(job_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_poev_job",
+      "table": "playbook_optimization_events",
+      "sql": "CREATE INDEX idx_poev_job ON playbook_optimization_events(job_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_poj_status",
+      "table": "playbook_optimization_jobs",
+      "sql": "CREATE INDEX idx_poj_status ON playbook_optimization_jobs(status)"
+    },
+    {
+      "type": "index",
+      "name": "idx_poj_target",
+      "table": "playbook_optimization_jobs",
+      "sql": "CREATE INDEX idx_poj_target ON playbook_optimization_jobs(target_kind, target_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_profiles_governance_subject_ref",
+      "table": "profiles",
+      "sql": "CREATE INDEX idx_profiles_governance_subject_ref ON profiles(governance_subject_ref)"
+    },
+    {
+      "type": "index",
+      "name": "idx_profiles_retired_at",
+      "table": "profiles",
+      "sql": "CREATE INDEX idx_profiles_retired_at ON profiles(status, retired_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_profiles_status",
+      "table": "profiles",
+      "sql": "CREATE INDEX idx_profiles_status ON profiles(status)"
+    },
+    {
+      "type": "index",
+      "name": "idx_profiles_user_id",
+      "table": "profiles",
+      "sql": "CREATE INDEX idx_profiles_user_id ON profiles(user_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_requests_created_at",
+      "table": "requests",
+      "sql": "CREATE INDEX idx_requests_created_at ON requests(created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_requests_governance_subject_ref",
+      "table": "requests",
+      "sql": "CREATE INDEX idx_requests_governance_subject_ref ON requests(governance_subject_ref)"
+    },
+    {
+      "type": "index",
+      "name": "idx_requests_retrieval_experiment",
+      "table": "requests",
+      "sql": "CREATE INDEX idx_requests_retrieval_experiment\n    ON requests(retrieval_experiment_id, user_id, session_id, created_at, request_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_requests_session_created_at_asc",
+      "table": "requests",
+      "sql": "CREATE INDEX idx_requests_session_created_at_asc\n    ON requests(session_id, created_at ASC, request_id ASC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_requests_session_id",
+      "table": "requests",
+      "sql": "CREATE INDEX idx_requests_session_id ON requests(session_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_requests_user_id",
+      "table": "requests",
+      "sql": "CREATE INDEX idx_requests_user_id ON requests(user_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_rle_created_at_result_id",
+      "table": "retrieved_learning_evaluation",
+      "sql": "CREATE INDEX idx_rle_created_at_result_id\n    ON retrieved_learning_evaluation(created_at DESC, result_id DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_rle_interaction_created_at",
+      "table": "retrieved_learning_evaluation",
+      "sql": "CREATE INDEX idx_rle_interaction_created_at\n    ON retrieved_learning_evaluation(\n        interaction_created_at DESC, interaction_id DESC, result_id DESC\n    )"
+    },
+    {
+      "type": "index",
+      "name": "idx_rle_session_id",
+      "table": "retrieved_learning_evaluation",
+      "sql": "CREATE INDEX idx_rle_session_id\n    ON retrieved_learning_evaluation(session_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_rle_subject_ref",
+      "table": "retrieved_learning_evaluation",
+      "sql": "CREATE INDEX idx_rle_subject_ref\n    ON retrieved_learning_evaluation(governance_subject_ref)"
+    },
+    {
+      "type": "index",
+      "name": "idx_run_tool_dependencies_pending",
+      "table": "_run_tool_dependencies",
+      "sql": "CREATE INDEX idx_run_tool_dependencies_pending ON _run_tool_dependencies(pending_tool_call_id, resolved_at, consumed_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_run_tool_dependencies_ready",
+      "table": "_run_tool_dependencies",
+      "sql": "CREATE INDEX idx_run_tool_dependencies_ready ON _run_tool_dependencies(run_id, resolved_at, consumed_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_session_compactions_reuse",
+      "table": "offline_tuner_session_compactions",
+      "sql": "CREATE INDEX idx_session_compactions_reuse\n    ON offline_tuner_session_compactions(compaction_identity, job_id DESC)\n    WHERE complete = 1"
+    },
+    {
+      "type": "index",
+      "name": "idx_session_outcomes_label",
+      "table": "session_outcomes",
+      "sql": "CREATE INDEX idx_session_outcomes_label ON session_outcomes(label)"
+    },
+    {
+      "type": "index",
+      "name": "idx_session_outcomes_occurred_at",
+      "table": "session_outcomes",
+      "sql": "CREATE INDEX idx_session_outcomes_occurred_at ON session_outcomes(occurred_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_session_outcomes_session_id",
+      "table": "session_outcomes",
+      "sql": "CREATE INDEX idx_session_outcomes_session_id ON session_outcomes(session_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_session_outcomes_source_outcome",
+      "table": "session_outcomes",
+      "sql": "CREATE INDEX idx_session_outcomes_source_outcome ON session_outcomes(source, outcome)"
+    },
+    {
+      "type": "index",
+      "name": "idx_session_outcomes_subject_ref",
+      "table": "session_outcomes",
+      "sql": "CREATE INDEX idx_session_outcomes_subject_ref ON session_outcomes(governance_subject_ref)"
+    },
+    {
+      "type": "index",
+      "name": "idx_shadow_verdicts_created_at",
+      "table": "shadow_comparison_verdicts",
+      "sql": "CREATE INDEX idx_shadow_verdicts_created_at\n    ON shadow_comparison_verdicts (created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_shadow_verdicts_prompt_created_at_desc",
+      "table": "shadow_comparison_verdicts",
+      "sql": "CREATE INDEX idx_shadow_verdicts_prompt_created_at_desc\n    ON shadow_comparison_verdicts (judge_prompt_version, created_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_shadow_verdicts_prompt_v",
+      "table": "shadow_comparison_verdicts",
+      "sql": "CREATE INDEX idx_shadow_verdicts_prompt_v\n    ON shadow_comparison_verdicts (judge_prompt_version)"
+    },
+    {
+      "type": "index",
+      "name": "idx_shadow_verdicts_session",
+      "table": "shadow_comparison_verdicts",
+      "sql": "CREATE INDEX idx_shadow_verdicts_session\n    ON shadow_comparison_verdicts (session_id, agent_version)"
+    },
+    {
+      "type": "index",
+      "name": "idx_subject_write_barriers_org_purge",
+      "table": "subject_write_barriers",
+      "sql": "CREATE INDEX idx_subject_write_barriers_org_purge\n    ON subject_write_barriers(org_id, purge_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_up_exposure_events_playbook_window",
+      "table": "user_playbook_exposure_events",
+      "sql": "CREATE INDEX idx_up_exposure_events_playbook_window\n    ON user_playbook_exposure_events(\n        user_playbook_id, COALESCE(exposed_at, ingested_at)\n    )"
+    },
+    {
+      "type": "index",
+      "name": "idx_up_exposure_events_request_id",
+      "table": "user_playbook_exposure_events",
+      "sql": "CREATE INDEX idx_up_exposure_events_request_id\n    ON user_playbook_exposure_events(request_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_updl_predecessor",
+      "table": "user_playbook_deployment_lifecycles",
+      "sql": "CREATE INDEX idx_updl_predecessor\n    ON user_playbook_deployment_lifecycles(predecessor_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_updl_successor",
+      "table": "user_playbook_deployment_lifecycles",
+      "sql": "CREATE INDEX idx_updl_successor\n    ON user_playbook_deployment_lifecycles(successor_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_user_playbooks_agent_version",
+      "table": "user_playbooks",
+      "sql": "CREATE INDEX idx_user_playbooks_agent_version ON user_playbooks(agent_version)"
+    },
+    {
+      "type": "index",
+      "name": "idx_user_playbooks_aggregation_intake",
+      "table": "user_playbooks",
+      "sql": "CREATE INDEX idx_user_playbooks_aggregation_intake\n    ON user_playbooks(agent_version, user_playbook_id)\n    WHERE status IS NULL AND trim(content) <> '' AND trim(agent_version) <> ''"
+    },
+    {
+      "type": "index",
+      "name": "idx_user_playbooks_aggregation_rebuild",
+      "table": "user_playbooks",
+      "sql": "CREATE INDEX idx_user_playbooks_aggregation_rebuild\n    ON user_playbooks(agent_version, created_at DESC, user_playbook_id DESC)\n    WHERE status IS NULL AND trim(content) <> '' AND trim(agent_version) <> ''"
+    },
+    {
+      "type": "index",
+      "name": "idx_user_playbooks_created_at",
+      "table": "user_playbooks",
+      "sql": "CREATE INDEX idx_user_playbooks_created_at ON user_playbooks(created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_user_playbooks_governance_subject_ref",
+      "table": "user_playbooks",
+      "sql": "CREATE INDEX idx_user_playbooks_governance_subject_ref ON user_playbooks(governance_subject_ref)"
+    },
+    {
+      "type": "index",
+      "name": "idx_user_playbooks_playbook_name",
+      "table": "user_playbooks",
+      "sql": "CREATE INDEX idx_user_playbooks_playbook_name ON user_playbooks(playbook_name)"
+    },
+    {
+      "type": "index",
+      "name": "idx_user_playbooks_retired_at",
+      "table": "user_playbooks",
+      "sql": "CREATE INDEX idx_user_playbooks_retired_at ON user_playbooks(status, retired_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_user_playbooks_status",
+      "table": "user_playbooks",
+      "sql": "CREATE INDEX idx_user_playbooks_status ON user_playbooks(status)"
+    },
+    {
+      "type": "index",
+      "name": "interactions_arrival",
+      "table": "interactions",
+      "sql": "CREATE UNIQUE INDEX interactions_arrival ON interactions(user_id,ingestion_seq)"
+    },
+    {
+      "type": "index",
+      "name": "learning_work_due",
+      "table": "learning_work",
+      "sql": "CREATE INDEX learning_work_due ON learning_work(due_at,lease_until)"
+    },
+    {
+      "type": "index",
+      "name": "publication_output_identity",
+      "table": "_agent_output_receipts",
+      "sql": "CREATE UNIQUE INDEX publication_output_identity\n ON _agent_output_receipts(org_id,run_id,output_id)\n WHERE row_kind='output' AND run_id IS NOT NULL"
+    },
+    {
+      "type": "index",
+      "name": "publication_pending_delivery",
+      "table": "_agent_output_receipts",
+      "sql": "CREATE INDEX publication_pending_delivery\n ON _agent_output_receipts(org_id)\n WHERE delivery_state='pending'"
+    },
+    {
+      "type": "index",
+      "name": "publication_window_handoff_identity",
+      "table": "_agent_output_receipts",
+      "sql": "CREATE UNIQUE INDEX publication_window_handoff_identity\n ON _agent_output_receipts(org_id,project_id,delivery_key)\n WHERE row_kind='window_handoff'"
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex__agent_output_preparations_1",
+      "table": "_agent_output_preparations",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex__agent_output_receipts_1",
+      "table": "_agent_output_receipts",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex__agent_run_finalization_receipts_1",
+      "table": "_agent_run_finalization_receipts",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex__agent_runs_1",
+      "table": "_agent_runs",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex__operation_state_1",
+      "table": "_operation_state",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex__pending_tool_calls_1",
+      "table": "_pending_tool_calls",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex__run_tool_dependencies_1",
+      "table": "_run_tool_dependencies",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_agent_playbook_source_user_playbooks_1",
+      "table": "agent_playbook_source_user_playbooks",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_agent_playbooks_vec_info_1",
+      "table": "agent_playbooks_vec_info",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_agent_playbooks_vec_vector_chunks00_1",
+      "table": "agent_playbooks_vec_vector_chunks00",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_braintrust_connection_1",
+      "table": "braintrust_connection",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_case_exposure_uses_1",
+      "table": "case_exposure_uses",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_case_first_exposure_1",
+      "table": "case_first_exposure",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_extraction_cursors_1",
+      "table": "extraction_cursors",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_extraction_windows_1",
+      "table": "extraction_windows",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_extraction_windows_2",
+      "table": "extraction_windows",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_imported_score_1",
+      "table": "imported_score",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_interactions_vec_info_1",
+      "table": "interactions_vec_info",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_interactions_vec_vector_chunks00_1",
+      "table": "interactions_vec_vector_chunks00",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_learning_work_1",
+      "table": "learning_work",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_lineage_event_1",
+      "table": "lineage_event",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_offline_tuner_open_world_invocations_1",
+      "table": "offline_tuner_open_world_invocations",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_offline_tuner_open_world_qualifications_1",
+      "table": "offline_tuner_open_world_qualifications",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_offline_tuner_session_compactions_1",
+      "table": "offline_tuner_session_compactions",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_open_world_sweep_progress_1",
+      "table": "open_world_sweep_progress",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_playbook_aggregation_cluster_1",
+      "table": "playbook_aggregation_cluster",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_playbook_aggregation_cluster_2",
+      "table": "playbook_aggregation_cluster",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_playbook_aggregation_clusters_vec_info_1",
+      "table": "playbook_aggregation_clusters_vec_info",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_playbook_aggregation_clusters_vec_vector_chunks00_1",
+      "table": "playbook_aggregation_clusters_vec_vector_chunks00",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_playbook_aggregation_item_1",
+      "table": "playbook_aggregation_item",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_playbook_aggregation_operations_1",
+      "table": "playbook_aggregation_operations",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_playbook_aggregation_operations_2",
+      "table": "playbook_aggregation_operations",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_playbook_aggregation_state_1",
+      "table": "playbook_aggregation_state",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_playbook_optimization_artifacts_1",
+      "table": "playbook_optimization_artifacts",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_profile_access_epochs_1",
+      "table": "profile_access_epochs",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_profiles_1",
+      "table": "profiles",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_profiles_vec_info_1",
+      "table": "profiles_vec_info",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_profiles_vec_vector_chunks00_1",
+      "table": "profiles_vec_vector_chunks00",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_requests_1",
+      "table": "requests",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_retrieved_learning_evaluation_1",
+      "table": "retrieved_learning_evaluation",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_session_outcomes_1",
+      "table": "session_outcomes",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_session_outcomes_2",
+      "table": "session_outcomes",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_subject_write_barriers_1",
+      "table": "subject_write_barriers",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_user_playbook_deployment_lifecycles_1",
+      "table": "user_playbook_deployment_lifecycles",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_user_playbook_exposure_events_1",
+      "table": "user_playbook_exposure_events",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_user_playbook_publication_claims_1",
+      "table": "user_playbook_publication_claims",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_user_playbook_publication_results_1",
+      "table": "user_playbook_publication_results",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_user_playbook_publication_staging_1",
+      "table": "user_playbook_publication_staging",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_user_playbooks_vec_info_1",
+      "table": "user_playbooks_vec_info",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "sqlite_autoindex_user_playbooks_vec_vector_chunks00_1",
+      "table": "user_playbooks_vec_vector_chunks00",
+      "sql": null
+    },
+    {
+      "type": "index",
+      "name": "uq_open_world_invocations_manifest_slot",
+      "table": "offline_tuner_open_world_invocations",
+      "sql": "CREATE UNIQUE INDEX uq_open_world_invocations_manifest_slot\n    ON offline_tuner_open_world_invocations(\n        job_id, component_role, COALESCE(manifest_role, ''),\n        COALESCE(user_id, ''), COALESCE(session_id, '')\n    )"
+    },
+    {
+      "type": "index",
+      "name": "uq_poj_active_attempt",
+      "table": "playbook_optimization_jobs",
+      "sql": "CREATE UNIQUE INDEX uq_poj_active_attempt\n    ON playbook_optimization_jobs(optimizer_kind, attempt_key)\n    WHERE status IN ('pending', 'running') AND attempt_key IS NOT NULL"
+    },
+    {
+      "type": "index",
+      "name": "uq_poj_active_discovery",
+      "table": "playbook_optimization_jobs",
+      "sql": "CREATE UNIQUE INDEX uq_poj_active_discovery\n    ON playbook_optimization_jobs(optimizer_kind, discovery_key)\n    WHERE status IN ('pending', 'running') AND discovery_key IS NOT NULL"
+    },
+    {
+      "type": "index",
+      "name": "uq_poj_active_target",
+      "table": "playbook_optimization_jobs",
+      "sql": "CREATE UNIQUE INDEX uq_poj_active_target\n    ON playbook_optimization_jobs(optimizer_kind, target_kind, target_id)\n    WHERE status IN ('pending', 'running')"
+    },
+    {
+      "type": "table",
+      "name": "_agent_output_preparations",
+      "table": "_agent_output_preparations",
+      "sql": "CREATE TABLE _agent_output_preparations (\n run_id TEXT PRIMARY KEY NOT NULL REFERENCES _agent_runs(id) ON DELETE CASCADE,\n org_id TEXT NOT NULL CHECK(trim(org_id)<>''),\n project_id TEXT NOT NULL DEFAULT '' CHECK(project_id=''),\n preparation TEXT CHECK(preparation IS NULL OR (json_valid(preparation) AND json_type(preparation)='object')),\n active_attempt TEXT CHECK(active_attempt IS NULL OR (json_valid(active_attempt) AND json_type(active_attempt)='object')),\n CHECK((preparation IS NULL) <> (active_attempt IS NULL))\n)"
+    },
+    {
+      "type": "table",
+      "name": "_agent_output_receipts",
+      "table": "_agent_output_receipts",
+      "sql": "CREATE TABLE _agent_output_receipts (\n receipt_id TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(16)))),\n org_id TEXT NOT NULL CHECK(trim(org_id)<>''),\n project_id TEXT NOT NULL DEFAULT '' CHECK(project_id=''),\n run_id TEXT,\n output_id TEXT,\n row_kind TEXT NOT NULL DEFAULT 'output',\n entity_type TEXT NOT NULL,\n learning_ids TEXT NOT NULL,\n delivery_owner TEXT NOT NULL DEFAULT 'receipt',\n delivery_state TEXT NOT NULL,\n delivery_key TEXT,\n delivery_facts TEXT,\n created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\n FOREIGN KEY(run_id) REFERENCES _agent_runs(id) ON DELETE CASCADE,\n CHECK(length(receipt_id)=32 AND receipt_id NOT GLOB '*[^0-9a-f]*'),\n CHECK(reflexio_valid_publication_receipt(row_kind,entity_type,learning_ids,delivery_state,delivery_facts)=1),\n CHECK(\n  (row_kind='output' AND delivery_owner='receipt' AND delivery_key IS NULL AND\n    ((run_id IS NULL AND output_id IS NULL) OR\n     (run_id IS NOT NULL AND output_id IS NOT NULL AND length(output_id)=32 AND output_id NOT GLOB '*[^0-9a-f]*')))\n  OR\n  (row_kind='window_handoff' AND run_id IS NULL AND output_id IS NULL AND delivery_owner='receipt' AND delivery_key IS NOT NULL AND trim(delivery_key)<>''))\n)"
+    },
+    {
+      "type": "table",
+      "name": "_agent_run_finalization_receipts",
+      "table": "_agent_run_finalization_receipts",
+      "sql": "CREATE TABLE _agent_run_finalization_receipts (\n    run_id TEXT PRIMARY KEY,\n    entity_type TEXT NOT NULL CHECK (entity_type IN ('profile', 'user_playbook')),\n    learning_ids TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n    FOREIGN KEY (run_id) REFERENCES _agent_runs(id) ON DELETE CASCADE\n)"
+    },
+    {
+      "type": "table",
+      "name": "_agent_runs",
+      "table": "_agent_runs",
+      "sql": "CREATE TABLE _agent_runs (\n    id TEXT PRIMARY KEY,\n    org_id TEXT NOT NULL,\n    extractor_kind TEXT NOT NULL,\n    user_id TEXT,\n    request_id TEXT NOT NULL,\n    agent_version TEXT,\n    source TEXT,\n    source_interaction_ids TEXT NOT NULL DEFAULT '[]',\n    window_start_interaction_id INTEGER,\n    window_end_interaction_id INTEGER,\n    extractor_config_hash TEXT,\n    status TEXT NOT NULL,\n    generation_request_snapshot TEXT NOT NULL DEFAULT '{}',\n    service_config_snapshot TEXT,\n    agent_context_snapshot TEXT,\n    committed_output TEXT,\n    pending_tool_call_ids TEXT NOT NULL DEFAULT '[]',\n    max_steps_remaining INTEGER,\n    resume_attempts INTEGER NOT NULL DEFAULT 0,\n    finalization_attempts INTEGER NOT NULL DEFAULT 0,\n    next_resume_at TEXT,\n    claimed_by TEXT,\n    claimed_at TEXT,\n    agent_completed_at TEXT,\n    finalized_at TEXT,\n    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n    expires_at TEXT,\n    last_error TEXT,\n    progress_stage TEXT,\n    last_progress_at TEXT,\n    recovery_operation_id TEXT,\n    recovery_history TEXT NOT NULL DEFAULT '[]',\n    user_work_token TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "_dataset_identity",
+      "table": "_dataset_identity",
+      "sql": "CREATE TABLE _dataset_identity ( k INTEGER PRIMARY KEY CHECK (k = 1), org_id TEXT NOT NULL, claimed_at TEXT NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "_operation_state",
+      "table": "_operation_state",
+      "sql": "CREATE TABLE _operation_state (\n    service_name TEXT PRIMARY KEY,\n    operation_state TEXT NOT NULL DEFAULT '{}',\n    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))\n)"
+    },
+    {
+      "type": "table",
+      "name": "_pending_tool_calls",
+      "table": "_pending_tool_calls",
+      "sql": "CREATE TABLE _pending_tool_calls (\n    id TEXT PRIMARY KEY,\n    org_id TEXT NOT NULL,\n    user_id TEXT,\n    scope TEXT NOT NULL DEFAULT '{}',\n    scope_hash TEXT NOT NULL,\n    tool_name TEXT NOT NULL,\n    dedup_key TEXT NOT NULL,\n    status TEXT NOT NULL,\n    question_text TEXT NOT NULL,\n    answer_format TEXT,\n    args TEXT NOT NULL DEFAULT '{}',\n    tags TEXT NOT NULL DEFAULT '[]',\n    result TEXT,\n    embedding TEXT,\n    superseded_by TEXT,\n    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n    resolved_at TEXT,\n    expires_at TEXT NOT NULL,\n    cache_until TEXT NOT NULL,\n    valid_until TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "_run_tool_dependencies",
+      "table": "_run_tool_dependencies",
+      "sql": "CREATE TABLE _run_tool_dependencies (\n    run_id TEXT NOT NULL,\n    pending_tool_call_id TEXT NOT NULL,\n    dependency_kind TEXT NOT NULL DEFAULT 'followup',\n    resolved_at TEXT,\n    consumed_at TEXT,\n    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n    PRIMARY KEY (run_id, pending_tool_call_id),\n    FOREIGN KEY (run_id) REFERENCES _agent_runs(id) ON DELETE CASCADE,\n    FOREIGN KEY (pending_tool_call_id) REFERENCES _pending_tool_calls(id) ON DELETE CASCADE\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbook_source_user_playbooks",
+      "table": "agent_playbook_source_user_playbooks",
+      "sql": "CREATE TABLE agent_playbook_source_user_playbooks (\n    agent_playbook_id INTEGER NOT NULL,\n    user_playbook_id INTEGER NOT NULL,\n    source_interaction_ids TEXT NOT NULL DEFAULT '[]',\n    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n    PRIMARY KEY (agent_playbook_id, user_playbook_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks",
+      "table": "agent_playbooks",
+      "sql": "CREATE TABLE agent_playbooks (\n    agent_playbook_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    playbook_name TEXT NOT NULL DEFAULT '',\n    created_at TEXT NOT NULL,\n    agent_version TEXT NOT NULL DEFAULT '',\n    content TEXT NOT NULL DEFAULT '',\n    trigger TEXT,\n    rationale TEXT,\n    blocking_issue TEXT,\n    playbook_status TEXT NOT NULL DEFAULT 'pending',\n    playbook_metadata TEXT NOT NULL DEFAULT '',\n    embedding TEXT,\n    expanded_terms TEXT,\n    tags TEXT,\n    status TEXT,\n    merged_into INTEGER,\n    superseded_by INTEGER,\n    retired_at INTEGER\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_fts",
+      "table": "agent_playbooks_fts",
+      "sql": "CREATE VIRTUAL TABLE agent_playbooks_fts USING fts5(\n    search_text,\n    tokenize=\"porter unicode61\"\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_fts_config",
+      "table": "agent_playbooks_fts_config",
+      "sql": "CREATE TABLE 'agent_playbooks_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_fts_content",
+      "table": "agent_playbooks_fts_content",
+      "sql": "CREATE TABLE 'agent_playbooks_fts_content'(id INTEGER PRIMARY KEY, c0)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_fts_data",
+      "table": "agent_playbooks_fts_data",
+      "sql": "CREATE TABLE 'agent_playbooks_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_fts_docsize",
+      "table": "agent_playbooks_fts_docsize",
+      "sql": "CREATE TABLE 'agent_playbooks_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_fts_idx",
+      "table": "agent_playbooks_fts_idx",
+      "sql": "CREATE TABLE 'agent_playbooks_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_unicode_fts",
+      "table": "agent_playbooks_unicode_fts",
+      "sql": "CREATE VIRTUAL TABLE agent_playbooks_unicode_fts USING fts5(\n    search_ngrams,\n    tokenize=\"unicode61 remove_diacritics 0\"\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_unicode_fts_config",
+      "table": "agent_playbooks_unicode_fts_config",
+      "sql": "CREATE TABLE 'agent_playbooks_unicode_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_unicode_fts_content",
+      "table": "agent_playbooks_unicode_fts_content",
+      "sql": "CREATE TABLE 'agent_playbooks_unicode_fts_content'(id INTEGER PRIMARY KEY, c0)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_unicode_fts_data",
+      "table": "agent_playbooks_unicode_fts_data",
+      "sql": "CREATE TABLE 'agent_playbooks_unicode_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_unicode_fts_docsize",
+      "table": "agent_playbooks_unicode_fts_docsize",
+      "sql": "CREATE TABLE 'agent_playbooks_unicode_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_unicode_fts_idx",
+      "table": "agent_playbooks_unicode_fts_idx",
+      "sql": "CREATE TABLE 'agent_playbooks_unicode_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_vec",
+      "table": "agent_playbooks_vec",
+      "sql": "CREATE VIRTUAL TABLE agent_playbooks_vec USING vec0(\n                embedding float[512]\n            )"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_vec_chunks",
+      "table": "agent_playbooks_vec_chunks",
+      "sql": "CREATE TABLE \"agent_playbooks_vec_chunks\"(chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,size INTEGER NOT NULL,validity BLOB NOT NULL,rowids BLOB NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_vec_info",
+      "table": "agent_playbooks_vec_info",
+      "sql": "CREATE TABLE \"agent_playbooks_vec_info\" (key text primary key, value any)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_vec_rowids",
+      "table": "agent_playbooks_vec_rowids",
+      "sql": "CREATE TABLE \"agent_playbooks_vec_rowids\"(rowid INTEGER PRIMARY KEY AUTOINCREMENT,id,chunk_id INTEGER,chunk_offset INTEGER)"
+    },
+    {
+      "type": "table",
+      "name": "agent_playbooks_vec_vector_chunks00",
+      "table": "agent_playbooks_vec_vector_chunks00",
+      "sql": "CREATE TABLE \"agent_playbooks_vec_vector_chunks00\"(rowid PRIMARY KEY,vectors BLOB NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "agent_success_evaluation_result",
+      "table": "agent_success_evaluation_result",
+      "sql": "CREATE TABLE agent_success_evaluation_result (\n    result_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    user_id TEXT NOT NULL DEFAULT '',\n    session_id TEXT NOT NULL,\n    agent_version TEXT NOT NULL DEFAULT '',\n    evaluation_name TEXT,\n    is_success INTEGER NOT NULL DEFAULT 0,\n    failure_type TEXT,\n    failure_reason TEXT,\n    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n    regular_vs_shadow TEXT,\n    number_of_correction_per_session INTEGER NOT NULL DEFAULT 0,\n    user_turns_to_resolution INTEGER,\n    is_escalated INTEGER NOT NULL DEFAULT 0,\n    tags TEXT,\n    embedding TEXT,\n    -- The last request the judge saw, in (created_at, request_id) order, and\n    -- how many interactions it judged. NULL on rows written before cutovers.\n    trajectory_through_request_id TEXT,\n    trajectory_interaction_count INTEGER,\n    governance_subject_ref TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "braintrust_connection",
+      "table": "braintrust_connection",
+      "sql": "CREATE TABLE braintrust_connection (\n    org_id TEXT PRIMARY KEY,\n    api_key_enc TEXT NOT NULL,\n    workspace_id TEXT NOT NULL,\n    workspace_name TEXT NOT NULL DEFAULT '',\n    project_ids TEXT NOT NULL DEFAULT '[]',\n    last_sync_ts INTEGER,\n    last_error TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "case_exposure_uses",
+      "table": "case_exposure_uses",
+      "sql": "CREATE TABLE case_exposure_uses (\n    job_id INTEGER NOT NULL,\n    equivalence_group_id TEXT NOT NULL,\n    role TEXT NOT NULL CHECK (role IN (\n        'generation', 'improvement', 'preservation', 'safety'\n    )),\n    ownership TEXT NOT NULL CHECK (ownership IN (\n        'self_generation', 'self_improvement', 'self_preservation',\n        'self_safety', 'foreign'\n    )),\n    content_digest TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY (job_id, equivalence_group_id, role),\n    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id) ON DELETE CASCADE\n)"
+    },
+    {
+      "type": "table",
+      "name": "case_first_exposure",
+      "table": "case_first_exposure",
+      "sql": "CREATE TABLE case_first_exposure (\n    equivalence_group_id TEXT PRIMARY KEY,\n    first_role TEXT NOT NULL CHECK (first_role IN (\n        'generation', 'improvement', 'preservation', 'safety'\n    )),\n    owner_discovery_key TEXT NOT NULL,\n    content_digest TEXT NOT NULL,\n    created_at INTEGER NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "extraction_cursors",
+      "table": "extraction_cursors",
+      "sql": "CREATE TABLE extraction_cursors (\n user_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('profile','playbook')),\n completed_seq INTEGER NOT NULL DEFAULT 0, started INTEGER NOT NULL DEFAULT 0,\n project_id TEXT NOT NULL DEFAULT '', window_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,\n last_error TEXT, last_turn REAL NOT NULL DEFAULT 0, PRIMARY KEY(user_id,kind,project_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "extraction_windows",
+      "table": "extraction_windows",
+      "sql": "CREATE TABLE extraction_windows (\n window_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL, org_id TEXT,\n project_id TEXT NOT NULL DEFAULT '', predecessor INTEGER NOT NULL, end_seq INTEGER NOT NULL, manifest TEXT NOT NULL,\n policy TEXT NOT NULL, force INTEGER NOT NULL DEFAULT 0,\n skip_aggregation INTEGER NOT NULL DEFAULT 0, outcome TEXT,\n invalidated INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0, completed_at REAL, effects TEXT, effects_done INTEGER NOT NULL DEFAULT 0, derived_claimed INTEGER NOT NULL DEFAULT 0, effects_retry_at REAL NOT NULL DEFAULT 0,\n UNIQUE(user_id,kind,predecessor,project_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "imported_score",
+      "table": "imported_score",
+      "sql": "CREATE TABLE imported_score (\n    rowid INTEGER PRIMARY KEY AUTOINCREMENT,\n    org_id TEXT NOT NULL,\n    source TEXT NOT NULL,\n    source_run_id TEXT NOT NULL,\n    session_id TEXT,\n    scorer_name TEXT NOT NULL,\n    value REAL NOT NULL,\n    ts INTEGER NOT NULL,\n    UNIQUE (org_id, source, source_run_id, scorer_name)\n)"
+    },
+    {
+      "type": "table",
+      "name": "interactions",
+      "table": "interactions",
+      "sql": "CREATE TABLE interactions (\n    interaction_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    user_id TEXT NOT NULL,\n    content TEXT NOT NULL DEFAULT '',\n    request_id TEXT NOT NULL,\n    created_at TEXT NOT NULL,\n    role TEXT NOT NULL DEFAULT 'User',\n    token_count INTEGER,\n    user_action TEXT NOT NULL DEFAULT 'none',\n    user_action_description TEXT NOT NULL DEFAULT '',\n    interacted_image_url TEXT NOT NULL DEFAULT '',\n    image_encoding TEXT NOT NULL DEFAULT '',\n    shadow_content TEXT NOT NULL DEFAULT '',\n    expert_content TEXT NOT NULL DEFAULT '',\n    tools_used TEXT,\n    citations TEXT,\n    retrieved_learnings TEXT,\n    embedding TEXT,\n    governance_subject_ref TEXT,\n    ingestion_seq INTEGER\n)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_fts",
+      "table": "interactions_fts",
+      "sql": "CREATE VIRTUAL TABLE interactions_fts USING fts5(\n    content, user_action_description,\n    tokenize=\"porter unicode61\"\n)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_fts_config",
+      "table": "interactions_fts_config",
+      "sql": "CREATE TABLE 'interactions_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "interactions_fts_content",
+      "table": "interactions_fts_content",
+      "sql": "CREATE TABLE 'interactions_fts_content'(id INTEGER PRIMARY KEY, c0, c1)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_fts_data",
+      "table": "interactions_fts_data",
+      "sql": "CREATE TABLE 'interactions_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_fts_docsize",
+      "table": "interactions_fts_docsize",
+      "sql": "CREATE TABLE 'interactions_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_fts_idx",
+      "table": "interactions_fts_idx",
+      "sql": "CREATE TABLE 'interactions_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "interactions_unicode_fts",
+      "table": "interactions_unicode_fts",
+      "sql": "CREATE VIRTUAL TABLE interactions_unicode_fts USING fts5(\n    search_ngrams,\n    tokenize=\"unicode61 remove_diacritics 0\"\n)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_unicode_fts_config",
+      "table": "interactions_unicode_fts_config",
+      "sql": "CREATE TABLE 'interactions_unicode_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "interactions_unicode_fts_content",
+      "table": "interactions_unicode_fts_content",
+      "sql": "CREATE TABLE 'interactions_unicode_fts_content'(id INTEGER PRIMARY KEY, c0)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_unicode_fts_data",
+      "table": "interactions_unicode_fts_data",
+      "sql": "CREATE TABLE 'interactions_unicode_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_unicode_fts_docsize",
+      "table": "interactions_unicode_fts_docsize",
+      "sql": "CREATE TABLE 'interactions_unicode_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_unicode_fts_idx",
+      "table": "interactions_unicode_fts_idx",
+      "sql": "CREATE TABLE 'interactions_unicode_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "interactions_vec",
+      "table": "interactions_vec",
+      "sql": "CREATE VIRTUAL TABLE interactions_vec USING vec0(\n                embedding float[512]\n            )"
+    },
+    {
+      "type": "table",
+      "name": "interactions_vec_chunks",
+      "table": "interactions_vec_chunks",
+      "sql": "CREATE TABLE \"interactions_vec_chunks\"(chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,size INTEGER NOT NULL,validity BLOB NOT NULL,rowids BLOB NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_vec_info",
+      "table": "interactions_vec_info",
+      "sql": "CREATE TABLE \"interactions_vec_info\" (key text primary key, value any)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_vec_rowids",
+      "table": "interactions_vec_rowids",
+      "sql": "CREATE TABLE \"interactions_vec_rowids\"(rowid INTEGER PRIMARY KEY AUTOINCREMENT,id,chunk_id INTEGER,chunk_offset INTEGER)"
+    },
+    {
+      "type": "table",
+      "name": "interactions_vec_vector_chunks00",
+      "table": "interactions_vec_vector_chunks00",
+      "sql": "CREATE TABLE \"interactions_vec_vector_chunks00\"(rowid PRIMARY KEY,vectors BLOB NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "learning_work",
+      "table": "learning_work",
+      "sql": "CREATE TABLE learning_work (\n org_id TEXT NOT NULL, user_id TEXT NOT NULL, highwater INTEGER NOT NULL DEFAULT 0,\n pending_since REAL NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0, last_turn REAL NOT NULL DEFAULT 0, due_at REAL NOT NULL DEFAULT 0,\n lease_token TEXT, lease_owner TEXT, lease_until REAL NOT NULL DEFAULT 0,\n    position_json TEXT,\n PRIMARY KEY(org_id,user_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "lineage_event",
+      "table": "lineage_event",
+      "sql": "CREATE TABLE lineage_event (\n    event_id         INTEGER PRIMARY KEY AUTOINCREMENT,\n    org_id           TEXT NOT NULL,\n    entity_type      TEXT NOT NULL,\n    entity_id        TEXT NOT NULL,\n    op               TEXT NOT NULL,\n    prov_relation    TEXT NOT NULL DEFAULT '',\n    source_ids       TEXT NOT NULL DEFAULT '[]',\n    actor            TEXT NOT NULL DEFAULT '',\n    request_id       TEXT NOT NULL DEFAULT '',\n    reason           TEXT NOT NULL DEFAULT '',\n    created_at       INTEGER NOT NULL,\n    from_status      TEXT,\n    to_status        TEXT,\n    status_namespace TEXT,\n    model_name       TEXT,\n    provider         TEXT,\n    UNIQUE (org_id, entity_type, entity_id, op, request_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "offline_tuner_open_world_attempt_context",
+      "table": "offline_tuner_open_world_attempt_context",
+      "sql": "CREATE TABLE offline_tuner_open_world_attempt_context (\n    job_id INTEGER PRIMARY KEY\n        REFERENCES playbook_optimization_jobs(job_id) ON DELETE CASCADE,\n    bundle_digest TEXT NOT NULL CHECK (length(bundle_digest) = 64 AND bundle_digest NOT GLOB '*[^0-9a-f]*'),\n    outcome_contract_digest TEXT NOT NULL CHECK (length(outcome_contract_digest) = 64 AND outcome_contract_digest NOT GLOB '*[^0-9a-f]*'),\n    manifest_json TEXT NOT NULL CHECK (json_type(manifest_json) = 'array'),\n    discovery_component_identity_digest TEXT NOT NULL,\n    discovery_qualification_suite_digest TEXT NOT NULL,\n    discovery_qualification_result_digest TEXT NOT NULL,\n    held_out_component_identity_digest TEXT,\n    held_out_qualification_suite_digest TEXT,\n    held_out_qualification_result_digest TEXT,\n    candidate_generator_identity_digest TEXT NOT NULL,\n    candidate_generator_authorization_digest TEXT NOT NULL,\n    context_json TEXT NOT NULL,\n    context_digest TEXT NOT NULL CHECK (length(context_digest) = 64 AND context_digest NOT GLOB '*[^0-9a-f]*'),\n    created_at INTEGER NOT NULL,\n    qualification_authority_epoch INTEGER NOT NULL\n        CHECK (qualification_authority_epoch > 0),\n    qualification_authority_digest TEXT NOT NULL\n        CHECK (length(qualification_authority_digest) = 64 AND qualification_authority_digest NOT GLOB '*[^0-9a-f]*')\n)"
+    },
+    {
+      "type": "table",
+      "name": "offline_tuner_open_world_invocations",
+      "table": "offline_tuner_open_world_invocations",
+      "sql": "CREATE TABLE offline_tuner_open_world_invocations (\n    analyst_input_identity TEXT PRIMARY KEY\n        CHECK (length(analyst_input_identity) = 64 AND analyst_input_identity NOT GLOB '*[^0-9a-f]*'),\n    job_id INTEGER NOT NULL\n        REFERENCES playbook_optimization_jobs(job_id) ON DELETE CASCADE,\n    component_identity_digest TEXT NOT NULL\n        CHECK (length(component_identity_digest) = 64 AND component_identity_digest NOT GLOB '*[^0-9a-f]*'),\n    expected_provider TEXT NOT NULL,\n    expected_model_revision TEXT NOT NULL,\n    input_digest TEXT NOT NULL CHECK (length(input_digest) = 64 AND input_digest NOT GLOB '*[^0-9a-f]*'),\n    component_role TEXT NOT NULL,\n    manifest_role TEXT,\n    user_id TEXT,\n    session_id TEXT,\n    state TEXT NOT NULL DEFAULT 'prepared',\n    output_json TEXT,\n    output_digest TEXT,\n    observed_provider TEXT,\n    observed_model_revision TEXT,\n    called_at INTEGER,\n    latency_ms INTEGER,\n    usage_json TEXT,\n    prepared_at INTEGER NOT NULL,\n    completed_at INTEGER,\n    qualification_result_digest TEXT NOT NULL\n        CHECK (length(qualification_result_digest) = 64 AND qualification_result_digest NOT GLOB '*[^0-9a-f]*'),\n    trajectory_digest TEXT,\n    candidate_artifact_digest TEXT,\n    candidate_analyst_input_identity TEXT,\n    CHECK (\n        (component_role IN ('discovery', 'candidate', 'trigger_gate', 'trigger_builder') AND manifest_role IS NULL\n         AND user_id IS NULL AND session_id IS NULL\n         AND trajectory_digest IS NULL AND candidate_artifact_digest IS NULL\n         AND candidate_analyst_input_identity IS NULL)\n        OR (component_role = 'discovery' AND manifest_role = 'discovery'\n         AND user_id IS NOT NULL AND session_id IS NOT NULL\n         AND (length(trajectory_digest) = 64 AND trajectory_digest NOT GLOB '*[^0-9a-f]*')\n         AND candidate_artifact_digest IS NULL\n         AND candidate_analyst_input_identity IS NULL)\n        OR (component_role = 'held_out'\n         AND manifest_role IN ('held_out', 'safety_only')\n         AND user_id IS NOT NULL AND session_id IS NOT NULL\n         AND (length(trajectory_digest) = 64 AND trajectory_digest NOT GLOB '*[^0-9a-f]*')\n         AND (length(candidate_artifact_digest) = 64 AND candidate_artifact_digest NOT GLOB '*[^0-9a-f]*')\n         AND (length(candidate_analyst_input_identity) = 64 AND candidate_analyst_input_identity NOT GLOB '*[^0-9a-f]*'))\n    ),\n    CHECK (\n        (state = 'prepared' AND output_json IS NULL AND output_digest IS NULL\n         AND observed_provider IS NULL AND observed_model_revision IS NULL\n         AND called_at IS NULL AND latency_ms IS NULL AND usage_json IS NULL\n         AND completed_at IS NULL)\n        OR (state = 'completed' AND output_json IS NOT NULL\n         AND (length(output_digest) = 64 AND output_digest NOT GLOB '*[^0-9a-f]*')\n         AND observed_provider IS NOT NULL AND observed_model_revision IS NOT NULL\n         AND called_at IS NOT NULL AND latency_ms >= 0 AND completed_at IS NOT NULL)\n    )\n)"
+    },
+    {
+      "type": "table",
+      "name": "offline_tuner_open_world_qualification_authority",
+      "table": "offline_tuner_open_world_qualification_authority",
+      "sql": "CREATE TABLE offline_tuner_open_world_qualification_authority (\n    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),\n    epoch INTEGER NOT NULL CHECK (epoch > 0),\n    state TEXT NOT NULL,\n    authority_digest TEXT NOT NULL CHECK (length(authority_digest) = 64 AND authority_digest NOT GLOB '*[^0-9a-f]*'),\n    discovery_component_identity_digest TEXT,\n    discovery_qualification_suite_digest TEXT,\n    discovery_qualification_result_digest TEXT,\n    held_out_component_identity_digest TEXT,\n    held_out_qualification_suite_digest TEXT,\n    held_out_qualification_result_digest TEXT,\n    candidate_generator_identity_digest TEXT,\n    candidate_generator_authorization_digest TEXT,\n    unavailable_reason TEXT,\n    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),\n    method_authority_json TEXT,\n    CHECK (\n        (state = 'active' AND unavailable_reason IS NULL\n         AND (length(discovery_component_identity_digest) = 64 AND discovery_component_identity_digest NOT GLOB '*[^0-9a-f]*')\n         AND (length(discovery_qualification_suite_digest) = 64 AND discovery_qualification_suite_digest NOT GLOB '*[^0-9a-f]*')\n         AND (length(discovery_qualification_result_digest) = 64 AND discovery_qualification_result_digest NOT GLOB '*[^0-9a-f]*')\n         AND (length(candidate_generator_identity_digest) = 64 AND candidate_generator_identity_digest NOT GLOB '*[^0-9a-f]*')\n         AND (length(candidate_generator_authorization_digest) = 64 AND candidate_generator_authorization_digest NOT GLOB '*[^0-9a-f]*')\n         AND method_authority_json IS NOT NULL\n         AND held_out_component_identity_digest IS NULL\n         AND held_out_qualification_suite_digest IS NULL\n         AND held_out_qualification_result_digest IS NULL)\n        OR (state = 'unavailable' AND trim(unavailable_reason) != ''\n         AND discovery_component_identity_digest IS NULL\n         AND discovery_qualification_suite_digest IS NULL\n         AND discovery_qualification_result_digest IS NULL\n         AND held_out_component_identity_digest IS NULL\n         AND held_out_qualification_suite_digest IS NULL\n         AND held_out_qualification_result_digest IS NULL\n         AND candidate_generator_identity_digest IS NULL\n         AND candidate_generator_authorization_digest IS NULL)\n    )\n)"
+    },
+    {
+      "type": "table",
+      "name": "offline_tuner_open_world_qualifications",
+      "table": "offline_tuner_open_world_qualifications",
+      "sql": "CREATE TABLE offline_tuner_open_world_qualifications (\n    component_identity_digest TEXT NOT NULL,\n    suite_digest TEXT NOT NULL,\n    schema_version TEXT NOT NULL,\n    result_digest TEXT NOT NULL,\n    passed INTEGER NOT NULL CHECK (passed IN (0, 1)),\n    class_counts_json TEXT NOT NULL,\n    observation_digests_json TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY (component_identity_digest, suite_digest)\n)"
+    },
+    {
+      "type": "table",
+      "name": "offline_tuner_session_compactions",
+      "table": "offline_tuner_session_compactions",
+      "sql": "CREATE TABLE offline_tuner_session_compactions (\n    job_id INTEGER NOT NULL\n        REFERENCES playbook_optimization_jobs(job_id) ON DELETE CASCADE,\n    compaction_identity TEXT NOT NULL CHECK (length(compaction_identity) = 64 AND compaction_identity NOT GLOB '*[^0-9a-f]*'),\n    batches INTEGER NOT NULL CHECK (batches BETWEEN 1 AND 128),\n    complete INTEGER NOT NULL DEFAULT 0 CHECK (complete IN (0, 1)),\n    content_json TEXT NOT NULL\n        CHECK (length(CAST(content_json AS BLOB)) <= 22000),\n    content_digest TEXT NOT NULL CHECK (length(content_digest) = 64 AND content_digest NOT GLOB '*[^0-9a-f]*'),\n    PRIMARY KEY (job_id, compaction_identity)\n)"
+    },
+    {
+      "type": "table",
+      "name": "open_world_sweep_progress",
+      "table": "open_world_sweep_progress",
+      "sql": "CREATE TABLE open_world_sweep_progress (\n    user_playbook_id INTEGER NOT NULL CHECK (user_playbook_id > 0),\n    progress_day TEXT NOT NULL,\n    outcome TEXT NOT NULL CHECK (trim(outcome) != ''),\n    job_id INTEGER CHECK (job_id IS NULL OR job_id > 0),\n    attempted_at INTEGER NOT NULL CHECK (attempted_at >= 0),\n    attempt_count INTEGER NOT NULL DEFAULT 1 CHECK (attempt_count > 0),\n    PRIMARY KEY (user_playbook_id, progress_day)\n)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_aggregation_cluster",
+      "table": "playbook_aggregation_cluster",
+      "sql": "CREATE TABLE playbook_aggregation_cluster (\n    cluster_id TEXT PRIMARY KEY,\n    index_rowid INTEGER UNIQUE,\n    agent_version TEXT NOT NULL,\n    agent_playbook_id INTEGER,\n    centroid TEXT,\n    vector_sum TEXT,\n    member_count INTEGER NOT NULL DEFAULT 0,\n    embedding_model TEXT,\n    embedding_dimension INTEGER,\n    normalization TEXT NOT NULL DEFAULT 'l2',\n    state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'rebuilding')),\n    dirty INTEGER NOT NULL DEFAULT 0 CHECK (dirty IN (0, 1)),\n    rebuild_cursor INTEGER NOT NULL DEFAULT 0,\n    rebuild_attempt_count INTEGER NOT NULL DEFAULT 0,\n    rebuild_next_attempt_at INTEGER NOT NULL DEFAULT 0\n)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_aggregation_clusters_vec",
+      "table": "playbook_aggregation_clusters_vec",
+      "sql": "CREATE VIRTUAL TABLE playbook_aggregation_clusters_vec USING vec0(\n                embedding float[512] distance_metric=cosine\n            )"
+    },
+    {
+      "type": "table",
+      "name": "playbook_aggregation_clusters_vec_chunks",
+      "table": "playbook_aggregation_clusters_vec_chunks",
+      "sql": "CREATE TABLE \"playbook_aggregation_clusters_vec_chunks\"(chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,size INTEGER NOT NULL,validity BLOB NOT NULL,rowids BLOB NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_aggregation_clusters_vec_info",
+      "table": "playbook_aggregation_clusters_vec_info",
+      "sql": "CREATE TABLE \"playbook_aggregation_clusters_vec_info\" (key text primary key, value any)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_aggregation_clusters_vec_rowids",
+      "table": "playbook_aggregation_clusters_vec_rowids",
+      "sql": "CREATE TABLE \"playbook_aggregation_clusters_vec_rowids\"(rowid INTEGER PRIMARY KEY AUTOINCREMENT,id,chunk_id INTEGER,chunk_offset INTEGER)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_aggregation_clusters_vec_vector_chunks00",
+      "table": "playbook_aggregation_clusters_vec_vector_chunks00",
+      "sql": "CREATE TABLE \"playbook_aggregation_clusters_vec_vector_chunks00\"(rowid PRIMARY KEY,vectors BLOB NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_aggregation_invalidation",
+      "table": "playbook_aggregation_invalidation",
+      "sql": "CREATE TABLE playbook_aggregation_invalidation (\n    invalidation_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    agent_version TEXT NOT NULL,\n    operation TEXT NOT NULL,\n    entity_id INTEGER NOT NULL,\n    source_ids TEXT NOT NULL DEFAULT '[]',\n    created_at INTEGER NOT NULL DEFAULT (unixepoch()),\n    processed_at INTEGER\n)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_aggregation_item",
+      "table": "playbook_aggregation_item",
+      "sql": "CREATE TABLE playbook_aggregation_item (\n    agent_version TEXT NOT NULL,\n    user_playbook_id INTEGER NOT NULL,\n    disposition TEXT NOT NULL CHECK (\n        disposition IN ('residual', 'cluster_member', 'terminal_noop')\n    ),\n    cluster_id TEXT,\n    reason TEXT,\n    attempt_count INTEGER NOT NULL DEFAULT 0,\n    last_attempt_at INTEGER,\n    created_at INTEGER NOT NULL DEFAULT (unixepoch()),\n    updated_at INTEGER NOT NULL DEFAULT (unixepoch()),\n    PRIMARY KEY (agent_version, user_playbook_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_aggregation_lease",
+      "table": "playbook_aggregation_lease",
+      "sql": "CREATE TABLE playbook_aggregation_lease (\n    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),\n    claim_owner TEXT,\n    claim_fence INTEGER NOT NULL,\n    claim_expires_at INTEGER,\n    agent_version TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_aggregation_operations",
+      "table": "playbook_aggregation_operations",
+      "sql": "CREATE TABLE playbook_aggregation_operations (\n    operation_id TEXT PRIMARY KEY,\n    request_id TEXT NOT NULL UNIQUE,\n    agent_version TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN ('queued','running','retrying','succeeded','failed')),\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    started_at INTEGER,\n    completed_at INTEGER,\n    attempts INTEGER NOT NULL DEFAULT 0,\n    next_attempt_at INTEGER,\n    error TEXT,\n    result TEXT,\n    claim_fence INTEGER\n)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_aggregation_state",
+      "table": "playbook_aggregation_state",
+      "sql": "CREATE TABLE playbook_aggregation_state (\n    agent_version TEXT PRIMARY KEY,\n    last_success_at INTEGER,\n    pending INTEGER NOT NULL DEFAULT 1 CHECK (pending IN (0, 1)),\n    next_attempt_at INTEGER NOT NULL DEFAULT (unixepoch()),\n    state_version INTEGER NOT NULL DEFAULT 0,\n    retry_cursor INTEGER NOT NULL DEFAULT 0,\n    bootstrap_status TEXT NOT NULL DEFAULT 'pending',\n    intake_floor_user_playbook_id INTEGER NOT NULL DEFAULT 0\n)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_optimization_artifacts",
+      "table": "playbook_optimization_artifacts",
+      "sql": "CREATE TABLE playbook_optimization_artifacts (\n    artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    job_id INTEGER NOT NULL,\n    artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (\n        'expected_population_manifest',\n        'generation_selection',\n        'candidate',\n        'candidate_search_projection',\n        'open_world_evidence_bundle',\n        'open_world_discovery_memo',\n        'open_world_candidate',\n                        'open_world_content_result',\n                        'open_world_trigger_result',\n        'open_world_attempt_decision'\n    )),\n    content_json TEXT NOT NULL,\n    content_digest TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    UNIQUE (job_id, artifact_kind),\n    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)\n        ON DELETE CASCADE\n)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_optimization_candidates",
+      "table": "playbook_optimization_candidates",
+      "sql": "CREATE TABLE playbook_optimization_candidates (\n    candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    job_id INTEGER NOT NULL,\n    candidate_index INTEGER NOT NULL DEFAULT 0,\n    content TEXT NOT NULL,\n    parent_candidate_ids TEXT NOT NULL DEFAULT '[]',\n    aggregate_score REAL,\n    is_winner INTEGER NOT NULL DEFAULT 0,\n    metadata_json TEXT NOT NULL DEFAULT '{}',\n    created_at INTEGER NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_optimization_evaluations",
+      "table": "playbook_optimization_evaluations",
+      "sql": "CREATE TABLE playbook_optimization_evaluations (\n    evaluation_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    job_id INTEGER NOT NULL,\n    candidate_id INTEGER NOT NULL,\n    target_kind TEXT NOT NULL,\n    target_id INTEGER NOT NULL,\n    scenario_user_playbook_id INTEGER,\n    source_interaction_ids TEXT NOT NULL DEFAULT '[]',\n    score REAL NOT NULL DEFAULT 0.0,\n    verdict TEXT NOT NULL DEFAULT 'tie',\n    likert INTEGER NOT NULL DEFAULT 0,\n    rationale TEXT NOT NULL DEFAULT '',\n    asi_json TEXT NOT NULL DEFAULT '{}',\n    incumbent_rollout_json TEXT NOT NULL DEFAULT '[]',\n    candidate_rollout_json TEXT NOT NULL DEFAULT '[]',\n    created_at INTEGER NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_optimization_events",
+      "table": "playbook_optimization_events",
+      "sql": "CREATE TABLE playbook_optimization_events (\n    event_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    job_id INTEGER NOT NULL,\n    event_type TEXT NOT NULL,\n    payload_json TEXT NOT NULL DEFAULT '{}',\n    created_at INTEGER NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "playbook_optimization_jobs",
+      "table": "playbook_optimization_jobs",
+      "sql": "CREATE TABLE playbook_optimization_jobs (\n    job_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    optimizer_kind TEXT NOT NULL DEFAULT 'optimizer_legacy_unknown'\n        CHECK (optimizer_kind IN (\n            'gepa',\n            'offline_tuner_open_world',\n            'offline_tuner_legacy',\n            'optimizer_legacy_unknown'\n        )),\n    target_kind TEXT NOT NULL,\n    target_id INTEGER NOT NULL,\n    status TEXT NOT NULL DEFAULT 'pending',\n    best_candidate_id INTEGER,\n    successor_target_id INTEGER,\n    decision_reason TEXT NOT NULL DEFAULT '',\n    metadata_json TEXT NOT NULL DEFAULT '{}',\n    discovery_key TEXT,\n    attempt_key TEXT,\n    lease_owner TEXT,\n    lease_fence INTEGER NOT NULL DEFAULT 0 CHECK (lease_fence >= 0),\n    lease_expires_at INTEGER,\n    stage TEXT CHECK (stage IS NULL OR stage IN (\n        'evidence_frozen',\n        'discovery_analyzed',\n        'candidate_generated',\n        'held_out_analyzed',\n        'publishing',\n        'applied',\n        'abstained',\n        'failed'\n    )),\n    terminal_outcome TEXT CHECK (terminal_outcome IS NULL OR terminal_outcome IN ('applied', 'insufficient_negative_evidence', 'insufficient_positive_evidence', 'insufficient_coverage', 'deployment_unsupported', 'candidate_regressed', 'candidate_did_not_improve', 'incumbent_changed', 'generation_failed', 'publication_failed', 'governance_erased', 'no_grounded_hypothesis', 'analyst_unqualified', 'heldout_evidence_failed', 'stale_incumbent', 'governance_invalidated', 'infrastructure_failure', 'regeneration_fenced', 'invocation_slot_pinned', 'evidence_view_incomplete', 'bundle_schema_unsupported', 'abandoned', 'evidence_manifest_conflict')),\n    expected_population_manifest_digest TEXT,\n    generation_selection_manifest_digest TEXT,\n    replay_manifest_digest TEXT,\n    candidate_content_digest TEXT,\n    search_projection_digest TEXT,\n    publication_scope_digest TEXT,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "profile_access_epochs",
+      "table": "profile_access_epochs",
+      "sql": "CREATE TABLE profile_access_epochs (\n    org_id TEXT NOT NULL,\n    user_id TEXT NOT NULL,\n    profile_id TEXT NOT NULL,\n    last_served_at INTEGER NOT NULL CHECK(last_served_at >= 0),\n    PRIMARY KEY (org_id, user_id, profile_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "profiles",
+      "table": "profiles",
+      "sql": "CREATE TABLE profiles (\n    profile_id TEXT PRIMARY KEY,\n    user_id TEXT NOT NULL,\n    content TEXT NOT NULL DEFAULT '',\n    last_modified_timestamp INTEGER NOT NULL,\n    generated_from_request_id TEXT NOT NULL DEFAULT '',\n    profile_time_to_live TEXT NOT NULL DEFAULT 'infinity',\n    expiration_timestamp INTEGER NOT NULL DEFAULT 4102444800,\n    custom_features TEXT,\n    embedding TEXT,\n    source TEXT DEFAULT '',\n    status TEXT,\n    extractor_names TEXT,\n    expanded_terms TEXT,\n    tags TEXT,\n    source_interaction_ids TEXT,\n    source_span TEXT,\n    notes TEXT,\n    reader_angle TEXT,\n    merged_into TEXT,\n    superseded_by TEXT,\n    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n    retired_at INTEGER,\n    governance_subject_ref TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_fts",
+      "table": "profiles_fts",
+      "sql": "CREATE VIRTUAL TABLE profiles_fts USING fts5(\n    profile_id, content,\n    tokenize=\"porter unicode61\"\n)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_fts_config",
+      "table": "profiles_fts_config",
+      "sql": "CREATE TABLE 'profiles_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "profiles_fts_content",
+      "table": "profiles_fts_content",
+      "sql": "CREATE TABLE 'profiles_fts_content'(id INTEGER PRIMARY KEY, c0, c1)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_fts_data",
+      "table": "profiles_fts_data",
+      "sql": "CREATE TABLE 'profiles_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_fts_docsize",
+      "table": "profiles_fts_docsize",
+      "sql": "CREATE TABLE 'profiles_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_fts_idx",
+      "table": "profiles_fts_idx",
+      "sql": "CREATE TABLE 'profiles_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "profiles_unicode_fts",
+      "table": "profiles_unicode_fts",
+      "sql": "CREATE VIRTUAL TABLE profiles_unicode_fts USING fts5(\n    search_ngrams,\n    tokenize=\"unicode61 remove_diacritics 0\"\n)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_unicode_fts_config",
+      "table": "profiles_unicode_fts_config",
+      "sql": "CREATE TABLE 'profiles_unicode_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "profiles_unicode_fts_content",
+      "table": "profiles_unicode_fts_content",
+      "sql": "CREATE TABLE 'profiles_unicode_fts_content'(id INTEGER PRIMARY KEY, c0)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_unicode_fts_data",
+      "table": "profiles_unicode_fts_data",
+      "sql": "CREATE TABLE 'profiles_unicode_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_unicode_fts_docsize",
+      "table": "profiles_unicode_fts_docsize",
+      "sql": "CREATE TABLE 'profiles_unicode_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_unicode_fts_idx",
+      "table": "profiles_unicode_fts_idx",
+      "sql": "CREATE TABLE 'profiles_unicode_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "profiles_vec",
+      "table": "profiles_vec",
+      "sql": "CREATE VIRTUAL TABLE profiles_vec USING vec0(\n                embedding float[512]\n            )"
+    },
+    {
+      "type": "table",
+      "name": "profiles_vec_chunks",
+      "table": "profiles_vec_chunks",
+      "sql": "CREATE TABLE \"profiles_vec_chunks\"(chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,size INTEGER NOT NULL,validity BLOB NOT NULL,rowids BLOB NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_vec_info",
+      "table": "profiles_vec_info",
+      "sql": "CREATE TABLE \"profiles_vec_info\" (key text primary key, value any)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_vec_rowids",
+      "table": "profiles_vec_rowids",
+      "sql": "CREATE TABLE \"profiles_vec_rowids\"(rowid INTEGER PRIMARY KEY AUTOINCREMENT,id,chunk_id INTEGER,chunk_offset INTEGER)"
+    },
+    {
+      "type": "table",
+      "name": "profiles_vec_vector_chunks00",
+      "table": "profiles_vec_vector_chunks00",
+      "sql": "CREATE TABLE \"profiles_vec_vector_chunks00\"(rowid PRIMARY KEY,vectors BLOB NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "requests",
+      "table": "requests",
+      "sql": "CREATE TABLE requests (\n    request_id TEXT PRIMARY KEY,\n    user_id TEXT NOT NULL,\n    created_at TEXT NOT NULL,\n    source TEXT NOT NULL DEFAULT '',\n    agent_version TEXT NOT NULL DEFAULT '',\n    session_id TEXT NOT NULL CHECK (trim(session_id) != ''),\n    evaluation_only INTEGER NOT NULL DEFAULT 0,\n    retrieval_experiment_id TEXT,\n    retrieval_experiment_arm TEXT,\n    governance_subject_ref TEXT,\n    learning_admission TEXT,\n    CHECK (\n        (retrieval_experiment_id IS NULL AND retrieval_experiment_arm IS NULL)\n        OR\n        (retrieval_experiment_id IS NOT NULL AND retrieval_experiment_arm IN ('treatment', 'holdout'))\n    )\n)"
+    },
+    {
+      "type": "table",
+      "name": "retrieved_learning_evaluation",
+      "table": "retrieved_learning_evaluation",
+      "sql": "CREATE TABLE retrieved_learning_evaluation (\n    result_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    user_id TEXT NOT NULL,\n    session_id TEXT NOT NULL,\n    agent_version TEXT NOT NULL DEFAULT '',\n    interaction_id INTEGER,\n    interaction_created_at INTEGER,\n    kind TEXT NOT NULL,\n    learning_id TEXT NOT NULL,\n    is_relevant INTEGER,\n    relevance_reason TEXT NOT NULL DEFAULT '',\n    impact TEXT,\n    impact_reason TEXT NOT NULL DEFAULT '',\n    created_at INTEGER NOT NULL,\n    governance_subject_ref TEXT,\n    diagnosis TEXT,\n    evaluated_playbook_digest TEXT,\n    diagnosis_evidence_complete INTEGER NOT NULL DEFAULT 0,\n    UNIQUE (user_id, session_id, interaction_id, kind, learning_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "session_outcomes",
+      "table": "session_outcomes",
+      "sql": "CREATE TABLE session_outcomes (\n    outcome_id TEXT NOT NULL UNIQUE,\n    outcome_revision INTEGER NOT NULL CHECK (outcome_revision >= 1),\n    user_id TEXT NOT NULL,\n    session_id TEXT NOT NULL,\n    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'unknown')),\n    occurred_at INTEGER NOT NULL,\n    source TEXT NOT NULL,\n    label TEXT,\n    value REAL,\n    metadata TEXT,\n    outcome_contract_digest TEXT NOT NULL,\n    finalized_trajectory_digest TEXT NOT NULL,\n    governance_subject_ref TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    -- Set only by the offline tuner's outcome bridge, never by a request body:\n    -- an inferred outcome is the one kind a customer's own report may displace.\n    is_inferred INTEGER NOT NULL DEFAULT 0 CHECK (is_inferred IN (0, 1)),\n    -- The displaced inferred outcome, kept whole. On the row rather than in a\n    -- sibling table so erasure has no new surface to learn about.\n    superseded_outcome TEXT,\n    -- The cutover request an inferred outcome's digest was scoped to (its\n    -- session's requests at or before it in (created_at, request_id) order).\n    -- NULL = the whole session: a customer report or a legacy inferred row.\n    trajectory_through_request_id TEXT,\n    CHECK (superseded_outcome IS NULL OR is_inferred = 0),\n    PRIMARY KEY (user_id, session_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "shadow_comparison_verdicts",
+      "table": "shadow_comparison_verdicts",
+      "sql": "CREATE TABLE shadow_comparison_verdicts (\n    verdict_id              INTEGER PRIMARY KEY AUTOINCREMENT,\n    interaction_id          TEXT    NOT NULL,\n    session_id              TEXT    NOT NULL,\n    agent_version           TEXT    NOT NULL,\n    reflexio_is_request_1   INTEGER NOT NULL,\n    better_request          TEXT    NOT NULL CHECK (better_request IN ('1','2','tie')),\n    is_significantly_better INTEGER NOT NULL,\n    comparison_reason       TEXT,\n    judge_prompt_version    TEXT    NOT NULL,\n    created_at              TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP\n)"
+    },
+    {
+      "type": "table",
+      "name": "sqlite_sequence",
+      "table": "sqlite_sequence",
+      "sql": "CREATE TABLE sqlite_sequence(name,seq)"
+    },
+    {
+      "type": "table",
+      "name": "stall_state",
+      "table": "stall_state",
+      "sql": "CREATE TABLE stall_state (\n    id              INTEGER PRIMARY KEY CHECK (id = 1),\n    stalled         BOOLEAN NOT NULL DEFAULT 0,\n    reason          TEXT,\n    stalled_at      TIMESTAMP,\n    reset_estimate  TIMESTAMP,\n    notified_in_cc  BOOLEAN NOT NULL DEFAULT 0,\n    last_attempt_at TIMESTAMP,\n    error_message   TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "subject_write_barriers",
+      "table": "subject_write_barriers",
+      "sql": "CREATE TABLE subject_write_barriers (\n    org_id TEXT NOT NULL,\n    subject_ref TEXT NOT NULL,\n    purge_id TEXT NOT NULL,\n    status TEXT NOT NULL,\n    error_code TEXT,\n    error_detail TEXT,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (org_id, subject_ref),\n    CHECK (status IN ('erasing', 'erased', 'failed'))\n)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbook_deployment_lifecycles",
+      "table": "user_playbook_deployment_lifecycles",
+      "sql": "CREATE TABLE user_playbook_deployment_lifecycles (\n    deployment_lifecycle_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    job_id INTEGER NOT NULL UNIQUE\n        REFERENCES playbook_optimization_jobs(job_id) ON DELETE CASCADE,\n    state TEXT NOT NULL DEFAULT 'confirmed'\n        CHECK (state IN ('confirmed', 'displaced', 'erased', 'provisional', 'restored')\n               AND state != 'provisional'),\n    predecessor_id INTEGER NOT NULL CHECK (predecessor_id > 0),\n    successor_id INTEGER NOT NULL CHECK (successor_id > 0),\n    predecessor_full_fingerprint TEXT NOT NULL\n        CHECK (length(predecessor_full_fingerprint) = 64 AND predecessor_full_fingerprint NOT GLOB '*[^0-9a-f]*'),\n    successor_full_fingerprint TEXT NOT NULL\n        CHECK (length(successor_full_fingerprint) = 64 AND successor_full_fingerprint NOT GLOB '*[^0-9a-f]*'),\n    predecessor_projection_digest TEXT CHECK (\n        predecessor_projection_digest IS NULL\n        OR (length(predecessor_projection_digest) = 64 AND predecessor_projection_digest NOT GLOB '*[^0-9a-f]*')\n    ),\n    successor_projection_digest TEXT NOT NULL\n        CHECK (length(successor_projection_digest) = 64 AND successor_projection_digest NOT GLOB '*[^0-9a-f]*'),\n    evidence_digest TEXT NOT NULL CHECK (length(evidence_digest) = 64 AND evidence_digest NOT GLOB '*[^0-9a-f]*'),\n    candidate_digest TEXT NOT NULL CHECK (length(candidate_digest) = 64 AND candidate_digest NOT GLOB '*[^0-9a-f]*'),\n    proof_digest TEXT NOT NULL CHECK (length(proof_digest) = 64 AND proof_digest NOT GLOB '*[^0-9a-f]*'),\n    qualification_authority_epoch INTEGER NOT NULL\n        CHECK (qualification_authority_epoch > 0),\n    qualification_authority_digest TEXT NOT NULL\n        CHECK (length(qualification_authority_digest) = 64 AND qualification_authority_digest NOT GLOB '*[^0-9a-f]*'),\n    governance_epochs_json TEXT NOT NULL CHECK (trim(governance_epochs_json) != ''),\n    published_at INTEGER NOT NULL CHECK (published_at >= 0),\n    observation_deadline INTEGER NOT NULL,\n    terminal_reason TEXT CHECK (\n        terminal_reason IS NULL OR terminal_reason IN (\n            'analyst_unqualified', 'confirmation_capability_invalidated', 'confirmed_online_support', 'governance_invalidated', 'governed_erasure', 'insufficient_online_support', 'observed_regression', 'published_unconditional', 'stale_incumbent', 'tuner_disabled'\n        )\n    ),\n    terminal_at INTEGER,\n    aggregation_obligation TEXT NOT NULL DEFAULT 'pending_confirmation'\n        CHECK (aggregation_obligation IN\n               ('pending_confirmation', 'enqueued', 'not_required')),\n    CHECK (predecessor_id != successor_id),\n    CHECK (observation_deadline = published_at + 1209600),\n    CHECK (\n        (state = 'provisional' AND terminal_reason IS NULL AND terminal_at IS NULL)\n        OR (state != 'provisional' AND trim(terminal_reason) != ''\n            AND terminal_at >= published_at)\n    )\n)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbook_exposure_events",
+      "table": "user_playbook_exposure_events",
+      "sql": "CREATE TABLE user_playbook_exposure_events (\n    exposure_event_id TEXT PRIMARY KEY CHECK (trim(exposure_event_id, ' ') != ''),\n    request_id TEXT,\n    session_id TEXT,\n    user_id TEXT,\n    playbook_owner_user_id TEXT,\n    user_playbook_id INTEGER,\n    served_semantic_digest TEXT,\n    served_full_version_fingerprint TEXT,\n    exposed_at INTEGER,\n    ingested_at INTEGER NOT NULL CHECK (ingested_at >= 0),\n    governance_subject_ref TEXT,\n    playbook_owner_governance_subject_ref TEXT,\n    integrity_state TEXT NOT NULL,\n    integrity_reasons TEXT NOT NULL,\n    CHECK (\n        (integrity_state = 'complete' AND integrity_reasons = '[]')\n        OR (integrity_state = 'incomplete' AND integrity_reasons != '[]')\n    )\n)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbook_publication_claims",
+      "table": "user_playbook_publication_claims",
+      "sql": "CREATE TABLE user_playbook_publication_claims (\n    optimizer_kind TEXT NOT NULL,\n    job_id INTEGER NOT NULL,\n    owner TEXT NOT NULL,\n    publication_fence INTEGER NOT NULL CHECK (publication_fence >= 1),\n    worker_fence INTEGER NOT NULL CHECK (worker_fence >= 1),\n    consumed INTEGER NOT NULL DEFAULT 0 CHECK (consumed IN (0, 1)),\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (optimizer_kind, job_id),\n    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)\n        ON DELETE CASCADE\n)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbook_publication_results",
+      "table": "user_playbook_publication_results",
+      "sql": "CREATE TABLE user_playbook_publication_results (\n    optimizer_kind TEXT NOT NULL,\n    job_id INTEGER NOT NULL,\n    outcome TEXT NOT NULL\n        CHECK (outcome IN ('applied', 'incumbent_changed', 'provisional')),\n    successor_user_playbook_id INTEGER,\n    staging_digest TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    deployment_lifecycle_id INTEGER,\n    observation_deadline INTEGER,\n    retry_attempt_key TEXT,\n    retry_claim_owner TEXT,\n    retry_worker_fence INTEGER,\n    retry_qualification_authority_epoch INTEGER,\n    retry_qualification_authority_digest TEXT,\n    retry_attempt_context_digest TEXT,\n    CHECK (\n        (optimizer_kind = 'offline_tuner_open_world' AND outcome = 'provisional'\n         AND successor_user_playbook_id IS NOT NULL\n         AND deployment_lifecycle_id IS NOT NULL\n         AND observation_deadline > 0\n         AND trim(retry_attempt_key) != '' AND trim(retry_claim_owner) != ''\n         AND retry_worker_fence > 0\n         AND retry_qualification_authority_epoch > 0\n         AND length(retry_qualification_authority_digest) = 64\n         AND length(retry_attempt_context_digest) = 64)\n        OR (outcome != 'provisional'\n         AND deployment_lifecycle_id IS NULL AND observation_deadline IS NULL\n         AND retry_attempt_key IS NULL AND retry_claim_owner IS NULL\n         AND retry_worker_fence IS NULL\n         AND retry_qualification_authority_epoch IS NULL\n         AND retry_qualification_authority_digest IS NULL\n         AND retry_attempt_context_digest IS NULL)\n    ),\n    PRIMARY KEY (optimizer_kind, job_id),\n    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)\n        ON DELETE CASCADE\n)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbook_publication_staging",
+      "table": "user_playbook_publication_staging",
+      "sql": "CREATE TABLE user_playbook_publication_staging (\n    optimizer_kind TEXT NOT NULL,\n    job_id INTEGER NOT NULL,\n    attempt_key TEXT NOT NULL,\n    claim_owner TEXT NOT NULL,\n    publication_fence INTEGER NOT NULL,\n    worker_fence INTEGER NOT NULL,\n    incumbent_user_playbook_id INTEGER NOT NULL,\n    incumbent_content_digest TEXT NOT NULL,\n    incumbent_trigger TEXT,\n    incumbent_semantic_digest TEXT NOT NULL,\n    revised_content TEXT NOT NULL,\n    content_digest TEXT NOT NULL,\n    projection_json TEXT NOT NULL,\n    projection_digest TEXT NOT NULL,\n    proof_json TEXT NOT NULL,\n    proof_digest TEXT NOT NULL,\n    subject_epochs_json TEXT NOT NULL,\n    request_id TEXT NOT NULL,\n    staging_digest TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    incumbent_full_version_fingerprint TEXT,\n    incumbent_snapshot_json TEXT,\n    evidence_bundle_digest TEXT,\n    candidate_digest TEXT,\n    qualification_authority_epoch INTEGER,\n    qualification_authority_digest TEXT,\n    discovery_component_identity_digest TEXT,\n    discovery_qualification_suite_digest TEXT,\n    discovery_qualification_result_digest TEXT,\n    held_out_component_identity_digest TEXT,\n    held_out_qualification_suite_digest TEXT,\n    held_out_qualification_result_digest TEXT,\n    candidate_generator_identity_digest TEXT,\n    candidate_generator_authorization_digest TEXT,\n    PRIMARY KEY (optimizer_kind, job_id),\n    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)\n        ON DELETE CASCADE\n)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks",
+      "table": "user_playbooks",
+      "sql": "CREATE TABLE user_playbooks (\n    user_playbook_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    user_id TEXT,\n    playbook_name TEXT NOT NULL DEFAULT '',\n    created_at TEXT NOT NULL,\n    request_id TEXT NOT NULL,\n    agent_version TEXT NOT NULL DEFAULT '',\n    content TEXT NOT NULL DEFAULT '',\n    trigger TEXT,\n    rationale TEXT,\n    blocking_issue TEXT,\n    source_interaction_ids TEXT,\n    status TEXT,\n    source TEXT,\n    embedding TEXT,\n    expanded_terms TEXT,\n    tags TEXT,\n    source_span TEXT,\n    notes TEXT,\n    reader_angle TEXT,\n    merged_into INTEGER,\n    superseded_by INTEGER,\n    retired_at INTEGER,\n    governance_subject_ref TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_fts",
+      "table": "user_playbooks_fts",
+      "sql": "CREATE VIRTUAL TABLE user_playbooks_fts USING fts5(\n    search_text,\n    tokenize=\"porter unicode61\"\n)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_fts_config",
+      "table": "user_playbooks_fts_config",
+      "sql": "CREATE TABLE 'user_playbooks_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_fts_content",
+      "table": "user_playbooks_fts_content",
+      "sql": "CREATE TABLE 'user_playbooks_fts_content'(id INTEGER PRIMARY KEY, c0)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_fts_data",
+      "table": "user_playbooks_fts_data",
+      "sql": "CREATE TABLE 'user_playbooks_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_fts_docsize",
+      "table": "user_playbooks_fts_docsize",
+      "sql": "CREATE TABLE 'user_playbooks_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_fts_idx",
+      "table": "user_playbooks_fts_idx",
+      "sql": "CREATE TABLE 'user_playbooks_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_unicode_fts",
+      "table": "user_playbooks_unicode_fts",
+      "sql": "CREATE VIRTUAL TABLE user_playbooks_unicode_fts USING fts5(\n    search_ngrams,\n    tokenize=\"unicode61 remove_diacritics 0\"\n)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_unicode_fts_config",
+      "table": "user_playbooks_unicode_fts_config",
+      "sql": "CREATE TABLE 'user_playbooks_unicode_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_unicode_fts_content",
+      "table": "user_playbooks_unicode_fts_content",
+      "sql": "CREATE TABLE 'user_playbooks_unicode_fts_content'(id INTEGER PRIMARY KEY, c0)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_unicode_fts_data",
+      "table": "user_playbooks_unicode_fts_data",
+      "sql": "CREATE TABLE 'user_playbooks_unicode_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_unicode_fts_docsize",
+      "table": "user_playbooks_unicode_fts_docsize",
+      "sql": "CREATE TABLE 'user_playbooks_unicode_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_unicode_fts_idx",
+      "table": "user_playbooks_unicode_fts_idx",
+      "sql": "CREATE TABLE 'user_playbooks_unicode_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_vec",
+      "table": "user_playbooks_vec",
+      "sql": "CREATE VIRTUAL TABLE user_playbooks_vec USING vec0(\n                embedding float[512]\n            )"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_vec_chunks",
+      "table": "user_playbooks_vec_chunks",
+      "sql": "CREATE TABLE \"user_playbooks_vec_chunks\"(chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,size INTEGER NOT NULL,validity BLOB NOT NULL,rowids BLOB NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_vec_info",
+      "table": "user_playbooks_vec_info",
+      "sql": "CREATE TABLE \"user_playbooks_vec_info\" (key text primary key, value any)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_vec_rowids",
+      "table": "user_playbooks_vec_rowids",
+      "sql": "CREATE TABLE \"user_playbooks_vec_rowids\"(rowid INTEGER PRIMARY KEY AUTOINCREMENT,id,chunk_id INTEGER,chunk_offset INTEGER)"
+    },
+    {
+      "type": "table",
+      "name": "user_playbooks_vec_vector_chunks00",
+      "table": "user_playbooks_vec_vector_chunks00",
+      "sql": "CREATE TABLE \"user_playbooks_vec_vector_chunks00\"(rowid PRIMARY KEY,vectors BLOB NOT NULL)"
+    },
+    {
+      "type": "trigger",
+      "name": "agent_output_receipt_progress",
+      "table": "_agent_output_receipts",
+      "sql": "CREATE TRIGGER agent_output_receipt_progress\n          AFTER INSERT ON _agent_output_receipts BEGIN\n          UPDATE _agent_runs SET progress_stage='results_committed',\n            last_progress_at=strftime('%Y-%m-%dT%H:%M:%f+00:00','now')\n          WHERE id=NEW.run_id; END"
+    },
+    {
+      "type": "trigger",
+      "name": "agent_playbooks_unicode_fts_ad",
+      "table": "agent_playbooks",
+      "sql": "CREATE TRIGGER agent_playbooks_unicode_fts_ad\nAFTER DELETE ON agent_playbooks BEGIN\n    DELETE FROM agent_playbooks_unicode_fts WHERE rowid = old.rowid;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "agent_playbooks_unicode_fts_ai",
+      "table": "agent_playbooks",
+      "sql": "CREATE TRIGGER agent_playbooks_unicode_fts_ai\nAFTER INSERT ON agent_playbooks BEGIN\n    INSERT INTO agent_playbooks_unicode_fts(rowid, search_ngrams)\n    VALUES (\n        new.rowid,\n        reflexio_unicode_lexical_index(\n            COALESCE(new.trigger, '') || ' ' ||\n            COALESCE(new.content, '') || ' ' ||\n            COALESCE(new.rationale, '')\n        )\n    );\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "agent_playbooks_unicode_fts_au",
+      "table": "agent_playbooks",
+      "sql": "CREATE TRIGGER agent_playbooks_unicode_fts_au\nAFTER UPDATE OF trigger, content, rationale ON agent_playbooks BEGIN\n    DELETE FROM agent_playbooks_unicode_fts WHERE rowid = old.rowid;\n    INSERT INTO agent_playbooks_unicode_fts(rowid, search_ngrams)\n    VALUES (\n        new.rowid,\n        reflexio_unicode_lexical_index(\n            COALESCE(new.trigger, '') || ' ' ||\n            COALESCE(new.content, '') || ' ' ||\n            COALESCE(new.rationale, '')\n        )\n    );\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "agent_run_progress_insert",
+      "table": "_agent_runs",
+      "sql": "CREATE TRIGGER agent_run_progress_insert\n              AFTER INSERT ON _agent_runs WHEN 1\n              BEGIN UPDATE _agent_runs SET progress_stage=CASE NEW.status WHEN 'running' THEN 'generation_started'\n          WHEN 'agent_completed' THEN 'output_saved' WHEN 'finalizing' THEN 'finalization_started'\n          WHEN 'finalized' THEN 'completed' WHEN 'finalized_pending_tool' THEN 'completed'\n          ELSE NEW.status END,\n                last_progress_at=strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),\n                recovery_history=CASE WHEN NEW.recovery_operation_id IS NULL THEN recovery_history\n                  ELSE json_insert(recovery_history, '$[#]', json_object(\n                    'operation_id', NEW.recovery_operation_id, 'event', NEW.status,\n                    'at', strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))) END\n                WHERE id=NEW.id; END"
+    },
+    {
+      "type": "trigger",
+      "name": "agent_run_progress_update",
+      "table": "_agent_runs",
+      "sql": "CREATE TRIGGER agent_run_progress_update\n              AFTER UPDATE OF status, recovery_operation_id ON _agent_runs WHEN NEW.status IS NOT OLD.status OR NEW.recovery_operation_id IS NOT OLD.recovery_operation_id\n              BEGIN UPDATE _agent_runs SET progress_stage=CASE NEW.status WHEN 'running' THEN 'generation_started'\n          WHEN 'agent_completed' THEN 'output_saved' WHEN 'finalizing' THEN 'finalization_started'\n          WHEN 'finalized' THEN 'completed' WHEN 'finalized_pending_tool' THEN 'completed'\n          ELSE NEW.status END,\n                last_progress_at=strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),\n                recovery_history=CASE WHEN NEW.recovery_operation_id IS NULL THEN recovery_history\n                  ELSE json_insert(recovery_history, '$[#]', json_object(\n                    'operation_id', NEW.recovery_operation_id, 'event', NEW.status,\n                    'at', strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))) END\n                WHERE id=NEW.id; END"
+    },
+    {
+      "type": "trigger",
+      "name": "agent_run_receipt_progress",
+      "table": "_agent_run_finalization_receipts",
+      "sql": "CREATE TRIGGER agent_run_receipt_progress\n          AFTER INSERT ON _agent_run_finalization_receipts BEGIN\n          UPDATE _agent_runs SET progress_stage='results_committed',\n            last_progress_at=strftime('%Y-%m-%dT%H:%M:%f+00:00','now')\n          WHERE id=NEW.run_id; END"
+    },
+    {
+      "type": "trigger",
+      "name": "cancel_erased_aggregation_operations",
+      "table": "user_playbooks",
+      "sql": "CREATE TRIGGER cancel_erased_aggregation_operations BEFORE DELETE ON user_playbooks\nWHEN OLD.status IS NULL AND trim(OLD.content)<>''\nBEGIN\n UPDATE playbook_aggregation_state SET state_version=state_version+1,pending=1\n WHERE agent_version=OLD.agent_version AND EXISTS (\n  SELECT 1 FROM playbook_aggregation_operations\n  WHERE agent_version=OLD.agent_version AND status IN ('queued','running','retrying')\n );\n UPDATE playbook_aggregation_operations SET status='failed',error='input_erased',\n completed_at=unixepoch(),updated_at=unixepoch(),next_attempt_at=NULL\n WHERE agent_version=OLD.agent_version AND status IN ('queued','running','retrying');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "cancel_purged_aggregation_operations",
+      "table": "user_playbooks",
+      "sql": "CREATE TRIGGER cancel_purged_aggregation_operations\nBEFORE UPDATE OF content,user_id,request_id,source,trigger,rationale,blocking_issue,\nsource_interaction_ids,embedding,expanded_terms,tags,source_span,notes,reader_angle,\ngovernance_subject_ref ON user_playbooks\nWHEN OLD.status IS NULL AND NEW.content='' AND NEW.user_id IS NULL\nAND (OLD.content IS NOT NEW.content OR OLD.user_id IS NOT NEW.user_id\n OR OLD.request_id IS NOT NEW.request_id OR OLD.source IS NOT NEW.source\n OR OLD.trigger IS NOT NEW.trigger OR OLD.rationale IS NOT NEW.rationale\n OR OLD.blocking_issue IS NOT NEW.blocking_issue\n OR OLD.source_interaction_ids IS NOT NEW.source_interaction_ids\n OR OLD.embedding IS NOT NEW.embedding OR OLD.expanded_terms IS NOT NEW.expanded_terms\n OR OLD.tags IS NOT NEW.tags OR OLD.source_span IS NOT NEW.source_span\n OR OLD.notes IS NOT NEW.notes OR OLD.reader_angle IS NOT NEW.reader_angle\n OR OLD.governance_subject_ref IS NOT NEW.governance_subject_ref)\nBEGIN\n UPDATE playbook_aggregation_state SET state_version=state_version+1,pending=1\n WHERE agent_version=OLD.agent_version AND EXISTS (\n  SELECT 1 FROM playbook_aggregation_operations\n  WHERE agent_version=OLD.agent_version AND status IN ('queued','running','retrying')\n );\n UPDATE playbook_aggregation_operations SET status='failed',error='input_erased',\n completed_at=unixepoch(),updated_at=unixepoch(),next_attempt_at=NULL\n WHERE agent_version=OLD.agent_version AND status IN ('queued','running','retrying');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "capture_playbook_aggregation_hard_delete",
+      "table": "user_playbooks",
+      "sql": "CREATE TRIGGER capture_playbook_aggregation_hard_delete\nBEFORE DELETE ON user_playbooks\nWHEN OLD.status IS NULL AND trim(OLD.agent_version) <> ''\nBEGIN\n    INSERT INTO playbook_aggregation_invalidation(\n        agent_version, operation, entity_id, source_ids\n    ) VALUES (OLD.agent_version, 'hard_delete', OLD.user_playbook_id, '[]');\n    INSERT INTO playbook_aggregation_state(\n        agent_version, pending, next_attempt_at\n    ) VALUES (OLD.agent_version, 1, unixepoch())\n    ON CONFLICT(agent_version) DO UPDATE SET pending=1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "fence_retired_aggregation_inputs",
+      "table": "user_playbooks",
+      "sql": "CREATE TRIGGER fence_retired_aggregation_inputs\nBEFORE UPDATE OF status,agent_version ON user_playbooks\nWHEN OLD.status IS NULL AND (NEW.status IS NOT NULL OR NEW.agent_version IS NOT OLD.agent_version)\nBEGIN\n UPDATE playbook_aggregation_state SET state_version=state_version+1,pending=1\n WHERE agent_version=OLD.agent_version AND EXISTS (\n  SELECT 1 FROM playbook_aggregation_operations\n  WHERE agent_version=OLD.agent_version AND status IN ('queued','running','retrying')\n );\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "interactions_unicode_fts_ad",
+      "table": "interactions",
+      "sql": "CREATE TRIGGER interactions_unicode_fts_ad\nAFTER DELETE ON interactions BEGIN\n    DELETE FROM interactions_unicode_fts WHERE rowid = old.rowid;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "interactions_unicode_fts_ai",
+      "table": "interactions",
+      "sql": "CREATE TRIGGER interactions_unicode_fts_ai\nAFTER INSERT ON interactions BEGIN\n    INSERT INTO interactions_unicode_fts(rowid, search_ngrams)\n    VALUES (\n        new.rowid,\n        reflexio_unicode_lexical_index(\n            COALESCE(new.content, '') || ' ' ||\n            COALESCE(new.user_action_description, '')\n        )\n    );\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "interactions_unicode_fts_au",
+      "table": "interactions",
+      "sql": "CREATE TRIGGER interactions_unicode_fts_au\nAFTER UPDATE OF content, user_action_description ON interactions BEGIN\n    DELETE FROM interactions_unicode_fts WHERE rowid = old.rowid;\n    INSERT INTO interactions_unicode_fts(rowid, search_ngrams)\n    VALUES (\n        new.rowid,\n        reflexio_unicode_lexical_index(\n            COALESCE(new.content, '') || ' ' ||\n            COALESCE(new.user_action_description, '')\n        )\n    );\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "invalidate_extraction_input",
+      "table": "interactions",
+      "sql": "CREATE TRIGGER invalidate_extraction_input BEFORE DELETE ON interactions\n    BEGIN\n      UPDATE extraction_windows SET invalidated=1,outcome=NULL,\n        effects=CASE WHEN completed=1 THEN json_object('version',1,'skipped',json('true'),'billing',json_extract(effects,'$.billing'),'request_ids',json_extract(effects,'$.request_ids')) ELSE effects END\n      WHERE (completed=0 OR effects_done=0) AND EXISTS (\n        SELECT 1 FROM json_each(manifest) WHERE json_extract(value,'$.interaction_id')=OLD.interaction_id\n      );\n    END"
+    },
+    {
+      "type": "trigger",
+      "name": "offline_tuner_open_world_qualifications_no_delete",
+      "table": "offline_tuner_open_world_qualifications",
+      "sql": "CREATE TRIGGER offline_tuner_open_world_qualifications_no_delete\nBEFORE DELETE ON offline_tuner_open_world_qualifications\nBEGIN\n    SELECT RAISE(ABORT, 'open-world qualification records are immutable');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "offline_tuner_open_world_qualifications_no_update",
+      "table": "offline_tuner_open_world_qualifications",
+      "sql": "CREATE TRIGGER offline_tuner_open_world_qualifications_no_update\nBEFORE UPDATE ON offline_tuner_open_world_qualifications\nBEGIN\n    SELECT RAISE(ABORT, 'open-world qualification records are immutable');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "profiles_unicode_fts_ad",
+      "table": "profiles",
+      "sql": "CREATE TRIGGER profiles_unicode_fts_ad\nAFTER DELETE ON profiles BEGIN\n    DELETE FROM profiles_unicode_fts WHERE rowid = old.rowid;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "profiles_unicode_fts_ai",
+      "table": "profiles",
+      "sql": "CREATE TRIGGER profiles_unicode_fts_ai\nAFTER INSERT ON profiles BEGIN\n    INSERT INTO profiles_unicode_fts(rowid, search_ngrams)\n    VALUES (\n        new.rowid,\n        reflexio_unicode_lexical_index(\n            COALESCE(new.content, '') || ' ' ||\n            COALESCE(new.expanded_terms, '')\n        )\n    );\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "profiles_unicode_fts_au",
+      "table": "profiles",
+      "sql": "CREATE TRIGGER profiles_unicode_fts_au\nAFTER UPDATE OF content, expanded_terms ON profiles BEGIN\n    DELETE FROM profiles_unicode_fts WHERE rowid = old.rowid;\n    INSERT INTO profiles_unicode_fts(rowid, search_ngrams)\n    VALUES (\n        new.rowid,\n        reflexio_unicode_lexical_index(\n            COALESCE(new.content, '') || ' ' ||\n            COALESCE(new.expanded_terms, '')\n        )\n    );\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "publication_receipt_delete_guard",
+      "table": "_agent_output_receipts",
+      "sql": "CREATE TRIGGER publication_receipt_delete_guard\n BEFORE DELETE ON _agent_output_receipts WHEN OLD.delivery_state='pending'\n BEGIN SELECT RAISE(ABORT,'pending financial publication cannot be deleted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "publication_receipt_insert_guard",
+      "table": "_agent_output_receipts",
+      "sql": "CREATE TRIGGER publication_receipt_insert_guard\n BEFORE INSERT ON _agent_output_receipts BEGIN\n  -- SQLite REPLACE can skip DELETE triggers when recursive_triggers is off.\n  -- Refuse identity conflicts before its implicit deletion instead of relying\n  -- on a connection-wide recursive-trigger mode.\n  SELECT CASE WHEN EXISTS (\n    SELECT 1 FROM _agent_output_receipts q\n    WHERE q.receipt_id=NEW.receipt_id\n      OR (q.row_kind='output' AND NEW.row_kind='output' AND q.org_id=NEW.org_id\n        AND q.run_id=NEW.run_id AND q.output_id=NEW.output_id)\n      OR (q.row_kind='window_handoff' AND NEW.row_kind='window_handoff'\n        AND q.org_id=NEW.org_id AND q.project_id=NEW.project_id AND q.delivery_key=NEW.delivery_key)\n  ) THEN RAISE(ABORT,'publication receipt identity already exists') END;\n  SELECT CASE WHEN NEW.row_kind='legacy' THEN RAISE(ABORT,'historical receipt insertion is retired') END;\n  SELECT CASE WHEN NEW.row_kind='output' AND\n   (NEW.run_id IS NULL OR NEW.output_id IS NULL OR NOT EXISTS (\n     SELECT 1 FROM _agent_runs r WHERE r.id=NEW.run_id AND r.org_id=NEW.org_id\n      AND r.status IN ('agent_completed','finalizing')\n      AND json_extract(r.committed_output,'$.publication.id')=NEW.output_id\n      AND ((r.extractor_kind='profile' AND NEW.entity_type='profile') OR\n           (r.extractor_kind='playbook' AND NEW.entity_type='user_playbook'))))\n   THEN RAISE(ABORT,'publication output binding changed') END;\n  SELECT CASE WHEN NEW.row_kind='output' AND\n    ((json_array_length(NEW.learning_ids)=0 AND NEW.delivery_state<>'accepted') OR\n     (json_array_length(NEW.learning_ids)>0 AND NEW.delivery_state<>'pending'))\n   THEN RAISE(ABORT,'new publication delivery state invalid') END;\n  SELECT CASE WHEN NEW.row_kind='window_handoff' AND NEW.delivery_state<>'pending'\n   THEN RAISE(ABORT,'new window handoff must remain pending') END;\n END"
+    },
+    {
+      "type": "trigger",
+      "name": "publication_receipt_update_guard",
+      "table": "_agent_output_receipts",
+      "sql": "CREATE TRIGGER publication_receipt_update_guard\n BEFORE UPDATE ON _agent_output_receipts WHEN\n NOT (\n   NEW.rowid IS OLD.rowid\n   AND NEW.receipt_id IS OLD.receipt_id AND NEW.org_id IS OLD.org_id\n   AND NEW.project_id IS OLD.project_id AND NEW.row_kind IS OLD.row_kind\n   AND NEW.entity_type IS OLD.entity_type AND NEW.learning_ids IS OLD.learning_ids\n   AND NEW.delivery_owner IS OLD.delivery_owner AND NEW.delivery_key IS OLD.delivery_key\n   AND NEW.created_at IS OLD.created_at\n   AND (\n    (NEW.run_id IS OLD.run_id AND NEW.output_id IS OLD.output_id\n      AND NEW.delivery_state IS OLD.delivery_state AND NEW.delivery_facts IS OLD.delivery_facts)\n    OR (OLD.delivery_state='pending' AND NEW.delivery_state='accepted' AND NEW.delivery_facts IS NULL\n      AND NEW.run_id IS OLD.run_id AND NEW.output_id IS OLD.output_id)\n    OR (OLD.delivery_state='pending' AND OLD.row_kind='output' AND OLD.run_id IS NOT NULL\n      AND NEW.run_id IS NULL AND NEW.output_id IS NULL AND NEW.delivery_state='pending'\n      AND NEW.delivery_facts IS OLD.delivery_facts)\n   )\n ) BEGIN SELECT RAISE(ABORT,'publication receipt is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "publication_window_delete_guard",
+      "table": "extraction_windows",
+      "sql": "CREATE TRIGGER publication_window_delete_guard\n BEFORE DELETE ON extraction_windows\n WHEN OLD.effects_done=0 AND OLD.effects IS NOT NULL\n   AND json_type(OLD.effects,'$.billing') IS NOT NULL\n   AND json_type(OLD.effects,'$.billing')<>'null'\n   AND NOT EXISTS (\n    SELECT 1 FROM _agent_output_receipts q\n    WHERE OLD.org_id=reflexio_publication_org() AND q.org_id=OLD.org_id\n      AND q.project_id=OLD.project_id\n      AND q.row_kind='window_handoff' AND q.delivery_key=OLD.window_id\n      AND q.delivery_state='pending'\n      AND q.entity_type=CASE OLD.kind WHEN 'profile' THEN 'profile'\n                         WHEN 'playbook' THEN 'user_playbook' END\n      AND reflexio_window_handoff_matches(OLD.kind,json_extract(OLD.effects,'$.billing'),\n                                         q.learning_ids,q.delivery_facts)=1)\n BEGIN SELECT RAISE(ABORT,'pending window financial publication cannot be deleted'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "publication_window_replace_guard",
+      "table": "extraction_windows",
+      "sql": "CREATE TRIGGER publication_window_replace_guard\n BEFORE INSERT ON extraction_windows WHEN EXISTS (\n   SELECT 1 FROM extraction_windows w WHERE\n    (w.window_id=NEW.window_id OR (w.user_id=NEW.user_id AND w.kind=NEW.kind\n      AND w.predecessor=NEW.predecessor AND w.project_id=NEW.project_id))\n    AND w.effects_done=0 AND w.effects IS NOT NULL\n    AND json_type(w.effects,'$.billing') IS NOT NULL\n    AND json_type(w.effects,'$.billing')<>'null')\n BEGIN SELECT RAISE(ABORT,'pending window financial publication cannot be replaced'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "publication_window_scope_guard",
+      "table": "extraction_windows",
+      "sql": "CREATE TRIGGER publication_window_scope_guard\n BEFORE UPDATE OF org_id ON extraction_windows WHEN NEW.org_id IS NOT OLD.org_id\n BEGIN SELECT RAISE(ABORT,'window publication scope is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "retire_playbook_aggregation_cluster_on_agent_delete",
+      "table": "agent_playbooks",
+      "sql": "CREATE TRIGGER retire_playbook_aggregation_cluster_on_agent_delete\nBEFORE DELETE ON agent_playbooks\nBEGIN\n    UPDATE playbook_aggregation_item\n    SET disposition = 'residual', cluster_id = NULL,\n        reason = 'agent_playbook_deleted', attempt_count = 0,\n        last_attempt_at = NULL, updated_at = unixepoch()\n    WHERE cluster_id IN (\n        SELECT cluster_id FROM playbook_aggregation_cluster\n        WHERE agent_playbook_id = OLD.agent_playbook_id\n    );\n    INSERT OR IGNORE INTO playbook_aggregation_state(\n        agent_version, pending, next_attempt_at\n    )\n    SELECT DISTINCT agent_version, 1, unixepoch()\n    FROM playbook_aggregation_cluster\n    WHERE agent_playbook_id = OLD.agent_playbook_id;\n    UPDATE playbook_aggregation_state\n    SET pending = 1\n    WHERE agent_version IN (\n        SELECT agent_version FROM playbook_aggregation_cluster\n        WHERE agent_playbook_id = OLD.agent_playbook_id\n    );\n    DELETE FROM playbook_aggregation_cluster\n    WHERE agent_playbook_id = OLD.agent_playbook_id;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "retire_playbook_aggregation_cluster_on_agent_update",
+      "table": "agent_playbooks",
+      "sql": "CREATE TRIGGER retire_playbook_aggregation_cluster_on_agent_update\nAFTER UPDATE OF status, playbook_status, content, trigger, rationale, embedding\nON agent_playbooks\nWHEN (\n    (NEW.status IS NOT OLD.status AND NEW.status IS NOT NULL)\n    OR (\n        NEW.playbook_status IS NOT OLD.playbook_status\n        AND NEW.playbook_status = 'rejected'\n    )\n    OR NEW.content IS NOT OLD.content\n    OR NEW.trigger IS NOT OLD.trigger\n    OR NEW.rationale IS NOT OLD.rationale\n    OR NEW.embedding IS NOT OLD.embedding\n)\nBEGIN\n    UPDATE playbook_aggregation_item\n    SET disposition = 'residual', cluster_id = NULL,\n        reason = 'agent_playbook_changed', attempt_count = 0,\n        last_attempt_at = NULL, updated_at = unixepoch()\n    WHERE cluster_id IN (\n        SELECT cluster_id FROM playbook_aggregation_cluster\n        WHERE agent_playbook_id = OLD.agent_playbook_id\n    );\n    INSERT OR IGNORE INTO playbook_aggregation_state(\n        agent_version, pending, next_attempt_at\n    )\n    SELECT DISTINCT agent_version, 1, unixepoch()\n    FROM playbook_aggregation_cluster\n    WHERE agent_playbook_id = OLD.agent_playbook_id;\n    UPDATE playbook_aggregation_state\n    SET pending = 1\n    WHERE agent_version IN (\n        SELECT agent_version FROM playbook_aggregation_cluster\n        WHERE agent_playbook_id = OLD.agent_playbook_id\n    );\n    DELETE FROM playbook_aggregation_cluster\n    WHERE agent_playbook_id = OLD.agent_playbook_id;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "user_playbooks_unicode_fts_ad",
+      "table": "user_playbooks",
+      "sql": "CREATE TRIGGER user_playbooks_unicode_fts_ad\nAFTER DELETE ON user_playbooks BEGIN\n    DELETE FROM user_playbooks_unicode_fts WHERE rowid = old.rowid;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "user_playbooks_unicode_fts_ai",
+      "table": "user_playbooks",
+      "sql": "CREATE TRIGGER user_playbooks_unicode_fts_ai\nAFTER INSERT ON user_playbooks BEGIN\n    INSERT INTO user_playbooks_unicode_fts(rowid, search_ngrams)\n    VALUES (\n        new.rowid,\n        reflexio_unicode_lexical_index(\n            COALESCE(new.trigger, '') || ' ' ||\n            COALESCE(new.content, '') || ' ' ||\n            COALESCE(new.rationale, '') || ' ' ||\n            COALESCE(new.source, '')\n        )\n    );\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "user_playbooks_unicode_fts_au",
+      "table": "user_playbooks",
+      "sql": "CREATE TRIGGER user_playbooks_unicode_fts_au\nAFTER UPDATE OF trigger, content, rationale, source ON user_playbooks BEGIN\n    DELETE FROM user_playbooks_unicode_fts WHERE rowid = old.rowid;\n    INSERT INTO user_playbooks_unicode_fts(rowid, search_ngrams)\n    VALUES (\n        new.rowid,\n        reflexio_unicode_lexical_index(\n            COALESCE(new.trigger, '') || ' ' ||\n            COALESCE(new.content, '') || ' ' ||\n            COALESCE(new.rationale, '') || ' ' ||\n            COALESCE(new.source, '')\n        )\n    );\nEND"
+    }
+  ],
+  "tables": {
+    "_agent_output_preparations": {
+      "columns": [
+        "run_id",
+        "org_id",
+        "project_id",
+        "preparation",
+        "active_attempt"
+      ]
+    },
+    "_agent_output_receipts": {
+      "columns": [
+        "receipt_id",
+        "org_id",
+        "project_id",
+        "run_id",
+        "output_id",
+        "row_kind",
+        "entity_type",
+        "learning_ids",
+        "delivery_owner",
+        "delivery_state",
+        "delivery_key",
+        "delivery_facts",
+        "created_at"
+      ]
+    },
+    "_agent_run_finalization_receipts": {
+      "columns": [
+        "run_id",
+        "entity_type",
+        "learning_ids",
+        "created_at"
+      ]
+    },
+    "_agent_runs": {
+      "columns": [
+        "id",
+        "org_id",
+        "extractor_kind",
+        "user_id",
+        "request_id",
+        "agent_version",
+        "source",
+        "source_interaction_ids",
+        "window_start_interaction_id",
+        "window_end_interaction_id",
+        "extractor_config_hash",
+        "status",
+        "generation_request_snapshot",
+        "service_config_snapshot",
+        "agent_context_snapshot",
+        "committed_output",
+        "pending_tool_call_ids",
+        "max_steps_remaining",
+        "resume_attempts",
+        "finalization_attempts",
+        "next_resume_at",
+        "claimed_by",
+        "claimed_at",
+        "agent_completed_at",
+        "finalized_at",
+        "created_at",
+        "updated_at",
+        "expires_at",
+        "last_error",
+        "progress_stage",
+        "last_progress_at",
+        "recovery_operation_id",
+        "recovery_history",
+        "user_work_token"
+      ]
+    },
+    "_dataset_identity": {
+      "columns": [
+        "k",
+        "org_id",
+        "claimed_at"
+      ]
+    },
+    "_operation_state": {
+      "columns": [
+        "service_name",
+        "operation_state",
+        "updated_at"
+      ]
+    },
+    "_pending_tool_calls": {
+      "columns": [
+        "id",
+        "org_id",
+        "user_id",
+        "scope",
+        "scope_hash",
+        "tool_name",
+        "dedup_key",
+        "status",
+        "question_text",
+        "answer_format",
+        "args",
+        "tags",
+        "result",
+        "embedding",
+        "superseded_by",
+        "created_at",
+        "resolved_at",
+        "expires_at",
+        "cache_until",
+        "valid_until"
+      ]
+    },
+    "_run_tool_dependencies": {
+      "columns": [
+        "run_id",
+        "pending_tool_call_id",
+        "dependency_kind",
+        "resolved_at",
+        "consumed_at",
+        "created_at"
+      ]
+    },
+    "agent_playbook_source_user_playbooks": {
+      "columns": [
+        "agent_playbook_id",
+        "user_playbook_id",
+        "source_interaction_ids",
+        "created_at"
+      ]
+    },
+    "agent_playbooks": {
+      "columns": [
+        "agent_playbook_id",
+        "playbook_name",
+        "created_at",
+        "agent_version",
+        "content",
+        "trigger",
+        "rationale",
+        "blocking_issue",
+        "playbook_status",
+        "playbook_metadata",
+        "embedding",
+        "expanded_terms",
+        "tags",
+        "status",
+        "merged_into",
+        "superseded_by",
+        "retired_at"
+      ]
+    },
+    "agent_playbooks_fts": {
+      "virtual": true
+    },
+    "agent_playbooks_fts_config": {
+      "columns": [
+        "k",
+        "v"
+      ]
+    },
+    "agent_playbooks_fts_content": {
+      "columns": [
+        "id",
+        "c0"
+      ]
+    },
+    "agent_playbooks_fts_data": {
+      "columns": [
+        "id",
+        "block"
+      ]
+    },
+    "agent_playbooks_fts_docsize": {
+      "columns": [
+        "id",
+        "sz"
+      ]
+    },
+    "agent_playbooks_fts_idx": {
+      "columns": [
+        "segid",
+        "term",
+        "pgno"
+      ]
+    },
+    "agent_playbooks_unicode_fts": {
+      "virtual": true
+    },
+    "agent_playbooks_unicode_fts_config": {
+      "columns": [
+        "k",
+        "v"
+      ]
+    },
+    "agent_playbooks_unicode_fts_content": {
+      "columns": [
+        "id",
+        "c0"
+      ]
+    },
+    "agent_playbooks_unicode_fts_data": {
+      "columns": [
+        "id",
+        "block"
+      ]
+    },
+    "agent_playbooks_unicode_fts_docsize": {
+      "columns": [
+        "id",
+        "sz"
+      ]
+    },
+    "agent_playbooks_unicode_fts_idx": {
+      "columns": [
+        "segid",
+        "term",
+        "pgno"
+      ]
+    },
+    "agent_playbooks_vec": {
+      "virtual": true
+    },
+    "agent_playbooks_vec_chunks": {
+      "columns": [
+        "chunk_id",
+        "size",
+        "validity",
+        "rowids"
+      ]
+    },
+    "agent_playbooks_vec_info": {
+      "columns": [
+        "key",
+        "value"
+      ]
+    },
+    "agent_playbooks_vec_rowids": {
+      "columns": [
+        "rowid",
+        "id",
+        "chunk_id",
+        "chunk_offset"
+      ]
+    },
+    "agent_playbooks_vec_vector_chunks00": {
+      "columns": [
+        "rowid",
+        "vectors"
+      ]
+    },
+    "agent_success_evaluation_result": {
+      "columns": [
+        "result_id",
+        "user_id",
+        "session_id",
+        "agent_version",
+        "evaluation_name",
+        "is_success",
+        "failure_type",
+        "failure_reason",
+        "created_at",
+        "regular_vs_shadow",
+        "number_of_correction_per_session",
+        "user_turns_to_resolution",
+        "is_escalated",
+        "tags",
+        "embedding",
+        "trajectory_through_request_id",
+        "trajectory_interaction_count",
+        "governance_subject_ref"
+      ]
+    },
+    "braintrust_connection": {
+      "columns": [
+        "org_id",
+        "api_key_enc",
+        "workspace_id",
+        "workspace_name",
+        "project_ids",
+        "last_sync_ts",
+        "last_error"
+      ]
+    },
+    "case_exposure_uses": {
+      "columns": [
+        "job_id",
+        "equivalence_group_id",
+        "role",
+        "ownership",
+        "content_digest",
+        "created_at"
+      ]
+    },
+    "case_first_exposure": {
+      "columns": [
+        "equivalence_group_id",
+        "first_role",
+        "owner_discovery_key",
+        "content_digest",
+        "created_at"
+      ]
+    },
+    "extraction_cursors": {
+      "columns": [
+        "user_id",
+        "kind",
+        "completed_seq",
+        "started",
+        "project_id",
+        "window_id",
+        "attempts",
+        "retry_at",
+        "last_error",
+        "last_turn"
+      ]
+    },
+    "extraction_windows": {
+      "columns": [
+        "window_id",
+        "user_id",
+        "kind",
+        "org_id",
+        "project_id",
+        "predecessor",
+        "end_seq",
+        "manifest",
+        "policy",
+        "force",
+        "skip_aggregation",
+        "outcome",
+        "invalidated",
+        "completed",
+        "completed_at",
+        "effects",
+        "effects_done",
+        "derived_claimed",
+        "effects_retry_at"
+      ]
+    },
+    "imported_score": {
+      "columns": [
+        "rowid",
+        "org_id",
+        "source",
+        "source_run_id",
+        "session_id",
+        "scorer_name",
+        "value",
+        "ts"
+      ]
+    },
+    "interactions": {
+      "columns": [
+        "interaction_id",
+        "user_id",
+        "content",
+        "request_id",
+        "created_at",
+        "role",
+        "token_count",
+        "user_action",
+        "user_action_description",
+        "interacted_image_url",
+        "image_encoding",
+        "shadow_content",
+        "expert_content",
+        "tools_used",
+        "citations",
+        "retrieved_learnings",
+        "embedding",
+        "governance_subject_ref",
+        "ingestion_seq"
+      ]
+    },
+    "interactions_fts": {
+      "virtual": true
+    },
+    "interactions_fts_config": {
+      "columns": [
+        "k",
+        "v"
+      ]
+    },
+    "interactions_fts_content": {
+      "columns": [
+        "id",
+        "c0",
+        "c1"
+      ]
+    },
+    "interactions_fts_data": {
+      "columns": [
+        "id",
+        "block"
+      ]
+    },
+    "interactions_fts_docsize": {
+      "columns": [
+        "id",
+        "sz"
+      ]
+    },
+    "interactions_fts_idx": {
+      "columns": [
+        "segid",
+        "term",
+        "pgno"
+      ]
+    },
+    "interactions_unicode_fts": {
+      "virtual": true
+    },
+    "interactions_unicode_fts_config": {
+      "columns": [
+        "k",
+        "v"
+      ]
+    },
+    "interactions_unicode_fts_content": {
+      "columns": [
+        "id",
+        "c0"
+      ]
+    },
+    "interactions_unicode_fts_data": {
+      "columns": [
+        "id",
+        "block"
+      ]
+    },
+    "interactions_unicode_fts_docsize": {
+      "columns": [
+        "id",
+        "sz"
+      ]
+    },
+    "interactions_unicode_fts_idx": {
+      "columns": [
+        "segid",
+        "term",
+        "pgno"
+      ]
+    },
+    "interactions_vec": {
+      "virtual": true
+    },
+    "interactions_vec_chunks": {
+      "columns": [
+        "chunk_id",
+        "size",
+        "validity",
+        "rowids"
+      ]
+    },
+    "interactions_vec_info": {
+      "columns": [
+        "key",
+        "value"
+      ]
+    },
+    "interactions_vec_rowids": {
+      "columns": [
+        "rowid",
+        "id",
+        "chunk_id",
+        "chunk_offset"
+      ]
+    },
+    "interactions_vec_vector_chunks00": {
+      "columns": [
+        "rowid",
+        "vectors"
+      ]
+    },
+    "learning_work": {
+      "columns": [
+        "org_id",
+        "user_id",
+        "highwater",
+        "pending_since",
+        "revision",
+        "last_turn",
+        "due_at",
+        "lease_token",
+        "lease_owner",
+        "lease_until",
+        "position_json"
+      ]
+    },
+    "lineage_event": {
+      "columns": [
+        "event_id",
+        "org_id",
+        "entity_type",
+        "entity_id",
+        "op",
+        "prov_relation",
+        "source_ids",
+        "actor",
+        "request_id",
+        "reason",
+        "created_at",
+        "from_status",
+        "to_status",
+        "status_namespace",
+        "model_name",
+        "provider"
+      ]
+    },
+    "offline_tuner_open_world_attempt_context": {
+      "columns": [
+        "job_id",
+        "bundle_digest",
+        "outcome_contract_digest",
+        "manifest_json",
+        "discovery_component_identity_digest",
+        "discovery_qualification_suite_digest",
+        "discovery_qualification_result_digest",
+        "held_out_component_identity_digest",
+        "held_out_qualification_suite_digest",
+        "held_out_qualification_result_digest",
+        "candidate_generator_identity_digest",
+        "candidate_generator_authorization_digest",
+        "context_json",
+        "context_digest",
+        "created_at",
+        "qualification_authority_epoch",
+        "qualification_authority_digest"
+      ]
+    },
+    "offline_tuner_open_world_invocations": {
+      "columns": [
+        "analyst_input_identity",
+        "job_id",
+        "component_identity_digest",
+        "expected_provider",
+        "expected_model_revision",
+        "input_digest",
+        "component_role",
+        "manifest_role",
+        "user_id",
+        "session_id",
+        "state",
+        "output_json",
+        "output_digest",
+        "observed_provider",
+        "observed_model_revision",
+        "called_at",
+        "latency_ms",
+        "usage_json",
+        "prepared_at",
+        "completed_at",
+        "qualification_result_digest",
+        "trajectory_digest",
+        "candidate_artifact_digest",
+        "candidate_analyst_input_identity"
+      ]
+    },
+    "offline_tuner_open_world_qualification_authority": {
+      "columns": [
+        "singleton",
+        "epoch",
+        "state",
+        "authority_digest",
+        "discovery_component_identity_digest",
+        "discovery_qualification_suite_digest",
+        "discovery_qualification_result_digest",
+        "held_out_component_identity_digest",
+        "held_out_qualification_suite_digest",
+        "held_out_qualification_result_digest",
+        "candidate_generator_identity_digest",
+        "candidate_generator_authorization_digest",
+        "unavailable_reason",
+        "updated_at",
+        "method_authority_json"
+      ]
+    },
+    "offline_tuner_open_world_qualifications": {
+      "columns": [
+        "component_identity_digest",
+        "suite_digest",
+        "schema_version",
+        "result_digest",
+        "passed",
+        "class_counts_json",
+        "observation_digests_json",
+        "created_at"
+      ]
+    },
+    "offline_tuner_session_compactions": {
+      "columns": [
+        "job_id",
+        "compaction_identity",
+        "batches",
+        "complete",
+        "content_json",
+        "content_digest"
+      ]
+    },
+    "open_world_sweep_progress": {
+      "columns": [
+        "user_playbook_id",
+        "progress_day",
+        "outcome",
+        "job_id",
+        "attempted_at",
+        "attempt_count"
+      ]
+    },
+    "playbook_aggregation_cluster": {
+      "columns": [
+        "cluster_id",
+        "index_rowid",
+        "agent_version",
+        "agent_playbook_id",
+        "centroid",
+        "vector_sum",
+        "member_count",
+        "embedding_model",
+        "embedding_dimension",
+        "normalization",
+        "state",
+        "dirty",
+        "rebuild_cursor",
+        "rebuild_attempt_count",
+        "rebuild_next_attempt_at"
+      ]
+    },
+    "playbook_aggregation_clusters_vec": {
+      "virtual": true
+    },
+    "playbook_aggregation_clusters_vec_chunks": {
+      "columns": [
+        "chunk_id",
+        "size",
+        "validity",
+        "rowids"
+      ]
+    },
+    "playbook_aggregation_clusters_vec_info": {
+      "columns": [
+        "key",
+        "value"
+      ]
+    },
+    "playbook_aggregation_clusters_vec_rowids": {
+      "columns": [
+        "rowid",
+        "id",
+        "chunk_id",
+        "chunk_offset"
+      ]
+    },
+    "playbook_aggregation_clusters_vec_vector_chunks00": {
+      "columns": [
+        "rowid",
+        "vectors"
+      ]
+    },
+    "playbook_aggregation_invalidation": {
+      "columns": [
+        "invalidation_id",
+        "agent_version",
+        "operation",
+        "entity_id",
+        "source_ids",
+        "created_at",
+        "processed_at"
+      ]
+    },
+    "playbook_aggregation_item": {
+      "columns": [
+        "agent_version",
+        "user_playbook_id",
+        "disposition",
+        "cluster_id",
+        "reason",
+        "attempt_count",
+        "last_attempt_at",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "playbook_aggregation_lease": {
+      "columns": [
+        "singleton",
+        "claim_owner",
+        "claim_fence",
+        "claim_expires_at",
+        "agent_version"
+      ]
+    },
+    "playbook_aggregation_operations": {
+      "columns": [
+        "operation_id",
+        "request_id",
+        "agent_version",
+        "status",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "completed_at",
+        "attempts",
+        "next_attempt_at",
+        "error",
+        "result",
+        "claim_fence"
+      ]
+    },
+    "playbook_aggregation_state": {
+      "columns": [
+        "agent_version",
+        "last_success_at",
+        "pending",
+        "next_attempt_at",
+        "state_version",
+        "retry_cursor",
+        "bootstrap_status",
+        "intake_floor_user_playbook_id"
+      ]
+    },
+    "playbook_optimization_artifacts": {
+      "columns": [
+        "artifact_id",
+        "job_id",
+        "artifact_kind",
+        "content_json",
+        "content_digest",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "playbook_optimization_candidates": {
+      "columns": [
+        "candidate_id",
+        "job_id",
+        "candidate_index",
+        "content",
+        "parent_candidate_ids",
+        "aggregate_score",
+        "is_winner",
+        "metadata_json",
+        "created_at"
+      ]
+    },
+    "playbook_optimization_evaluations": {
+      "columns": [
+        "evaluation_id",
+        "job_id",
+        "candidate_id",
+        "target_kind",
+        "target_id",
+        "scenario_user_playbook_id",
+        "source_interaction_ids",
+        "score",
+        "verdict",
+        "likert",
+        "rationale",
+        "asi_json",
+        "incumbent_rollout_json",
+        "candidate_rollout_json",
+        "created_at"
+      ]
+    },
+    "playbook_optimization_events": {
+      "columns": [
+        "event_id",
+        "job_id",
+        "event_type",
+        "payload_json",
+        "created_at"
+      ]
+    },
+    "playbook_optimization_jobs": {
+      "columns": [
+        "job_id",
+        "optimizer_kind",
+        "target_kind",
+        "target_id",
+        "status",
+        "best_candidate_id",
+        "successor_target_id",
+        "decision_reason",
+        "metadata_json",
+        "discovery_key",
+        "attempt_key",
+        "lease_owner",
+        "lease_fence",
+        "lease_expires_at",
+        "stage",
+        "terminal_outcome",
+        "expected_population_manifest_digest",
+        "generation_selection_manifest_digest",
+        "replay_manifest_digest",
+        "candidate_content_digest",
+        "search_projection_digest",
+        "publication_scope_digest",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "profile_access_epochs": {
+      "columns": [
+        "org_id",
+        "user_id",
+        "profile_id",
+        "last_served_at"
+      ]
+    },
+    "profiles": {
+      "columns": [
+        "profile_id",
+        "user_id",
+        "content",
+        "last_modified_timestamp",
+        "generated_from_request_id",
+        "profile_time_to_live",
+        "expiration_timestamp",
+        "custom_features",
+        "embedding",
+        "source",
+        "status",
+        "extractor_names",
+        "expanded_terms",
+        "tags",
+        "source_interaction_ids",
+        "source_span",
+        "notes",
+        "reader_angle",
+        "merged_into",
+        "superseded_by",
+        "created_at",
+        "retired_at",
+        "governance_subject_ref"
+      ]
+    },
+    "profiles_fts": {
+      "virtual": true
+    },
+    "profiles_fts_config": {
+      "columns": [
+        "k",
+        "v"
+      ]
+    },
+    "profiles_fts_content": {
+      "columns": [
+        "id",
+        "c0",
+        "c1"
+      ]
+    },
+    "profiles_fts_data": {
+      "columns": [
+        "id",
+        "block"
+      ]
+    },
+    "profiles_fts_docsize": {
+      "columns": [
+        "id",
+        "sz"
+      ]
+    },
+    "profiles_fts_idx": {
+      "columns": [
+        "segid",
+        "term",
+        "pgno"
+      ]
+    },
+    "profiles_unicode_fts": {
+      "virtual": true
+    },
+    "profiles_unicode_fts_config": {
+      "columns": [
+        "k",
+        "v"
+      ]
+    },
+    "profiles_unicode_fts_content": {
+      "columns": [
+        "id",
+        "c0"
+      ]
+    },
+    "profiles_unicode_fts_data": {
+      "columns": [
+        "id",
+        "block"
+      ]
+    },
+    "profiles_unicode_fts_docsize": {
+      "columns": [
+        "id",
+        "sz"
+      ]
+    },
+    "profiles_unicode_fts_idx": {
+      "columns": [
+        "segid",
+        "term",
+        "pgno"
+      ]
+    },
+    "profiles_vec": {
+      "virtual": true
+    },
+    "profiles_vec_chunks": {
+      "columns": [
+        "chunk_id",
+        "size",
+        "validity",
+        "rowids"
+      ]
+    },
+    "profiles_vec_info": {
+      "columns": [
+        "key",
+        "value"
+      ]
+    },
+    "profiles_vec_rowids": {
+      "columns": [
+        "rowid",
+        "id",
+        "chunk_id",
+        "chunk_offset"
+      ]
+    },
+    "profiles_vec_vector_chunks00": {
+      "columns": [
+        "rowid",
+        "vectors"
+      ]
+    },
+    "requests": {
+      "columns": [
+        "request_id",
+        "user_id",
+        "created_at",
+        "source",
+        "agent_version",
+        "session_id",
+        "evaluation_only",
+        "retrieval_experiment_id",
+        "retrieval_experiment_arm",
+        "governance_subject_ref",
+        "learning_admission"
+      ]
+    },
+    "retrieved_learning_evaluation": {
+      "columns": [
+        "result_id",
+        "user_id",
+        "session_id",
+        "agent_version",
+        "interaction_id",
+        "interaction_created_at",
+        "kind",
+        "learning_id",
+        "is_relevant",
+        "relevance_reason",
+        "impact",
+        "impact_reason",
+        "created_at",
+        "governance_subject_ref",
+        "diagnosis",
+        "evaluated_playbook_digest",
+        "diagnosis_evidence_complete"
+      ]
+    },
+    "session_outcomes": {
+      "columns": [
+        "outcome_id",
+        "outcome_revision",
+        "user_id",
+        "session_id",
+        "outcome",
+        "occurred_at",
+        "source",
+        "label",
+        "value",
+        "metadata",
+        "outcome_contract_digest",
+        "finalized_trajectory_digest",
+        "governance_subject_ref",
+        "created_at",
+        "is_inferred",
+        "superseded_outcome",
+        "trajectory_through_request_id"
+      ]
+    },
+    "shadow_comparison_verdicts": {
+      "columns": [
+        "verdict_id",
+        "interaction_id",
+        "session_id",
+        "agent_version",
+        "reflexio_is_request_1",
+        "better_request",
+        "is_significantly_better",
+        "comparison_reason",
+        "judge_prompt_version",
+        "created_at"
+      ]
+    },
+    "sqlite_sequence": {
+      "columns": [
+        "name",
+        "seq"
+      ]
+    },
+    "stall_state": {
+      "columns": [
+        "id",
+        "stalled",
+        "reason",
+        "stalled_at",
+        "reset_estimate",
+        "notified_in_cc",
+        "last_attempt_at",
+        "error_message"
+      ]
+    },
+    "subject_write_barriers": {
+      "columns": [
+        "org_id",
+        "subject_ref",
+        "purge_id",
+        "status",
+        "error_code",
+        "error_detail",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "user_playbook_deployment_lifecycles": {
+      "columns": [
+        "deployment_lifecycle_id",
+        "job_id",
+        "state",
+        "predecessor_id",
+        "successor_id",
+        "predecessor_full_fingerprint",
+        "successor_full_fingerprint",
+        "predecessor_projection_digest",
+        "successor_projection_digest",
+        "evidence_digest",
+        "candidate_digest",
+        "proof_digest",
+        "qualification_authority_epoch",
+        "qualification_authority_digest",
+        "governance_epochs_json",
+        "published_at",
+        "observation_deadline",
+        "terminal_reason",
+        "terminal_at",
+        "aggregation_obligation"
+      ]
+    },
+    "user_playbook_exposure_events": {
+      "columns": [
+        "exposure_event_id",
+        "request_id",
+        "session_id",
+        "user_id",
+        "playbook_owner_user_id",
+        "user_playbook_id",
+        "served_semantic_digest",
+        "served_full_version_fingerprint",
+        "exposed_at",
+        "ingested_at",
+        "governance_subject_ref",
+        "playbook_owner_governance_subject_ref",
+        "integrity_state",
+        "integrity_reasons"
+      ]
+    },
+    "user_playbook_publication_claims": {
+      "columns": [
+        "optimizer_kind",
+        "job_id",
+        "owner",
+        "publication_fence",
+        "worker_fence",
+        "consumed",
+        "updated_at"
+      ]
+    },
+    "user_playbook_publication_results": {
+      "columns": [
+        "optimizer_kind",
+        "job_id",
+        "outcome",
+        "successor_user_playbook_id",
+        "staging_digest",
+        "created_at",
+        "deployment_lifecycle_id",
+        "observation_deadline",
+        "retry_attempt_key",
+        "retry_claim_owner",
+        "retry_worker_fence",
+        "retry_qualification_authority_epoch",
+        "retry_qualification_authority_digest",
+        "retry_attempt_context_digest"
+      ]
+    },
+    "user_playbook_publication_staging": {
+      "columns": [
+        "optimizer_kind",
+        "job_id",
+        "attempt_key",
+        "claim_owner",
+        "publication_fence",
+        "worker_fence",
+        "incumbent_user_playbook_id",
+        "incumbent_content_digest",
+        "incumbent_trigger",
+        "incumbent_semantic_digest",
+        "revised_content",
+        "content_digest",
+        "projection_json",
+        "projection_digest",
+        "proof_json",
+        "proof_digest",
+        "subject_epochs_json",
+        "request_id",
+        "staging_digest",
+        "created_at",
+        "incumbent_full_version_fingerprint",
+        "incumbent_snapshot_json",
+        "evidence_bundle_digest",
+        "candidate_digest",
+        "qualification_authority_epoch",
+        "qualification_authority_digest",
+        "discovery_component_identity_digest",
+        "discovery_qualification_suite_digest",
+        "discovery_qualification_result_digest",
+        "held_out_component_identity_digest",
+        "held_out_qualification_suite_digest",
+        "held_out_qualification_result_digest",
+        "candidate_generator_identity_digest",
+        "candidate_generator_authorization_digest"
+      ]
+    },
+    "user_playbooks": {
+      "columns": [
+        "user_playbook_id",
+        "user_id",
+        "playbook_name",
+        "created_at",
+        "request_id",
+        "agent_version",
+        "content",
+        "trigger",
+        "rationale",
+        "blocking_issue",
+        "source_interaction_ids",
+        "status",
+        "source",
+        "embedding",
+        "expanded_terms",
+        "tags",
+        "source_span",
+        "notes",
+        "reader_angle",
+        "merged_into",
+        "superseded_by",
+        "retired_at",
+        "governance_subject_ref"
+      ]
+    },
+    "user_playbooks_fts": {
+      "virtual": true
+    },
+    "user_playbooks_fts_config": {
+      "columns": [
+        "k",
+        "v"
+      ]
+    },
+    "user_playbooks_fts_content": {
+      "columns": [
+        "id",
+        "c0"
+      ]
+    },
+    "user_playbooks_fts_data": {
+      "columns": [
+        "id",
+        "block"
+      ]
+    },
+    "user_playbooks_fts_docsize": {
+      "columns": [
+        "id",
+        "sz"
+      ]
+    },
+    "user_playbooks_fts_idx": {
+      "columns": [
+        "segid",
+        "term",
+        "pgno"
+      ]
+    },
+    "user_playbooks_unicode_fts": {
+      "virtual": true
+    },
+    "user_playbooks_unicode_fts_config": {
+      "columns": [
+        "k",
+        "v"
+      ]
+    },
+    "user_playbooks_unicode_fts_content": {
+      "columns": [
+        "id",
+        "c0"
+      ]
+    },
+    "user_playbooks_unicode_fts_data": {
+      "columns": [
+        "id",
+        "block"
+      ]
+    },
+    "user_playbooks_unicode_fts_docsize": {
+      "columns": [
+        "id",
+        "sz"
+      ]
+    },
+    "user_playbooks_unicode_fts_idx": {
+      "columns": [
+        "segid",
+        "term",
+        "pgno"
+      ]
+    },
+    "user_playbooks_vec": {
+      "virtual": true
+    },
+    "user_playbooks_vec_chunks": {
+      "columns": [
+        "chunk_id",
+        "size",
+        "validity",
+        "rowids"
+      ]
+    },
+    "user_playbooks_vec_info": {
+      "columns": [
+        "key",
+        "value"
+      ]
+    },
+    "user_playbooks_vec_rowids": {
+      "columns": [
+        "rowid",
+        "id",
+        "chunk_id",
+        "chunk_offset"
+      ]
+    },
+    "user_playbooks_vec_vector_chunks00": {
+      "columns": [
+        "rowid",
+        "vectors"
+      ]
+    }
+  },
+  "ownership": {
+    "direct_scope": [
+      "_agent_output_preparations",
+      "_agent_output_receipts",
+      "_agent_runs",
+      "_pending_tool_calls",
+      "braintrust_connection",
+      "extraction_cursors",
+      "extraction_windows",
+      "imported_score",
+      "learning_work",
+      "lineage_event",
+      "profile_access_epochs",
+      "subject_write_barriers"
+    ],
+    "dataset_local": [
+      "_agent_run_finalization_receipts",
+      "_operation_state",
+      "_run_tool_dependencies",
+      "agent_playbook_source_user_playbooks",
+      "agent_playbooks",
+      "agent_success_evaluation_result",
+      "case_exposure_uses",
+      "case_first_exposure",
+      "interactions",
+      "offline_tuner_open_world_attempt_context",
+      "offline_tuner_open_world_invocations",
+      "offline_tuner_open_world_qualification_authority",
+      "offline_tuner_open_world_qualifications",
+      "offline_tuner_session_compactions",
+      "open_world_sweep_progress",
+      "playbook_aggregation_cluster",
+      "playbook_aggregation_invalidation",
+      "playbook_aggregation_item",
+      "playbook_aggregation_lease",
+      "playbook_aggregation_operations",
+      "playbook_aggregation_state",
+      "playbook_optimization_artifacts",
+      "playbook_optimization_candidates",
+      "playbook_optimization_evaluations",
+      "playbook_optimization_events",
+      "playbook_optimization_jobs",
+      "profiles",
+      "requests",
+      "retrieved_learning_evaluation",
+      "session_outcomes",
+      "shadow_comparison_verdicts",
+      "stall_state",
+      "user_playbook_deployment_lifecycles",
+      "user_playbook_exposure_events",
+      "user_playbook_publication_claims",
+      "user_playbook_publication_results",
+      "user_playbook_publication_staging",
+      "user_playbooks"
+    ],
+    "identity": [
+      "_dataset_identity"
+    ],
+    "verified_search_object": [
+      "agent_playbooks_fts",
+      "agent_playbooks_fts_config",
+      "agent_playbooks_fts_content",
+      "agent_playbooks_fts_data",
+      "agent_playbooks_fts_docsize",
+      "agent_playbooks_fts_idx",
+      "agent_playbooks_unicode_fts",
+      "agent_playbooks_unicode_fts_config",
+      "agent_playbooks_unicode_fts_content",
+      "agent_playbooks_unicode_fts_data",
+      "agent_playbooks_unicode_fts_docsize",
+      "agent_playbooks_unicode_fts_idx",
+      "agent_playbooks_vec",
+      "agent_playbooks_vec_chunks",
+      "agent_playbooks_vec_info",
+      "agent_playbooks_vec_rowids",
+      "agent_playbooks_vec_vector_chunks00",
+      "interactions_fts",
+      "interactions_fts_config",
+      "interactions_fts_content",
+      "interactions_fts_data",
+      "interactions_fts_docsize",
+      "interactions_fts_idx",
+      "interactions_unicode_fts",
+      "interactions_unicode_fts_config",
+      "interactions_unicode_fts_content",
+      "interactions_unicode_fts_data",
+      "interactions_unicode_fts_docsize",
+      "interactions_unicode_fts_idx",
+      "interactions_vec",
+      "interactions_vec_chunks",
+      "interactions_vec_info",
+      "interactions_vec_rowids",
+      "interactions_vec_vector_chunks00",
+      "playbook_aggregation_clusters_vec",
+      "playbook_aggregation_clusters_vec_chunks",
+      "playbook_aggregation_clusters_vec_info",
+      "playbook_aggregation_clusters_vec_rowids",
+      "playbook_aggregation_clusters_vec_vector_chunks00",
+      "profiles_fts",
+      "profiles_fts_config",
+      "profiles_fts_content",
+      "profiles_fts_data",
+      "profiles_fts_docsize",
+      "profiles_fts_idx",
+      "profiles_unicode_fts",
+      "profiles_unicode_fts_config",
+      "profiles_unicode_fts_content",
+      "profiles_unicode_fts_data",
+      "profiles_unicode_fts_docsize",
+      "profiles_unicode_fts_idx",
+      "profiles_vec",
+      "profiles_vec_chunks",
+      "profiles_vec_info",
+      "profiles_vec_rowids",
+      "profiles_vec_vector_chunks00",
+      "user_playbooks_fts",
+      "user_playbooks_fts_config",
+      "user_playbooks_fts_content",
+      "user_playbooks_fts_data",
+      "user_playbooks_fts_docsize",
+      "user_playbooks_fts_idx",
+      "user_playbooks_unicode_fts",
+      "user_playbooks_unicode_fts_config",
+      "user_playbooks_unicode_fts_content",
+      "user_playbooks_unicode_fts_data",
+      "user_playbooks_unicode_fts_docsize",
+      "user_playbooks_unicode_fts_idx",
+      "user_playbooks_vec",
+      "user_playbooks_vec_chunks",
+      "user_playbooks_vec_info",
+      "user_playbooks_vec_rowids",
+      "user_playbooks_vec_vector_chunks00"
+    ],
+    "sqlite_metadata": [
+      "sqlite_sequence"
+    ]
+  },
+  "virtual_owners": {
+    "agent_playbooks_fts": [
+      "agent_playbooks_fts"
+    ],
+    "agent_playbooks_fts_config": [
+      "agent_playbooks_fts"
+    ],
+    "agent_playbooks_fts_content": [
+      "agent_playbooks_fts"
+    ],
+    "agent_playbooks_fts_data": [
+      "agent_playbooks_fts"
+    ],
+    "agent_playbooks_fts_docsize": [
+      "agent_playbooks_fts"
+    ],
+    "agent_playbooks_fts_idx": [
+      "agent_playbooks_fts"
+    ],
+    "agent_playbooks_unicode_fts": [
+      "agent_playbooks_unicode_fts"
+    ],
+    "agent_playbooks_unicode_fts_config": [
+      "agent_playbooks_unicode_fts"
+    ],
+    "agent_playbooks_unicode_fts_content": [
+      "agent_playbooks_unicode_fts"
+    ],
+    "agent_playbooks_unicode_fts_data": [
+      "agent_playbooks_unicode_fts"
+    ],
+    "agent_playbooks_unicode_fts_docsize": [
+      "agent_playbooks_unicode_fts"
+    ],
+    "agent_playbooks_unicode_fts_idx": [
+      "agent_playbooks_unicode_fts"
+    ],
+    "sqlite_autoindex_agent_playbooks_vec_info_1": [
+      "agent_playbooks_vec"
+    ],
+    "sqlite_autoindex_agent_playbooks_vec_vector_chunks00_1": [
+      "agent_playbooks_vec"
+    ],
+    "agent_playbooks_vec": [
+      "agent_playbooks_vec"
+    ],
+    "agent_playbooks_vec_chunks": [
+      "agent_playbooks_vec"
+    ],
+    "agent_playbooks_vec_info": [
+      "agent_playbooks_vec"
+    ],
+    "agent_playbooks_vec_rowids": [
+      "agent_playbooks_vec"
+    ],
+    "agent_playbooks_vec_vector_chunks00": [
+      "agent_playbooks_vec"
+    ],
+    "sqlite_sequence": [
+      "agent_playbooks_vec",
+      "interactions_vec",
+      "playbook_aggregation_clusters_vec",
+      "profiles_vec",
+      "user_playbooks_vec"
+    ],
+    "interactions_fts": [
+      "interactions_fts"
+    ],
+    "interactions_fts_config": [
+      "interactions_fts"
+    ],
+    "interactions_fts_content": [
+      "interactions_fts"
+    ],
+    "interactions_fts_data": [
+      "interactions_fts"
+    ],
+    "interactions_fts_docsize": [
+      "interactions_fts"
+    ],
+    "interactions_fts_idx": [
+      "interactions_fts"
+    ],
+    "interactions_unicode_fts": [
+      "interactions_unicode_fts"
+    ],
+    "interactions_unicode_fts_config": [
+      "interactions_unicode_fts"
+    ],
+    "interactions_unicode_fts_content": [
+      "interactions_unicode_fts"
+    ],
+    "interactions_unicode_fts_data": [
+      "interactions_unicode_fts"
+    ],
+    "interactions_unicode_fts_docsize": [
+      "interactions_unicode_fts"
+    ],
+    "interactions_unicode_fts_idx": [
+      "interactions_unicode_fts"
+    ],
+    "sqlite_autoindex_interactions_vec_info_1": [
+      "interactions_vec"
+    ],
+    "sqlite_autoindex_interactions_vec_vector_chunks00_1": [
+      "interactions_vec"
+    ],
+    "interactions_vec": [
+      "interactions_vec"
+    ],
+    "interactions_vec_chunks": [
+      "interactions_vec"
+    ],
+    "interactions_vec_info": [
+      "interactions_vec"
+    ],
+    "interactions_vec_rowids": [
+      "interactions_vec"
+    ],
+    "interactions_vec_vector_chunks00": [
+      "interactions_vec"
+    ],
+    "sqlite_autoindex_playbook_aggregation_clusters_vec_info_1": [
+      "playbook_aggregation_clusters_vec"
+    ],
+    "sqlite_autoindex_playbook_aggregation_clusters_vec_vector_chunks00_1": [
+      "playbook_aggregation_clusters_vec"
+    ],
+    "playbook_aggregation_clusters_vec": [
+      "playbook_aggregation_clusters_vec"
+    ],
+    "playbook_aggregation_clusters_vec_chunks": [
+      "playbook_aggregation_clusters_vec"
+    ],
+    "playbook_aggregation_clusters_vec_info": [
+      "playbook_aggregation_clusters_vec"
+    ],
+    "playbook_aggregation_clusters_vec_rowids": [
+      "playbook_aggregation_clusters_vec"
+    ],
+    "playbook_aggregation_clusters_vec_vector_chunks00": [
+      "playbook_aggregation_clusters_vec"
+    ],
+    "profiles_fts": [
+      "profiles_fts"
+    ],
+    "profiles_fts_config": [
+      "profiles_fts"
+    ],
+    "profiles_fts_content": [
+      "profiles_fts"
+    ],
+    "profiles_fts_data": [
+      "profiles_fts"
+    ],
+    "profiles_fts_docsize": [
+      "profiles_fts"
+    ],
+    "profiles_fts_idx": [
+      "profiles_fts"
+    ],
+    "profiles_unicode_fts": [
+      "profiles_unicode_fts"
+    ],
+    "profiles_unicode_fts_config": [
+      "profiles_unicode_fts"
+    ],
+    "profiles_unicode_fts_content": [
+      "profiles_unicode_fts"
+    ],
+    "profiles_unicode_fts_data": [
+      "profiles_unicode_fts"
+    ],
+    "profiles_unicode_fts_docsize": [
+      "profiles_unicode_fts"
+    ],
+    "profiles_unicode_fts_idx": [
+      "profiles_unicode_fts"
+    ],
+    "sqlite_autoindex_profiles_vec_info_1": [
+      "profiles_vec"
+    ],
+    "sqlite_autoindex_profiles_vec_vector_chunks00_1": [
+      "profiles_vec"
+    ],
+    "profiles_vec": [
+      "profiles_vec"
+    ],
+    "profiles_vec_chunks": [
+      "profiles_vec"
+    ],
+    "profiles_vec_info": [
+      "profiles_vec"
+    ],
+    "profiles_vec_rowids": [
+      "profiles_vec"
+    ],
+    "profiles_vec_vector_chunks00": [
+      "profiles_vec"
+    ],
+    "user_playbooks_fts": [
+      "user_playbooks_fts"
+    ],
+    "user_playbooks_fts_config": [
+      "user_playbooks_fts"
+    ],
+    "user_playbooks_fts_content": [
+      "user_playbooks_fts"
+    ],
+    "user_playbooks_fts_data": [
+      "user_playbooks_fts"
+    ],
+    "user_playbooks_fts_docsize": [
+      "user_playbooks_fts"
+    ],
+    "user_playbooks_fts_idx": [
+      "user_playbooks_fts"
+    ],
+    "user_playbooks_unicode_fts": [
+      "user_playbooks_unicode_fts"
+    ],
+    "user_playbooks_unicode_fts_config": [
+      "user_playbooks_unicode_fts"
+    ],
+    "user_playbooks_unicode_fts_content": [
+      "user_playbooks_unicode_fts"
+    ],
+    "user_playbooks_unicode_fts_data": [
+      "user_playbooks_unicode_fts"
+    ],
+    "user_playbooks_unicode_fts_docsize": [
+      "user_playbooks_unicode_fts"
+    ],
+    "user_playbooks_unicode_fts_idx": [
+      "user_playbooks_unicode_fts"
+    ],
+    "sqlite_autoindex_user_playbooks_vec_info_1": [
+      "user_playbooks_vec"
+    ],
+    "sqlite_autoindex_user_playbooks_vec_vector_chunks00_1": [
+      "user_playbooks_vec"
+    ],
+    "user_playbooks_vec": [
+      "user_playbooks_vec"
+    ],
+    "user_playbooks_vec_chunks": [
+      "user_playbooks_vec"
+    ],
+    "user_playbooks_vec_info": [
+      "user_playbooks_vec"
+    ],
+    "user_playbooks_vec_rowids": [
+      "user_playbooks_vec"
+    ],
+    "user_playbooks_vec_vector_chunks00": [
+      "user_playbooks_vec"
+    ]
+  },
+  "empty_controls": [
+    "_operation_state",
+    "_pending_tool_calls",
+    "case_exposure_uses",
+    "case_first_exposure",
+    "offline_tuner_open_world_attempt_context",
+    "offline_tuner_open_world_invocations",
+    "offline_tuner_open_world_qualification_authority",
+    "offline_tuner_open_world_qualifications",
+    "offline_tuner_session_compactions",
+    "open_world_sweep_progress",
+    "playbook_aggregation_cluster",
+    "playbook_aggregation_invalidation",
+    "playbook_aggregation_item",
+    "playbook_aggregation_lease",
+    "playbook_aggregation_operations",
+    "playbook_aggregation_state",
+    "playbook_optimization_artifacts",
+    "playbook_optimization_candidates",
+    "playbook_optimization_evaluations",
+    "playbook_optimization_events",
+    "playbook_optimization_jobs",
+    "subject_write_barriers",
+    "user_playbook_deployment_lifecycles",
+    "user_playbook_publication_claims",
+    "user_playbook_publication_results",
+    "user_playbook_publication_staging"
+  ]
+}

@@ -46,10 +46,9 @@ def get_extractor_name(config: object) -> str:
 def filter_extractor_configs[TExtractorConfig](
     extractor_configs: list[TExtractorConfig],
     source: str | None = None,
-    allow_manual_trigger: bool = False,
 ) -> list[TExtractorConfig]:
     """
-    Filter extractor configs based on source and manual_trigger.
+    Filter extractor configs by their configured request sources.
 
     This is a standalone utility function that can be used by both BaseGenerationService
     and GenerationService to filter extractor configurations consistently.
@@ -59,8 +58,6 @@ def filter_extractor_configs[TExtractorConfig](
             PlaybookConfig, AgentSuccessConfig)
         source: Request source for filtering by request_sources_enabled. If None, source
             filtering is skipped.
-        allow_manual_trigger: Whether to allow extractors with manual_trigger=True.
-            If False, extractors with manual_trigger=True will be skipped.
 
     Returns:
         Filtered list of extractor configs that should run for the given parameters
@@ -80,15 +77,6 @@ def filter_extractor_configs[TExtractorConfig](
                     sources_enabled,
                 )
                 continue
-
-        # Check manual_trigger: skip if manual_trigger=True and allow_manual_trigger=False
-        manual_trigger = getattr(config, "manual_trigger", False)
-        if manual_trigger and not allow_manual_trigger:
-            logger.debug(
-                "Skipping extractor '%s' - manual_trigger=True and allow_manual_trigger=False",
-                get_extractor_name(config),
-            )
-            continue
 
         filtered_configs.append(config)
 

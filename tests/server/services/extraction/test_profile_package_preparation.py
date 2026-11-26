@@ -180,7 +180,6 @@ def preparation(monkeypatch, **overrides: Any):
             ),
             "existing_profiles": [],
             "agent_context": "Agent context",
-            "gate_enabled": True,
             "gate_model": model,
             "dedup_model": model,
             **overrides,
@@ -280,10 +279,10 @@ def test_original_lookup_seed_matches_existing_extractor_before_overflow_policy(
 
 
 def test_pending_tools_are_real_and_counted_with_the_actual_schema(monkeypatch):
-    plain, _ = preparation(monkeypatch, gate_enabled=False)
+    plain, _ = preparation(monkeypatch, gate_model=None)
     prepared, client = preparation(
         monkeypatch,
-        gate_enabled=False,
+        gate_model=None,
         pending_tools_active=True,
         pending_tool_config=PendingToolCallConfig(),
         prior_context=empty_prior_capture(monkeypatch),
@@ -461,7 +460,11 @@ def test_actual_native_agent_and_semantic_repair_pass_the_frozen_checker(
         seen.append(copy.deepcopy(params))
         content = (
             json.dumps(
-                {"profiles": [{"content": "x" * 5000, "time_to_live": "infinity"}]}
+                {
+                    "profiles": [
+                        {"content": "x" * 5000, "explicit_storage_deadline": None}
+                    ]
+                }
             )
             if long_echo and len(seen) == 1
             else '{"profiles":[]}'
@@ -702,7 +705,7 @@ def test_fitting_initial_request_refuses_oversized_native_repair_before_reservat
                                 "profiles": [
                                     {
                                         "content": "unsupported preference",
-                                        "time_to_live": "infinity",
+                                        "explicit_storage_deadline": None,
                                         "source_span": "absent quotation",
                                     }
                                 ]

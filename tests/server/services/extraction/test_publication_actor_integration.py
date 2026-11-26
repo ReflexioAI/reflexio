@@ -272,7 +272,7 @@ def test_current_billing_follows_actual_persisted_survivors(
 
 
 @pytest.mark.parametrize("publication", ["playbook"], indirect=True)
-@pytest.mark.parametrize("failed_scheduler", ["optimizer", "aggregation"])
+@pytest.mark.parametrize("failed_scheduler", ["aggregation"])
 def test_current_scheduler_failure_and_replay_preserve_other_obligations(
     shared_worker: DurableLearningWorker, publication, monkeypatch, failed_scheduler
 ):
@@ -289,11 +289,6 @@ def test_current_scheduler_failure_and_replay_preserve_other_obligations(
         if name == failed_scheduler:
             raise RuntimeError("Synthetic scheduler outage")
 
-    monkeypatch.setattr(
-        PlaybookGenerationService,
-        "_enqueue_user_playbook_optimization",
-        lambda _self, _rows: dispatch("optimizer"),
-    )
     monkeypatch.setattr(
         PlaybookGenerationService,
         "_trigger_playbook_aggregation",
@@ -326,7 +321,7 @@ def test_current_scheduler_failure_and_replay_preserve_other_obligations(
             storage, current, prepare=no_replay, on_published=no_replay
         )
     assert second.status == AgentRunStatus.FINALIZED
-    assert resolves == [1] and schedulers == ["optimizer", "aggregation"]
+    assert resolves == [1] and schedulers == ["aggregation"]
     ids = storage.get_agent_run_finalization_receipt(
         run_id=second.id, entity_type="user_playbook"
     )

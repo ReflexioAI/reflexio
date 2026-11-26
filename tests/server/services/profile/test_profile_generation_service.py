@@ -57,6 +57,12 @@ def request_context(temp_storage_dir):
     """Create a RequestContext with mock storage."""
     ctx = RequestContext(org_id="test_org", storage_base_dir=temp_storage_dir)
     ctx.storage = MagicMock()
+    # This unit fake has no persisted deadline rows. A bare MagicMock would be
+    # truthy forever instead of terminating the bounded native census.
+    ctx.storage.profile_lifecycle_rows.return_value = []
+    ctx.storage._stream_sql.return_value.__enter__.return_value.now.side_effect = (
+        lambda: datetime.now(UTC).timestamp()
+    )
     return ctx
 
 
@@ -362,6 +368,7 @@ class TestProcessResults:
         )
 
         class FakeConsolidator:
+            erasure_instructions = []
             model_provenance = provenance
             lineage_sources_by_profile_id = {"merged-profile": ["old-profile"]}
             consolidated_output_indices = {0}
@@ -764,7 +771,7 @@ class TestLoadGenerationServiceConfig:
         assert config.user_id == "user_1"
         assert config.request_id == "req_1"
         assert config.source == "api"
-        assert config.allow_manual_trigger is False
+        assert config.auto_run is True
         assert config.output_pending_status is False
         request_context.storage.get_user_profile.assert_called_once_with("user_1")
 

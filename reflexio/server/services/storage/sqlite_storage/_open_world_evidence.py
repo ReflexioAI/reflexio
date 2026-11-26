@@ -87,10 +87,13 @@ from reflexio.server.services.offline_tuner.open_world_freeze_validation import 
     validate_subject_epoch_shape,
 )
 from reflexio.server.services.offline_tuner.open_world_records import (
+    EVIDENCE_SOURCE_READ_BUDGET_EXCEEDED,
+    EVIDENCE_SOURCE_READ_DEADLINE_EXCEEDED,
     OPEN_WORLD_EVIDENCE_ARTIFACT_KIND,
     OPEN_WORLD_EVIDENCE_OPTIMIZER_KIND,
     OpenWorldEvidenceGovernanceError,
     OpenWorldEvidenceLeaseConflictError,
+    OpenWorldEvidenceSourceReadLimitError,
     OpenWorldEvidenceStorageRecord,
     OpenWorldEvidenceTargetStaleError,
 )
@@ -100,7 +103,6 @@ from reflexio.server.services.search_exposure import (
 from reflexio.server.services.storage.error import (
     OptimizationArtifactIntegrityError,
     OptimizationJobIdentityConflictError,
-    StorageError,
 )
 
 from ._base import (
@@ -130,8 +132,8 @@ _SOURCE_READ_BYTES_LIMIT = 64 * 1024 * 1024
 _SOURCE_READ_DEADLINE_SECONDS = 30.0
 #: Retained canonical trajectory bytes across the whole snapshot.
 _RETAINED_SOURCE_BYTES_LIMIT = 64 * 1024 * 1024
-SOURCE_READ_BUDGET_EXCEEDED = "evidence_source_read_budget_exceeded"
-SOURCE_READ_DEADLINE_EXCEEDED = "evidence_source_read_deadline_exceeded"
+SOURCE_READ_BUDGET_EXCEEDED = EVIDENCE_SOURCE_READ_BUDGET_EXCEEDED
+SOURCE_READ_DEADLINE_EXCEEDED = EVIDENCE_SOURCE_READ_DEADLINE_EXCEEDED
 
 _ABANDONED_TERMINAL_OUTCOME = "abandoned"
 
@@ -487,8 +489,9 @@ class SQLiteOpenWorldEvidenceMixin:
             OpenWorldEvidenceIntegrityError: ``target`` names another tenant.
             OpenWorldEvidenceTargetStaleError: The target is not the current
                 version the target identity names.
-            StorageError: The source read exhausted its byte budget or its
-                deadline. No partial snapshot is returned.
+            OpenWorldEvidenceSourceReadLimitError: The source read exhausted
+                its byte budget or its deadline. No partial snapshot is
+                returned.
             ValueError: ``frozen_at`` disagrees with the target, or the call is
                 inside a ``commit_scope``.
         """
@@ -994,13 +997,17 @@ class SQLiteOpenWorldEvidenceMixin:
             while rows := cursor.fetchmany(_SOURCE_FETCH_SIZE):
                 for raw_row in rows:
                     if monotonic() >= deadline:
-                        raise StorageError(SOURCE_READ_DEADLINE_EXCEEDED)
+                        raise OpenWorldEvidenceSourceReadLimitError(
+                            SOURCE_READ_DEADLINE_EXCEEDED
+                        )
                     row = dict(raw_row)
                     consumed_bytes += len(
                         json.dumps(row, ensure_ascii=False, default=str).encode()
                     )
                     if consumed_bytes > _SOURCE_READ_BYTES_LIMIT:
-                        raise StorageError(SOURCE_READ_BUDGET_EXCEEDED)
+                        raise OpenWorldEvidenceSourceReadLimitError(
+                            SOURCE_READ_BUDGET_EXCEEDED
+                        )
                     yield row
 
         for chunk in _chunks(_ordered_keys(set(cutovers))):
@@ -1019,11 +1026,14 @@ class SQLiteOpenWorldEvidenceMixin:
                     bounded_rows(cursor), max_trajectory_bytes=max_trajectory_bytes
                 ):
                     if monotonic() >= deadline:
-                        raise StorageError(SOURCE_READ_DEADLINE_EXCEEDED)
+                        raise OpenWorldEvidenceSourceReadLimitError(
+                            SOURCE_READ_DEADLINE_EXCEEDED
+                        )
                     loaded[key] = trajectory
                     if _retained_bytes(loaded.values()) > _RETAINED_SOURCE_BYTES_LIMIT:
-                        raise StorageError(
-                            "evidence snapshot exceeds the 64-MiB source read budget"
+                        # The retained half of the same byte budget.
+                        raise OpenWorldEvidenceSourceReadLimitError(
+                            SOURCE_READ_BUDGET_EXCEEDED
                         )
             finally:
                 cursor.close()

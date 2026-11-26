@@ -34,8 +34,8 @@ def _ensure_llm_configured(env_path: Path) -> None:
           inference service, or the colocated inference service when no remote
           URL is configured. No prompt, no blocking.
         - No LLM key, interactive TTY → prompt for a provider + key, then
-          (conditionally) prompt for an embedding key, re-load the .env so
-          the new values land in ``os.environ``, and return.
+          (conditionally) prompt for an embedding key, activate the entered
+          credentials for this launch, and return.
         - Missing only an embedding key (e.g. user set ANTHROPIC_API_KEY
           manually) AND ONNX dependencies are unavailable → prompt only for an
           embedding provider.
@@ -55,7 +55,6 @@ def _ensure_llm_configured(env_path: Path) -> None:
         _prompt_embedding_provider,
         _prompt_llm_provider,
     )
-    from reflexio.cli.env_loader import _load_dotenv_pruned
     from reflexio.server.llm.model_defaults import (
         EMBEDDING_CAPABLE_PROVIDERS,
         GENERATION_CAPABLE_PROVIDERS,
@@ -111,8 +110,8 @@ def _ensure_llm_configured(env_path: Path) -> None:
             "(If you wanted Managed or Self-hosted Reflexio instead, press "
             "Ctrl+C and run `reflexio setup init`.)"
         )
-        _, _, provider_key = _prompt_llm_provider(env_path)
-        _prompt_embedding_provider(env_path, provider_key)
+        _, _, provider_key = _prompt_llm_provider(env_path, activate=True)
+        _prompt_embedding_provider(env_path, provider_key, activate=True)
     else:
         typer.echo(
             "\nYour LLM provider doesn't support text embeddings — Reflexio "
@@ -121,16 +120,8 @@ def _ensure_llm_configured(env_path: Path) -> None:
         non_embedding_provider = next(
             p for p in providers if p not in EMBEDDING_CAPABLE_PROVIDERS
         )
-        _prompt_embedding_provider(env_path, non_embedding_provider)
+        _prompt_embedding_provider(env_path, non_embedding_provider, activate=True)
 
-    # override=True is required here: the wizard wrote the operator's chosen key
-    # to the .env FILE only (via set_env_var), never to os.environ. A fresh
-    # install ships an empty OPENAI_API_KEY placeholder already in os.environ, so
-    # with override=False this reload would skip the (present-but-empty) var and
-    # the key just entered would never reach the process env. For this OSS local
-    # first-run path the file value must win. (The enterprise mode-file path uses
-    # override=False in load_reflexio_env_for_mode and is unaffected.)
-    _load_dotenv_pruned(env_path, override=True)
     typer.echo()
 
 
@@ -226,11 +217,11 @@ def start(
     ] = 30,
 ) -> None:
     """Start Reflexio services (backend, docs)."""
-    from reflexio.cli.env_loader import get_env_path, load_reflexio_env
+    from reflexio.cli.env_loader import load_local_launch_env, local_instance_env_path
 
     # Load .env BEFORE resolve_storage so env vars from ~/.reflexio/.env
     # (e.g. REFLEXIO_STORAGE=supabase) are visible to the resolution chain.
-    load_reflexio_env()
+    load_local_launch_env()
 
     selected_services = run_mod.parse_only_flag(only, {"backend", "docs"})
 
@@ -238,7 +229,7 @@ def start(
     # current env (no LLM key, or no embedding-capable provider), prompt now
     # so users see a friendly wizard instead of a lifespan traceback.
     if "backend" in selected_services:
-        _ensure_llm_configured(get_env_path())
+        _ensure_llm_configured(local_instance_env_path())
 
     args = argparse.Namespace(
         backend_host=backend_host,

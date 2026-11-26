@@ -21,7 +21,6 @@ from reflexio.server.services.storage.storage_base._extraction_stream import (
     OverflowAttemptBudgetExceededError,
     OverflowCheckpointConflictError,
 )
-from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 logger = logging.getLogger(__name__)
 
@@ -205,14 +204,11 @@ class BaseDeduplicator(ABC):  # noqa: B024
         self.client = llm_client
 
         # Resolve the same tenant generation policy used by extraction.
-        model_setting = SiteVarManager().get_site_var("llm_model_setting")
-        site_var = model_setting if isinstance(model_setting, dict) else {}
         config = self.request_context.configurator.get_config()
         api_key_config = config.api_key_config
 
         self.model_name = resolve_model_name(
             ModelRole.GENERATION,
-            site_var_value=site_var.get("default_generation_model_name"),
             api_key_config=api_key_config,
             llm_config=config.llm_config,
         )

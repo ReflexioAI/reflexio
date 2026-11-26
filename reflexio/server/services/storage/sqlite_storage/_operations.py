@@ -10,6 +10,10 @@ from reflexio.models.api_schema.service_schemas import (
     Request,
 )
 from reflexio.server.services.storage.error import require_non_empty_session_id
+from reflexio.server.services.storage.storage_base.learning_transition import (
+    LEARNING_TRANSITION_PREFIX,
+    require_public_operation_key,
+)
 
 from ._base import (
     SQLiteStorageBase,
@@ -39,6 +43,7 @@ class OperationMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def create_operation_state(self, service_name: str, operation_state: dict) -> None:
+        require_public_operation_key(service_name)
         self._execute(
             "INSERT INTO _operation_state (service_name, operation_state, updated_at) VALUES (?,?,?)",
             (service_name, _json_dumps(operation_state), self._current_timestamp()),
@@ -46,6 +51,7 @@ class OperationMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def upsert_operation_state(self, service_name: str, operation_state: dict) -> None:
+        require_public_operation_key(service_name)
         self._execute(
             """INSERT INTO _operation_state (service_name, operation_state, updated_at)
                VALUES (?,?,?)
@@ -247,6 +253,7 @@ class OperationMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def update_operation_state(self, service_name: str, operation_state: dict) -> None:
+        require_public_operation_key(service_name)
         self._execute(
             "UPDATE _operation_state SET operation_state = ?, updated_at = ? WHERE service_name = ?",
             (_json_dumps(operation_state), self._current_timestamp(), service_name),
@@ -266,13 +273,17 @@ class OperationMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_operation_state(self, service_name: str) -> None:
+        require_public_operation_key(service_name)
         self._execute(
             "DELETE FROM _operation_state WHERE service_name = ?", (service_name,)
         )
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_operation_states(self) -> None:
-        self._execute("DELETE FROM _operation_state")
+        self._execute(
+            "DELETE FROM _operation_state WHERE substr(service_name,1,?)<>?",
+            (len(LEARNING_TRANSITION_PREFIX), LEARNING_TRANSITION_PREFIX),
+        )
 
     @SQLiteStorageBase.handle_exceptions
     def try_acquire_in_progress_lock(
@@ -282,6 +293,7 @@ class OperationMixin:
         stale_lock_seconds: int = 300,
         payload: dict | None = None,
     ) -> dict:
+        require_public_operation_key(state_key)
         # BEGIN IMMEDIATE also serializes separate storage instances/processes.
         with self.commit_scope():
             row = self._fetchone(
@@ -397,6 +409,7 @@ class OperationMixin:
         request_id: str,
         cleared_state: dict,
     ) -> bool:
+        require_public_operation_key(state_key)
         cursor = self._execute(
             """
             UPDATE _operation_state

@@ -26,6 +26,7 @@ def create_app(exclude: set[str] | None = None) -> typer.Typer:
     from reflexio.cli.commands.shortcuts import register_shortcuts
     from reflexio.cli.commands.status_cmd import app as status_app
     from reflexio.cli.commands.user_playbooks import app as user_playbooks_app
+    from reflexio.cli.offline import create_data_app
 
     _skip = exclude or set()
 
@@ -37,6 +38,7 @@ def create_app(exclude: set[str] | None = None) -> typer.Typer:
         (agent_playbooks_app, "agent-playbooks"),
         (user_playbooks_app, "user-playbooks"),
         (config_app, "config"),
+        (create_data_app(), "data"),
         (auth_app, "auth"),
         (status_app, "status"),
         (api_app, "api"),

@@ -11,7 +11,7 @@ from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.models.config_schema import PlaybookConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
@@ -71,7 +71,6 @@ from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
     log_llm_messages,
 )
-from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 if TYPE_CHECKING:
     from reflexio.server.services.playbook.service import (
@@ -111,7 +110,7 @@ def _adopted_playbook_schema(
     }
     schema = schemas.get(schema_name) if isinstance(schema_name, str) else None
     if schema is None:
-        raise InputBudgetConfigurationError("Saved playbook schema is incompatible")
+        raise ExtractionInputIntegrityError("Saved playbook schema is incompatible")
     return schema
 
 
@@ -211,7 +210,7 @@ def _carried_playbook_context(
             or origin.interaction_id != span.interaction_id
             or origin.request_id != span.request_id
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Carried playbook source binding changed"
             )
         previous = sources.get(turn)
@@ -272,7 +271,7 @@ def _validate_legacy_evidence(
     output: StructuredPlaybookList, coordinator: OverflowCoordinator | None
 ) -> list[str]:
     if coordinator is None or coordinator.saved_run is None:
-        raise InputBudgetConfigurationError("Saved playbook source is unavailable")
+        raise ExtractionInputIntegrityError("Saved playbook source is unavailable")
     for index, _entry in enumerate(output.playbooks, 1):
         if not _entry.has_content:
             return ["Saved candidate lacks usable content."]
@@ -319,21 +318,10 @@ class PlaybookExtractor:
         # Get LLM config overrides from configuration
         config = self.request_context.configurator.get_config()
         llm_config = config.llm_config if config else None
+        api_key_config = config.api_key_config if config else None
 
-        # Resolve model names: config override -> site var -> auto-detect
-        model_setting = SiteVarManager().get_site_var("llm_model_setting")
-        site_var = model_setting if isinstance(model_setting, dict) else {}
-        api_key_config = self.request_context.configurator.get_config().api_key_config
-
-        self.should_run_model_name = resolve_model_name(
-            ModelRole.SHOULD_RUN,
-            site_var_value=site_var.get("should_run_model_name"),
-            llm_config=llm_config,
-            api_key_config=api_key_config,
-        )
         self.default_generation_model_name = resolve_model_name(
             ModelRole.GENERATION,
-            site_var_value=site_var.get("default_generation_model_name"),
             llm_config=llm_config,
             api_key_config=api_key_config,
         )
@@ -356,7 +344,8 @@ class PlaybookExtractor:
         Get interactions for this extractor based on its config.
 
         Handles:
-        - Getting window parameters (extractor override or global fallback)
+        - Returning supplied frozen window interactions without a new lookup
+        - Reading the explicit playbook window size for direct collection
         - Source filtering based on extractor config
         - Time range filtering for rerun flows
 
@@ -369,17 +358,8 @@ class PlaybookExtractor:
         if self.service_config.window_interactions is not None:
             return self.service_config.window_interactions
 
-        # Get global config values
         config = self.request_context.configurator.get_config()
-        global_window_size = getattr(config, "window_size", None) if config else None
-        global_stride_size = getattr(config, "stride_size", None) if config else None
-
-        # Get effective window_size for this extractor
-        window_size, _ = get_extractor_window_params(
-            self.config,
-            global_window_size,
-            global_stride_size,
-        )
+        window_size, _ = get_extractor_window_params(config, "playbook")
 
         # Get effective source filter (None = get ALL sources)
         should_skip, effective_source = get_effective_source_filter(
@@ -464,7 +444,55 @@ class PlaybookExtractor:
             model_provenance=self._last_model_provenance,
         )
 
+    def _retained_marker_free_schema(self) -> type[BaseModel] | None:
+        """A real older window keeps its admitted producer, never redraws as V8."""
+        window_id = self.service_config.extraction_window_id
+        storage = self.request_context.storage
+        if window_id is None or storage is None:
+            return None
+        run = storage.get_agent_run(f"window:{window_id}")
+        if run is None or "overflow" in run.generation_request_snapshot:
+            return None
+        name = run.generation_request_snapshot.get("output_schema_name")
+        if name == "ProceduralOutput":
+            return None
+        schemas = {
+            model.__name__: model
+            for model in (
+                StructuredPlaybookList,
+                StructuredExtractedPlaybookList,
+                StructuredReferencedExtractedPlaybookList,
+            )
+        }
+        schema = schemas.get(name) if isinstance(name, str) else None
+        if schema is None:
+            raise ExtractionInputIntegrityError("Saved playbook schema is incompatible")
+        return schema
+
     def extract_playbook_entries(
+        self, request_interaction_data_models: list[RequestInteractionDataModel]
+    ) -> list[UserPlaybook]:
+        """Use the selected normal method; preserve distinct retained/special contracts."""
+        from reflexio.server.services.playbook.procedural.input_scope import (
+            is_ordinary_text,
+        )
+
+        if (
+            not env_bool("MOCK_LLM_RESPONSE", default=False)
+            and current_overflow_coordinator.get() is None
+            and is_ordinary_text(request_interaction_data_models)
+            and self._retained_marker_free_schema() is None
+        ):
+            from reflexio.server.services.playbook.procedural.inline import (
+                extract_inline,
+            )
+
+            return extract_inline(self, request_interaction_data_models)
+        return self._extract_retained_or_special_entries(
+            request_interaction_data_models
+        )
+
+    def _extract_retained_or_special_entries(
         self, request_interaction_data_models: list[RequestInteractionDataModel]
     ) -> list[UserPlaybook]:
         """
@@ -525,12 +553,24 @@ class PlaybookExtractor:
             else ""
         )
         coordinator = current_overflow_coordinator.get()
-        stored_schema = _adopted_playbook_schema(coordinator)
+        stored_schema = (
+            _adopted_playbook_schema(coordinator)
+            if coordinator is not None
+            else self._retained_marker_free_schema()
+        )
         contract = build_playbook_extraction_contract(
             prompt_manager,
             expert=expert_mode,
             evidence_sources=prompt_context.evidence_sources,
             evidence_units=prompt_context.evidence_units,
+            strict_override=(stored_schema is not StructuredPlaybookList)
+            if stored_schema is not None
+            else None,
+            evidence_references_override=(
+                stored_schema is StructuredReferencedExtractedPlaybookList
+            )
+            if stored_schema is not None
+            else None,
         )
 
         if expert_mode:
@@ -595,7 +635,7 @@ class PlaybookExtractor:
             if legacy_output and isinstance(output, StructuredPlaybookList):
                 return _validate_legacy_evidence(output, coordinator)
             if coordinator is None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Overflow candidate validation lacks its coordinator"
                 )
             if not isinstance(
@@ -1020,7 +1060,7 @@ class PlaybookExtractor:
         if coordinator is not None:
             saved_run = coordinator.saved_run
             if saved_run is None or saved_run.created_at is None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Overflow candidate lacks its persisted creation time"
                 )
             # Rebuilding a saved candidate must not change proposal prompts on

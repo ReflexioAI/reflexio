@@ -6,13 +6,18 @@ import json
 import pytest
 
 from reflexio.config_env import StoredConfigurationError
-from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
+from reflexio.config_file import (
+    EXTRACTION_WINDOW_POLICY_VERSION,
+    FILE_FORMAT_VERSION,
+    PROFILE_EXECUTION_POLICY_VERSION,
+    LocalConfigFile,
+)
 from reflexio.models.config_schema import validate_stored_config
 
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.parametrize("version", range(14))
+@pytest.mark.parametrize("version", range(EXTRACTION_WINDOW_POLICY_VERSION))
 @pytest.mark.parametrize(
     "operation", ["raw", "storage", "configurator", "bootstrap", "edit"]
 )
@@ -60,16 +65,21 @@ def test_unprepared_history_cannot_be_read_or_stamped_by_unrelated_edit(
         assert path.read_bytes() == original and edits == []
         assert not (tmp_path / "configs/.config-migrations").exists()
     else:
+        with pytest.raises(StoredConfigurationError, match="generation15"):
+            invoke()
+        assert path.read_bytes() == original and edits == []
+        assert owner.prepare()
+        prepared = path.read_bytes()
         invoke()
         assert (
             owner.read_document()["pending_tool_call_config"]["pending_ttl_seconds"]
             == 37
         )
         if operation != "edit":
-            assert path.read_bytes() == original
+            assert path.read_bytes() == prepared
 
 
-@pytest.mark.parametrize("version", range(1, 14))
+@pytest.mark.parametrize("version", range(1, FILE_FORMAT_VERSION + 1))
 def test_full_replacement_cannot_silently_relabel_supplied_historical_envelope(
     tmp_path, version
 ):
@@ -86,6 +96,14 @@ def test_full_replacement_cannot_silently_relabel_supplied_historical_envelope(
     owner = LocalConfigFile(path)
     if version < 13:
         with pytest.raises(StoredConfigurationError, match="pending_tool_call_config"):
+            owner.publish_document(document)
+        assert path.read_bytes() == original
+    elif version < EXTRACTION_WINDOW_POLICY_VERSION:
+        with pytest.raises(StoredConfigurationError, match="generation15"):
+            owner.publish_document(document)
+        assert path.read_bytes() == original
+    elif version < PROFILE_EXECUTION_POLICY_VERSION:
+        with pytest.raises(StoredConfigurationError, match="generation17"):
             owner.publish_document(document)
         assert path.read_bytes() == original
     else:

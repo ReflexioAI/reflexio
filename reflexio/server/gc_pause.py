@@ -7,9 +7,11 @@ indistinguishable from any other stall in per-request timings. This module
 makes those pauses visible:
 
 - A WARNING ``event=gc_pause`` line for any collection at or above
-  :data:`WARN_AFTER_SECONDS`, with the generation, duration and the
-  collected/uncollectable counts CPython reports.
-- A ``gc.pause.max`` gauge (milliseconds): the longest collection in each
+  :data:`WARN_AFTER_SECONDS` (one second), with the generation, duration and
+  the collected/uncollectable counts CPython reports. Shorter pauses are
+  routine on a large heap and are not logged individually.
+- A ``gc.pause.max`` gauge (milliseconds): the longest collection, logged or
+  not, in each
   ``event_loop.lag`` reporting window, emitted beside that gauge so the two
   can be read against each other (see :mod:`reflexio.server.event_loop_lag`).
 
@@ -37,7 +39,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-WARN_AFTER_SECONDS = 0.1
+WARN_AFTER_SECONDS = 1.0
 
 
 class _GcPauseTracker:

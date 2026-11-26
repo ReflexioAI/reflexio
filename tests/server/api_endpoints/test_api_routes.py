@@ -28,6 +28,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import (
     Config,
+    LLMConfig,
     RetrievalExperimentConfig,
     RetrievalExperimentRecord,
     StorageConfigSQLite,
@@ -38,6 +39,7 @@ from reflexio.server.services.configurator.base_configurator import BaseConfigur
 from reflexio.server.services.configurator.config_storage import (
     ConfigWriteConflictError,
 )
+from reflexio.server.services.configurator.configurator import DefaultConfigurator
 
 
 class TestHealthEndpoints:
@@ -695,6 +697,21 @@ class TestUpdateUserProfileRoute:
         assert response.status_code == 422
 
 
+_OMIT = object()
+
+
+def _wire_real_configurator(
+    mock_reflexio: MagicMock, existing: Config, tmp_path: Path
+) -> None:
+    """Route config writes through the shared configurator normalization."""
+    mock_reflexio.request_context.configurator = DefaultConfigurator(
+        "evaluator-org", base_dir=str(tmp_path), config=existing
+    )
+    mock_reflexio.set_config.return_value = SetConfigResponse(
+        success=True, msg="Configuration set successfully"
+    )
+
+
 class TestSetConfigRoute:
     """Tests for POST /api/set_config (full replacement semantics)."""
 
@@ -728,6 +745,28 @@ class TestSetConfigRoute:
         )
         mock_reflexio.set_config.assert_called_once_with(normalized)
         assert mock_reflexio.set_config.call_args.args[0] is normalized
+
+    def test_older_sdk_can_echo_the_retired_optimizer_block(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        current = Config(storage_config=StorageConfigSQLite())
+        configurator = mock_reflexio.request_context.configurator
+        configurator.get_config.return_value = current
+        configurator.normalize_config_payload.side_effect = lambda payload: payload
+        mock_reflexio.set_config.return_value = SetConfigResponse(
+            success=True, msg="Configuration set successfully"
+        )
+        payload = current.model_dump(mode="json")
+        payload["playbook_optimizer_config"] = {
+            "metric_call_budget": 5,
+            "assistant_script_path": "/opt/assistant",
+        }
+
+        response = client.post("/api/set_config", json=payload)
+
+        assert response.status_code == 200, response.text
+        [saved] = mock_reflexio.set_config.call_args.args
+        assert "playbook_optimizer_config" not in saved
 
     def test_unknown_field_returns_422_before_set_config(
         self, client, patched_reflexio, mock_reflexio
@@ -776,7 +815,7 @@ class TestSetConfigRoute:
 
         response = client.post(
             "/api/set_config",
-            json={"storage_config": {}, "window_size": 25},
+            json={"storage_config": {}, "profile_window_size": 25},
         )
 
         assert response.status_code == 200, response.text
@@ -785,6 +824,65 @@ class TestSetConfigRoute:
         assert (
             saved.retrieval_experiment_history == existing.retrieval_experiment_history
         )
+
+    @pytest.mark.parametrize(
+        ("evaluator_write", "expected"),
+        [
+            # An SDK released before the field drops it on the round trip.
+            pytest.param(_OMIT, "anthropic/evaluator", id="older-client-omits"),
+            pytest.param(None, None, id="current-client-clears"),
+            pytest.param("openai/judge", "openai/judge", id="current-client-changes"),
+        ],
+    )
+    def test_full_write_keeps_evaluator_unless_the_client_names_it(
+        self,
+        client,
+        patched_reflexio,
+        mock_reflexio,
+        tmp_path,
+        evaluator_write,
+        expected,
+    ):
+        existing = Config(
+            storage_config=StorageConfigSQLite(),
+            llm_config=LLMConfig(
+                generation_model_name="openai/gpt-4o",
+                evaluation_model_name="anthropic/evaluator",
+            ),
+        )
+        _wire_real_configurator(mock_reflexio, existing, tmp_path)
+        payload = existing.model_dump(mode="json")
+        payload["profile_window_size"] = 25
+        if evaluator_write is _OMIT:
+            del payload["llm_config"]["evaluation_model_name"]
+        else:
+            payload["llm_config"]["evaluation_model_name"] = evaluator_write
+
+        response = client.post("/api/set_config", json=payload)
+
+        assert response.status_code == 200, response.text
+        saved = Config.model_validate(mock_reflexio.set_config.call_args.args[0])
+        assert saved.profile_window_size == 25
+        assert saved.llm_config is not None
+        assert saved.llm_config.generation_model_name == "openai/gpt-4o"
+        assert saved.llm_config.evaluation_model_name == expected
+
+    def test_full_write_without_llm_block_does_not_invent_one(
+        self, client, patched_reflexio, mock_reflexio, tmp_path
+    ):
+        existing = Config(
+            storage_config=StorageConfigSQLite(),
+            llm_config=LLMConfig(evaluation_model_name="anthropic/evaluator"),
+        )
+        _wire_real_configurator(mock_reflexio, existing, tmp_path)
+        payload = existing.model_dump(mode="json")
+        payload["llm_config"] = None
+
+        response = client.post("/api/set_config", json=payload)
+
+        assert response.status_code == 200, response.text
+        saved = Config.model_validate(mock_reflexio.set_config.call_args.args[0])
+        assert saved.llm_config is None
 
 
 class TestUpdateConfigRoute:
@@ -834,7 +932,7 @@ class TestUpdateConfigRoute:
         ) as mock_invalidate:
             response = client.post(
                 "/api/update_config",
-                json={"window_size": 25},
+                json={"profile_window_size": 25},
             )
 
         assert response.status_code == 200, response.text
@@ -846,13 +944,58 @@ class TestUpdateConfigRoute:
         assert mock_reflexio.set_config.call_count == 1
         merged = mock_reflexio.set_config.call_args.args[0]
         assert isinstance(merged, Config)
-        assert merged.window_size == 25
+        assert merged.profile_window_size == 25
         assert merged.storage_config == existing.storage_config
         configurator = mock_reflexio.request_context.configurator
-        configurator.prepare_config_patch.assert_called_once_with({"window_size": 25})
+        configurator.prepare_config_patch.assert_called_once_with(
+            {"profile_window_size": 25}
+        )
 
         # Cache invalidated on success.
         mock_invalidate.assert_called_once_with(org_id="test-org")
+
+    def test_patch_with_the_retired_optimizer_block_ignores_it(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+
+        response = client.post(
+            "/api/update_config",
+            json={
+                "profile_window_size": 27,
+                "playbook_optimizer_config": {"metric_call_budget": 25},
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        [saved] = mock_reflexio.set_config.call_args.args
+        assert saved.profile_window_size == 27
+        assert not hasattr(saved, "playbook_optimizer_config")
+
+    def test_retired_optimizer_defaults_are_discarded_without_changing_other_settings(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        existing.agent_context_prompt = "customer customization"
+        self._wire_mock(mock_reflexio, existing)
+
+        response = client.post(
+            "/api/update_config",
+            json={
+                "profile_window_size": 27,
+                "playbook_optimizer_config": {
+                    "assistant_script_path": None,
+                    "assistant_script_args": [],
+                },
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        [saved] = mock_reflexio.set_config.call_args.args
+        assert saved.profile_window_size == 27
+        assert saved.agent_context_prompt == "customer customization"
+        assert not hasattr(saved, "playbook_optimizer_config")
 
     def test_retired_shadow_patch_is_rejected_without_writing(
         self, client, patched_reflexio, mock_reflexio
@@ -914,12 +1057,12 @@ class TestUpdateConfigRoute:
         existing = self._existing_config()
         self._wire_mock(mock_reflexio, existing)
         configurator = mock_reflexio.request_context.configurator
-        prepared = existing.model_copy(update={"window_size": 31})
+        prepared = existing.model_copy(update={"profile_window_size": 31})
         object.__setattr__(prepared, "_patch_marker", "prepared")
         configurator.prepare_config_patch.return_value = prepared
         configurator.prepare_config_patch.side_effect = None
 
-        response = client.post("/api/update_config", json={"window_size": 31})
+        response = client.post("/api/update_config", json={"profile_window_size": 31})
 
         assert response.status_code == 200, response.text
         assert mock_reflexio.set_config.call_args.args[0] is prepared
@@ -935,7 +1078,7 @@ class TestUpdateConfigRoute:
         ) as mock_invalidate:
             response = client.post(
                 "/api/update_config",
-                json={"window_size": existing.window_size},
+                json={"profile_window_size": existing.profile_window_size},
             )
 
         assert response.status_code == 200, response.text
@@ -960,13 +1103,13 @@ class TestUpdateConfigRoute:
         ) as mock_invalidate:
             response = client.post(
                 "/api/update_config",
-                json={"window_size": existing.window_size},
+                json={"profile_window_size": existing.profile_window_size},
             )
 
         assert response.status_code == 200, response.text
         assert mock_reflexio.set_config.call_count == 1
-        assert mock_reflexio.set_config.call_args.args[0].window_size == (
-            existing.window_size
+        assert mock_reflexio.set_config.call_args.args[0].profile_window_size == (
+            existing.profile_window_size
         )
         mock_invalidate.assert_called_once_with(org_id="test-org")
 
@@ -991,14 +1134,14 @@ class TestUpdateConfigRoute:
         existing = self._existing_config()
         self._wire_mock(mock_reflexio, existing)
         configurator = mock_reflexio.request_context.configurator
-        normalized = existing.model_copy(update={"window_size": 25})
+        normalized = existing.model_copy(update={"profile_window_size": 25})
         object.__setattr__(normalized, "_overlay_marker", "normalized")
         configurator.normalize_config_payload.return_value = normalized
         configurator.normalize_config_payload.side_effect = None
 
         response = client.post(
             "/api/update_config",
-            json={"offline_tuner_config": {"enabled": True}, "window_size": 25},
+            json={"offline_tuner_config": {"enabled": True}, "profile_window_size": 25},
         )
 
         assert response.status_code == 200, response.text
@@ -1035,7 +1178,7 @@ class TestUpdateConfigRoute:
             "Configuration changed while writing"
         )
 
-        response = client.post("/api/update_config", json={"window_size": 25})
+        response = client.post("/api/update_config", json={"profile_window_size": 25})
 
         assert response.status_code == 409, response.text
         assert response.json()["detail"] == {
@@ -1075,7 +1218,7 @@ class TestUpdateConfigRoute:
         ) as mock_invalidate:
             response = client.post(
                 "/api/update_config",
-                json={"window_size": 25},
+                json={"profile_window_size": 25},
             )
 
         assert response.status_code == 200
@@ -1191,16 +1334,48 @@ class TestUpdateConfigRoute:
         with patch("reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"):
             response = client.post(
                 "/api/update_config",
-                json={"window_size": 25},
+                json={"profile_window_size": 25},
             )
 
         assert response.status_code == 200, response.text
         merged = mock_reflexio.set_config.call_args.args[0]
         assert isinstance(merged, Config)
         # The partial-touched field changed
-        assert merged.window_size == 25
+        assert merged.profile_window_size == 25
         assert merged.user_playbook_extractor_config is not None
         agg = merged.user_playbook_extractor_config.aggregation_config
         assert agg is not None
         assert agg.min_cluster_size == 2
         assert agg.clustering_similarity == 0.45
+
+    @pytest.mark.parametrize(
+        ("evaluator_write", "expected"),
+        [
+            pytest.param(_OMIT, "anthropic/evaluator", id="older-client-omits"),
+            pytest.param(None, None, id="current-client-clears"),
+            pytest.param("openai/judge", "openai/judge", id="current-client-changes"),
+        ],
+    )
+    def test_llm_patch_keeps_evaluator_unless_the_client_names_it(
+        self,
+        client,
+        patched_reflexio,
+        mock_reflexio,
+        tmp_path,
+        evaluator_write,
+        expected,
+    ):
+        existing = self._existing_config()
+        existing.llm_config = LLMConfig(evaluation_model_name="anthropic/evaluator")
+        _wire_real_configurator(mock_reflexio, existing, tmp_path)
+        llm: dict[str, object] = {"generation_model_name": "openai/gpt-4o"}
+        if evaluator_write is not _OMIT:
+            llm["evaluation_model_name"] = evaluator_write
+
+        with patch("reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"):
+            response = client.post("/api/update_config", json={"llm_config": llm})
+
+        assert response.status_code == 200, response.text
+        merged = mock_reflexio.set_config.call_args.args[0]
+        assert merged.llm_config.generation_model_name == "openai/gpt-4o"
+        assert merged.llm_config.evaluation_model_name == expected

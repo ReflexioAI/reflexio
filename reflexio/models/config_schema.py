@@ -35,24 +35,7 @@ from .api_schema.validators import (
 from .extraction_window import (
     DEFAULT_STRIDE_SIZE,
     DEFAULT_WINDOW_SIZE,
-    get_extractor_window_params,
 )
-
-DEFAULT_MAX_MERGE_INVOCATIONS = 5
-_SchedulerThreshold = Annotated[int, Field(ge=1)]
-_SchedulerCooldown = Annotated[int, Field(ge=0, le=threading.TIMEOUT_MAX)]
-
-
-class OptimizerSchedulingPolicy(BaseModel):
-    """Validated, immutable admission-time policy for deferred optimizer work."""
-
-    model_config = ConfigDict(frozen=True, hide_input_in_errors=True, extra="forbid")
-    abort_cooldown_threshold: _SchedulerThreshold = 2
-    cooldown_after_aborts_seconds: _SchedulerCooldown = 3600
-
-
-_DEFAULT_OPTIMIZER_SCHEDULING_POLICY = OptimizerSchedulingPolicy()
-
 
 # Embedding vector dimensions. Changing this requires a DB migration and re-embedding,
 # so it is intentionally a constant rather than a configurable setting.
@@ -89,6 +72,8 @@ def reject_obsolete_config_names(data: Any) -> Any:
         (
             "batch_size",
             "batch_interval",
+            "window_size",
+            "stride_size",
             "extraction_window_size",
             "extraction_window_stride",
             "extraction_preset",
@@ -458,9 +443,6 @@ class ProfileExtractorConfig(BaseModel):
     request_sources_enabled: list[str] | None = (
         None  # default enabled for all sources, if set, only extract profiles from the enabled request sources
     )
-    manual_trigger: bool = False  # require manual triggering (rerun) to run extraction and skip auto extraction if set to True
-    window_size_override: int | None = Field(default=None, gt=0)
-    stride_size_override: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -468,9 +450,12 @@ class ProfileExtractorConfig(BaseModel):
         return _reject_obsolete_fields(
             data,
             (
+                "manual_trigger",
                 "profile_content_definition_prompt",
                 "batch_size_override",
                 "batch_interval_override",
+                "window_size_override",
+                "stride_size_override",
                 "extraction_window_size_override",
                 "extraction_window_stride_override",
             ),
@@ -523,8 +508,6 @@ class UserPlaybookExtractorConfig(BaseModel):
     request_sources_enabled: list[str] | None = (
         None  # default enabled for all sources, if set, only extract user playbooks from the enabled request sources
     )
-    window_size_override: int | None = Field(default=None, gt=0)
-    stride_size_override: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -540,6 +523,8 @@ class UserPlaybookExtractorConfig(BaseModel):
                 "feedback_name",
                 "batch_size_override",
                 "batch_interval_override",
+                "window_size_override",
+                "stride_size_override",
                 "extraction_window_size_override",
                 "extraction_window_stride_override",
             ),
@@ -633,104 +618,6 @@ class RetrievalFloorConfig(BaseModel):
     @classmethod
     def reject_obsolete_policy(cls, data: Any) -> Any:
         return _reject_obsolete_fields(data, ("enabled", "pool_size"))
-
-
-class PlaybookOptimizerConfig(BaseModel):
-    """Configuration for GEPA-backed playbook content optimization.
-
-    The optimizer is opt-in (a zero work budget by default) and requires
-    *exactly one* assistant backend to actually do anything. The two
-    backends are mutually exclusive — see ``check_single_assistant_backend``
-    below.
-    """
-
-    model_config = ConfigDict(hide_input_in_errors=True)
-
-    # --- gating ------------------------------------------------------------
-    agent_playbooks_enabled: bool = False
-    user_playbooks_enabled: bool = False
-
-    # --- GEPA budget -------------------------------------------------------
-    # One policy owns admission and evaluation work; zero disables new runs.
-    metric_call_budget: int = Field(default=0, ge=0)
-    max_turns: int = Field(default=4, gt=0)
-    reflection_minibatch_size: int = Field(default=2, gt=0)
-    max_validation_windows: int = Field(default=2, gt=0)
-    min_commit_windows: int = Field(default=2, gt=0)
-    min_commit_score: float = Field(default=0.75, ge=0.0, le=1.0)
-    min_commit_likert: int = Field(default=4, ge=1, le=5)
-    # One budget owns both merge admission and its limit; zero disables merging.
-    max_merge_invocations: int = Field(default=DEFAULT_MAX_MERGE_INVOCATIONS, ge=0)
-    reflection_model: str | None = None
-
-    # --- assistant backend: webhook ---------------------------------------
-    webhook_url: str | None = None
-    webhook_auth_header: str | None = None
-    # Timeout applies to both transports; integrations own safe retry behavior.
-    webhook_timeout_seconds: int = Field(default=60, gt=0)
-
-    # --- assistant backend: local script ----------------------------------
-    # Absolute path to the executable. The optimizer spawns
-    # [assistant_script_path, *assistant_script_args] per turn, hands the
-    # rollout payload over stdin, and reads {"content": "..."} from stdout.
-    # See playbook_optimizer/assistant_webhook.py::LocalScriptAssistant.
-    assistant_script_path: str | None = None
-    assistant_script_args: list[str] = Field(default_factory=list)
-
-    # Scheduling and optimizer search budgets have separate owners.
-    abort_cooldown_threshold: _SchedulerThreshold = (
-        _DEFAULT_OPTIMIZER_SCHEDULING_POLICY.abort_cooldown_threshold
-    )
-    cooldown_after_aborts_seconds: _SchedulerCooldown = (
-        _DEFAULT_OPTIMIZER_SCHEDULING_POLICY.cooldown_after_aborts_seconds
-    )
-
-    @property
-    def scheduling_policy(self) -> OptimizerSchedulingPolicy:
-        return OptimizerSchedulingPolicy(
-            abort_cooldown_threshold=self.abort_cooldown_threshold,
-            cooldown_after_aborts_seconds=self.cooldown_after_aborts_seconds,
-        )
-
-    @model_validator(mode="before")
-    @classmethod
-    def reject_obsolete_policy(cls, data: Any) -> Any:
-        return _reject_obsolete_fields(
-            data,
-            (
-                "optimize_user_playbooks",
-                "auto_update_user_playbooks",
-                "optimize_agent_playbooks",
-                "auto_update_pending_agent_playbooks",
-                "use_merge",
-                "early_stop_score",
-                "enabled",
-                "max_metric_calls",
-                "scheduler_jitter_seconds",
-                "webhook_max_retries",
-                "webhook_backoff_base_seconds",
-            ),
-        )
-
-    def allows_target(self, kind: Literal["agent_playbook", "user_playbook"]) -> bool:
-        """Admit only targets with an enabled optimization and adoption path."""
-        if self.metric_call_budget == 0:
-            return False
-        if kind == "agent_playbook":
-            return self.agent_playbooks_enabled
-        return self.user_playbooks_enabled
-
-    @model_validator(mode="after")
-    def check_single_assistant_backend(self) -> Self:
-        # Two backends configured at once would create ambiguous behavior
-        # (which one wins?), so reject at load time rather than picking one
-        # silently in _create_assistant.
-        if self.webhook_url and self.assistant_script_path:
-            raise ValueError(
-                "Configure only one playbook optimizer assistant backend: "
-                "webhook_url or assistant_script_path"
-            )
-        return self
 
 
 class LineageGCConfig(BaseModel):
@@ -882,15 +769,16 @@ class LLMConfig(BaseModel):
     """
     LLM model configuration overrides.
 
-    These settings override the llm_model_setting.json site-variable defaults.
-    Custom gateways require a generation model; omitted text-role choices
-    inherit it. Other providers use the site-variable default for an unset role.
+    Evaluation inherits an explicit generation model when its own model is
+    unset. Custom gateways require a generation model, which omitted text
+    roles inherit. Otherwise the available provider supplies role defaults.
     Embedding selection is independent of the custom text gateway.
     """
 
     should_run_model_name: str | None = None  # Model for "should run extraction" checks
-    generation_model_name: str | None = (
-        None  # Model for generation and evaluation tasks
+    generation_model_name: str | None = None  # Model for generation tasks
+    evaluation_model_name: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
     embedding_model_name: str | None = None  # Model for embedding generation
     pre_retrieval_model_name: str | None = (
@@ -975,8 +863,14 @@ class Config(BaseModel):
         default_factory=_default_agent_success_config
     )
     # extraction parameters
-    window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
-    stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
+    profile_window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
+    profile_stride_size: int = Field(
+        default=DEFAULT_STRIDE_SIZE,
+        ge=0,
+        description="New conversation turns between automatic profile extractions; zero selects manual-only extraction.",
+    )
+    playbook_window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
+    playbook_stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
     # Captured at admission; 0 disables idle finalization for new publications.
     extraction_idle_timeout_seconds: int = Field(default=21600, ge=0)
     # Prospective maximum batching delay; qualify a positive value before enabling.
@@ -996,10 +890,6 @@ class Config(BaseModel):
     )
     # Read-path relevance floor (per-arm cross-encoder score cutoff)
     retrieval_floor: RetrievalFloorConfig = Field(default_factory=RetrievalFloorConfig)
-    # Optional GEPA-backed playbook content optimizer
-    playbook_optimizer_config: PlaybookOptimizerConfig = Field(
-        default_factory=PlaybookOptimizerConfig
-    )
     # Class A reclamation consent and grace; zero holds (see LineageGCConfig)
     lineage_gc: LineageGCConfig = Field(default_factory=LineageGCConfig)
     # Direct-delete reclamation of expired plain rows (share links, pending tool calls)
@@ -1045,9 +935,10 @@ class Config(BaseModel):
             data = dict(data)
         if isinstance(data, dict):
             for key in (
-                "window_size",
-                "stride_size",
-                "playbook_optimizer_config",
+                "profile_window_size",
+                "profile_stride_size",
+                "playbook_window_size",
+                "playbook_stride_size",
                 "lineage_gc",
                 "expiry_reclamation",
                 "governance_retention",
@@ -1057,14 +948,6 @@ class Config(BaseModel):
                 if key in data and data[key] is None:
                     del data[key]
         return data
-
-    @model_validator(mode="after")
-    def check_stride_size_le_window_size(self) -> Self:
-        """Validate default automatic geometry through the shared owner."""
-        get_extractor_window_params(
-            None, self.window_size, self.stride_size
-        ).require_automatic()
-        return self
 
     @model_validator(mode="after")
     def check_custom_endpoint_model_authority(self) -> Self:

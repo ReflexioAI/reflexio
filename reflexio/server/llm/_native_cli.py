@@ -12,13 +12,15 @@ import logging
 import math
 import os
 import pickle
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -74,6 +76,40 @@ def native_cli_directory() -> str | None:
     return _worker_context.context.directory if _worker_context else None
 
 
+def make_private_cli_directory(prefix: str) -> Path:
+    """Create a fresh, empty working directory for one native CLI call.
+
+    A native CLI loads project configuration from its working directory
+    (Codex: `.codex/config.toml` from cwd up to the nearest `.git`; Claude
+    Code: `.claude/settings*.json`; OpenCode: `.opencode/`), so a call never
+    inherits the daemon's directory. Delegated calls create it inside the
+    parent-owned native scratch directory, which outlives a killed worker;
+    otherwise it lives in the system temporary directory. Neither is a
+    project directory, so no project configuration applies.
+    """
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=native_cli_directory())).resolve()
+
+
+def release_private_cli_directory(directory: Path) -> None:
+    """Remove a call's directory unless its parent owner retires it later.
+
+    Worker death cannot delete a running delegated CLI's cwd, so a delegated
+    directory belongs to the parent until its native retirement receipt.
+    """
+    if native_cli_directory() is None:
+        shutil.rmtree(directory)
+
+
+@contextmanager
+def private_cli_directory(prefix: str) -> Iterator[Path]:
+    """Own one native call's private working directory for its lifetime."""
+    directory = make_private_cli_directory(prefix)
+    try:
+        yield directory
+    finally:
+        release_private_cli_directory(directory)
+
+
 def request_timeout_seconds(value: Any) -> float:
     """Validate a caller-owned allowance without installing a provider default."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -89,7 +125,8 @@ def request_timeout_seconds(value: Any) -> float:
     return timeout
 
 
-def _remaining(deadline: float) -> float:
+def remaining_native_time(deadline: float) -> float:
+    """Validate and spend the original native operation deadline."""
     remaining = deadline - time.monotonic()
     if not math.isfinite(remaining) or remaining <= 0:
         raise LLMHardTimeoutError("Native CLI request deadline expired")
@@ -111,10 +148,10 @@ def run_native_cli(argv: list[str], **kwargs: Any) -> subprocess.CompletedProces
     if not math.isfinite(timeout) or timeout <= 0:
         raise subprocess.TimeoutExpired(argv, timeout)
     deadline = min(worker.deadline, time.monotonic() + timeout)
-    if not worker.lock.acquire(timeout=_remaining(deadline)):
+    if not worker.lock.acquire(timeout=remaining_native_time(deadline)):
         raise LLMHardTimeoutError("Native CLI request expired waiting for its launcher")
     try:
-        _remaining(deadline)
+        remaining_native_time(deadline)
         worker.counter += 1
         counter = worker.counter
         directory = Path(worker.context.directory)
@@ -138,7 +175,9 @@ def run_native_cli(argv: list[str], **kwargs: Any) -> subprocess.CompletedProces
         worker.queue.put((NATIVE_CLI_REQUEST, counter))
         notification = bytearray()
         while len(notification) < 8:
-            worker.context.response_socket.settimeout(_remaining(worker.deadline))
+            worker.context.response_socket.settimeout(
+                remaining_native_time(worker.deadline)
+            )
             try:
                 part = worker.context.response_socket.recv(8 - len(notification))
             except TimeoutError as exc:
@@ -246,7 +285,7 @@ class NativeCLIOwner:
                     _live_owners.discard(self)
 
     def dispatch(self, counter: int) -> None:
-        _remaining(self.deadline)
+        remaining_native_time(self.deadline)
         with self._lock:
             if self._closed:
                 raise LLMHardTimeoutError("Native CLI owner is closed")
@@ -303,7 +342,7 @@ class NativeCLIOwner:
                 _publish(
                     directory / f"response-{counter}.pickle", (counter, status, result)
                 )
-                self._sender.settimeout(_remaining(self.deadline))
+                self._sender.settimeout(remaining_native_time(self.deadline))
                 self._sender.sendall(counter.to_bytes(8, "big"))
         except (OSError, LLMHardTimeoutError):
             # The caller can already have expired or killed its worker. Native

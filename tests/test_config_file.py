@@ -13,21 +13,167 @@ from reflexio.config_file import FILE_FORMAT_VERSION, LocalConfigFile
 from reflexio.models.config_schema import StorageConfigSQLite, validate_stored_config
 
 
+@pytest.mark.parametrize("includes_empty_command", [False, True])
+def test_saved_retired_optimizer_block_loads_and_is_dropped_on_preparation(
+    tmp_path, includes_empty_command
+):
+    """The retired GEPA optimizer block never blocks an image-only upgrade."""
+    path = tmp_path / "config.json"
+    optimizer = {
+        "assistant_script_path": "/path with spaces/executable",
+        "assistant_script_args": ["--flag", "", "literal value"],
+        "metric_call_budget": 5,
+        "webhook_url": "https://assistant.example.test",
+    }
+    if includes_empty_command:
+        optimizer["assistant_command"] = None
+    original = encode_config_document(
+        {
+            "_reflexio_config_file": {"version": 15},
+            "storage_config": None,
+            "playbook_optimizer_config": optimizer,
+        }
+    ).encode()
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+
+    config = validate_stored_config(
+        {"storage_config": None, "playbook_optimizer_config": optimizer}
+    )
+    assert not hasattr(config, "playbook_optimizer_config")
+    assert "playbook_optimizer_config" not in config.model_dump()
+    assert owner.prepare()
+    assert "playbook_optimizer_config" not in owner.read_document()
+    digest = hashlib.sha256(original).hexdigest()
+    assert (
+        tmp_path / ".config-migrations/config.json" / f"{digest}.json"
+    ).read_bytes() == original
+    assert owner.prepare() is False
+
+
+def test_current_generation_file_with_retired_block_keeps_original_backup(tmp_path):
+    path = tmp_path / "config.json"
+    original = encode_config_document(
+        {
+            "_reflexio_config_file": {"version": FILE_FORMAT_VERSION},
+            "storage_config": None,
+            "playbook_optimizer_config": {"metric_call_budget": 5},
+        }
+    ).encode()
+    path.write_bytes(original)
+    owner = LocalConfigFile(path)
+
+    assert owner.prepare() is True
+    assert "playbook_optimizer_config" not in owner.read_document()
+    digest = hashlib.sha256(original).hexdigest()
+    assert (
+        tmp_path / ".config-migrations/config.json" / f"{digest}.json"
+    ).read_bytes() == original
+    assert owner.prepare() is False
+
+
+def test_generation_15_evaluator_requires_explicit_conversion(tmp_path):
+    from reflexio.cli.config_upgrade import convert_config_file
+
+    path = tmp_path / "config.json"
+    output = tmp_path / "converted.json"
+    original = encode_config_document(
+        {
+            "_reflexio_config_file": {"version": 15},
+            "storage_config": None,
+            "llm_config": {
+                "generation_model_name": "openai/generator",
+                "evaluation_model_name": "anthropic/evaluator",
+            },
+        }
+    )
+    path.write_text(original)
+    owner = LocalConfigFile(path)
+    for operation in (
+        owner.read_document,
+        owner.prepare,
+        lambda: owner.edit_document(lambda _data: None),
+        lambda: owner.publish_document(original),
+    ):
+        with pytest.raises(StoredConfigurationError, match="evaluation_model_name"):
+            operation()
+        assert path.read_text() == original
+    assert not (tmp_path / ".config-migrations").exists()
+
+    convert_config_file(path, output)
+    converted = LocalConfigFile(output).read_document()
+    assert converted["llm_config"]["evaluation_model_name"] == "anthropic/evaluator"
+    assert path.read_text() == original
+
+
+@pytest.mark.parametrize("evaluator", [None, ""])
+def test_generation_15_without_an_evaluator_prepares_normally(tmp_path, evaluator):
+    from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+
+    path = tmp_path / "config.json"
+    path.write_text(
+        encode_config_document(
+            {
+                "_reflexio_config_file": {"version": 15},
+                "storage_config": None,
+                "llm_config": {
+                    "generation_model_name": "openai/generator",
+                    "evaluation_model_name": evaluator,
+                },
+            }
+        )
+    )
+    owner = LocalConfigFile(path)
+    assert owner.prepare()
+    config = validate_stored_config(owner.read_document())
+    assert (
+        resolve_model_name(ModelRole.EVALUATION, llm_config=config.llm_config)
+        == "openai/generator"
+    )
+    assert not owner.prepare()
+
+
+def test_explicit_legacy_evaluator_replacement_preserves_storage_admission(tmp_path):
+    path = tmp_path / "config.json"
+    source = {"type": "sqlite", "db_path": str(tmp_path / "old.db")}
+    target = {"type": "sqlite", "db_path": str(tmp_path / "new.db")}
+    path.write_text(
+        encode_config_document(
+            {
+                "_reflexio_config_file": {"version": 15},
+                "storage_config": source,
+                "llm_config": {"evaluation_model_name": "anthropic/legacy"},
+            }
+        )
+    )
+    owner = LocalConfigFile(path)
+    admitted = []
+    assert owner.publish_document(
+        encode_config_document(
+            {
+                "storage_config": target,
+                "llm_config": {"generation_model_name": "openai/generator"},
+            }
+        ),
+        admit=admitted.append,
+    )
+    assert [document["storage_config"] for document in admitted] == [source, target]
+    assert "evaluation_model_name" not in admitted[0]["llm_config"]
+    assert owner.read_document()["llm_config"] == {
+        "generation_model_name": "openai/generator"
+    }
+
+
 def test_preparation_preserves_original_policy_and_precision(tmp_path):
     path = tmp_path / "config.json"
     original = b'{"storage_config":{"type":"sqlite","db_path":"owned.db"},"playbook_optimizer_config":{"enabled":false,"optimize_agent_playbooks":true,"auto_update_pending_agent_playbooks":false},"opaque":{"number":1.00000000000000000000001}}'
     path.write_bytes(original)
     owner = LocalConfigFile(path)
-    with pytest.raises(StoredConfigurationError):
-        validate_stored_config(owner.read_document())
     assert path.read_bytes() == original
     assert owner.prepare() is True
     logical = owner.read_document()
     assert logical["storage_config"] == {"type": "sqlite", "db_path": "owned.db"}
-    assert logical["playbook_optimizer_config"] == {
-        "metric_call_budget": 0,
-        "agent_playbooks_enabled": False,
-    }
+    assert "playbook_optimizer_config" not in logical
     assert str(logical["opaque"]["number"]) == "1.00000000000000000000001"
     validate_stored_config(logical)
     digest = hashlib.sha256(original).hexdigest()
@@ -56,12 +202,13 @@ def test_fresh_publication_is_current_and_create_only_never_clobbers(tmp_path):
     owner = LocalConfigFile(path)
     assert owner.prepare() is False
     assert not path.exists()
-    document = '{"storage_config":{"type":"sqlite"},"window_size":7,"stride_size":1}'
+    document = '{"storage_config":{"type":"sqlite"},"profile_window_size":7,"profile_stride_size":1,"playbook_window_size":7,"playbook_stride_size":1}'
     assert owner.publish_document(document, create_only=True) is True
     original = path.read_bytes()
     assert owner.publish_document(document.replace("7", "8"), create_only=True) is False
     assert path.read_bytes() == original
-    assert owner.read_document()["window_size"] == 7
+    assert owner.read_document()["profile_window_size"] == 7
+    assert owner.read_document()["playbook_window_size"] == 7
     assert owner.prepare() is False
 
 
@@ -210,7 +357,8 @@ def test_concurrent_startup_has_one_conversion_and_one_original(tmp_path):
     ) as pool:
         changed = list(pool.map(_prepare_file_in_process, [path, path]))
     assert sorted(changed) == [False, True]
-    assert LocalConfigFile(path).read_document()["window_size"] == 31
+    assert LocalConfigFile(path).read_document()["profile_window_size"] == 31
+    assert LocalConfigFile(path).read_document()["playbook_window_size"] == 31
     backups = list((tmp_path / ".config-migrations/config.json").glob("*.json"))
     assert len(backups) == 1 and backups[0].read_bytes() == original
 
@@ -226,11 +374,9 @@ def test_frozen_generation_one_file_has_an_ordinary_upgrade_path(tmp_path):
     config = validate_stored_config(logical)
     assert isinstance(config.storage_config, StorageConfigSQLite)
     assert config.storage_config.db_path == "generation1-owned.sqlite"
-    assert (config.window_size, config.stride_size) == (11, 3)
-    assert config.playbook_optimizer_config.metric_call_budget == 7
-    assert config.playbook_optimizer_config.min_commit_windows == 4
-    assert config.playbook_optimizer_config.allows_target("agent_playbook") is False
-    assert config.playbook_optimizer_config.allows_target("user_playbook") is True
+    assert (config.profile_window_size, config.profile_stride_size) == (11, 3)
+    assert (config.playbook_window_size, config.playbook_stride_size) == (11, 3)
+    assert "playbook_optimizer_config" not in logical
     assert logical["opaque_extension"] == {"preserve": ["generation1", False]}
     assert "_reflexio_config_file" not in config.model_dump()
 
@@ -240,7 +386,6 @@ def test_frozen_generation_one_file_has_an_ordinary_upgrade_path(tmp_path):
     [
         {"storage_config": {"storage_type": "sqlite"}},
         {"batch_size": 10},
-        {"playbook_optimizer_config": {"optimize_user_playbooks": True}},
     ],
 )
 def test_unmarked_file_does_not_gain_unsupported_historical_aliases(tmp_path, payload):
@@ -253,27 +398,16 @@ def test_unmarked_file_does_not_gain_unsupported_historical_aliases(tmp_path, pa
     assert not (tmp_path / ".config-migrations").exists()
 
 
-def test_bad_agent_migration_never_echoes_values_or_publishes(tmp_path):
-    path = tmp_path / "config.json"
-    original = b'{"playbook_optimizer_config":{"optimize_agent_playbooks":"private-invalid-marker"}}'
-    path.write_bytes(original)
-    with pytest.raises(StoredConfigurationError) as error:
-        LocalConfigFile(path).prepare()
-    assert "private-invalid-marker" not in str(error.value)
-    assert path.read_bytes() == original
-    assert not (tmp_path / ".config-migrations").exists()
-
-
-def test_frozen_unmarked_generation_zero_retains_effective_agent_veto(tmp_path):
+def test_frozen_unmarked_generation_zero_file_prepares_without_the_optimizer_block(
+    tmp_path,
+):
     fixture = Path(__file__).parent / "fixtures/local_config_generation0.json"
     path = tmp_path / "config.json"
     path.write_bytes(fixture.read_bytes())
     owner = LocalConfigFile(path)
     assert owner.prepare() is True
     config = validate_stored_config(owner.read_document())
-    assert config.playbook_optimizer_config.allows_target("agent_playbook") is False
-    assert config.playbook_optimizer_config.allows_target("user_playbook") is True
-    assert config.playbook_optimizer_config.metric_call_budget == 7
+    assert "playbook_optimizer_config" not in owner.read_document()
     assert isinstance(config.storage_config, StorageConfigSQLite)
     assert config.storage_config.db_path == "generation1-owned.sqlite"
     assert owner.read_document()["opaque_extension"] == {
@@ -368,53 +502,15 @@ def test_backup_directory_sync_failure_keeps_original_config(tmp_path, monkeypat
     assert path.read_bytes() == original
 
 
-@pytest.mark.parametrize(
-    "legacy",
-    [
-        {},
-        {
-            "optimize_agent_playbooks": False,
-            "auto_update_pending_agent_playbooks": False,
-        },
-    ],
-)
-def test_automatic_upgrade_never_adopts_previously_ignored_consent(tmp_path, legacy):
-    from reflexio.cli.config_upgrade import convert_config_file
-
-    path = tmp_path / "unmarked.json"
-    original = json.dumps(
-        {
-            "storage_config": None,
-            "playbook_optimizer_config": {
-                "enabled": True,
-                "agent_playbooks_enabled": True,
-                **legacy,
-            },
-        }
-    ).encode()
-    path.write_bytes(original)
-    with pytest.raises(StoredConfigurationError, match="previous schema"):
-        LocalConfigFile(path).prepare()
-    assert path.read_bytes() == original
-    with pytest.raises(StoredConfigurationError, match="previous schema"):
-        LocalConfigFile(path).edit_document(lambda data: data.update(window_size=12))
-    assert path.read_bytes() == original
-    assert not (tmp_path / ".config-migrations").exists()
-    # A deliberately selected conversion can keep canonical precedence, and
-    # must produce an installable current file, not repeat the ambiguity.
-    output = tmp_path / "explicit-current.json"
-    convert_config_file(path, output)
-    current = LocalConfigFile(output)
-    assert current.prepare() is False
-    assert validate_stored_config(
-        current.read_document()
-    ).playbook_optimizer_config.allows_target("agent_playbook")
-    assert path.read_bytes() == original
-
-
 def test_schema_owner_validation_does_not_materialize_implicit_storage(tmp_path):
     path = tmp_path / "config.json"
-    data = {"window_size": 23, "stride_size": 7, "opaque": {"preserve": "extension"}}
+    data = {
+        "profile_window_size": 23,
+        "profile_stride_size": 7,
+        "playbook_window_size": 23,
+        "playbook_stride_size": 7,
+        "opaque": {"preserve": "extension"},
+    }
     document = encode_config_document(data)
     # Default SDK storage still requires an explicit logical storage field.
     with pytest.raises(StoredConfigurationError):
@@ -429,14 +525,16 @@ def test_schema_owner_validation_does_not_materialize_implicit_storage(tmp_path)
     assert owner.read_document() == data
     assert "storage_config" not in decode_config_document(path.read_text())
     assert owner.prepare() is False
-    owner.edit_document(lambda raw: raw.update(window_size=25))
-    assert owner.read_document() == {**data, "window_size": 25}
+    owner.edit_document(lambda raw: raw.update(profile_window_size=25))
+    assert owner.read_document() == {**data, "profile_window_size": 25}
     before = path.read_bytes()
     with pytest.raises(StoredConfigurationError):
-        owner.edit_document(lambda raw: raw.update(window_size=0))
+        owner.edit_document(lambda raw: raw.update(profile_window_size=0))
     assert path.read_bytes() == before
     with pytest.raises(StoredConfigurationError):
-        owner.publish_document(encode_config_document({**data, "window_size": 0}))
+        owner.publish_document(
+            encode_config_document({**data, "profile_window_size": 0})
+        )
     assert path.read_bytes() == before
 
 
@@ -444,7 +542,7 @@ def test_schema_owner_validates_targeted_upgrade_without_changing_storage_identi
     tmp_path,
 ):
     path = tmp_path / "config.json"
-    original = b'{"window_size":23,"stride_size":7,"playbook_optimizer_config":{"optimize_agent_playbooks":true,"auto_update_pending_agent_playbooks":false}}'
+    original = b'{"window_size":23,"stride_size":7,"playbook_optimizer_config":{"metric_call_budget":5}}'
     path.write_bytes(original)
 
     def validate_enterprise_shape(raw):
@@ -453,9 +551,10 @@ def test_schema_owner_validates_targeted_upgrade_without_changing_storage_identi
     owner = LocalConfigFile(path, validator=validate_enterprise_shape)
     assert owner.prepare() is True
     assert owner.read_document() == {
-        "window_size": 23,
-        "stride_size": 7,
-        "playbook_optimizer_config": {"agent_playbooks_enabled": False},
+        "profile_window_size": 23,
+        "profile_stride_size": 7,
+        "playbook_window_size": 23,
+        "playbook_stride_size": 7,
     }
     assert "storage_config" not in decode_config_document(path.read_text())
     assert (
@@ -489,7 +588,7 @@ def test_retrieval_upgrade_retains_gate_capacity_original_and_generation(
     }
     if version:
         data["_reflexio_config_file"] = {"version": version}
-        data["playbook_optimizer_config"] = {"agent_playbooks_enabled": True}
+        data["opaque_marker"] = {"agent_playbooks_enabled": True}
     original = json.dumps(data).encode()
     path.write_bytes(original)
     owner = LocalConfigFile(path)
@@ -501,8 +600,6 @@ def test_retrieval_upgrade_retains_gate_capacity_original_and_generation(
     assert config.retrieval_floor.profile_floor is None
     assert current["storage_config"]["db_path"] == "original.sqlite"
     assert current["opaque"] == {"keep": True}
-    if version:
-        assert config.playbook_optimizer_config.agent_playbooks_enabled is True
     assert (
         path.parent.joinpath(
             ".config-migrations",
@@ -540,17 +637,9 @@ def test_old_generation_cannot_treat_ignored_candidate_key_as_authority(
         if operation == "prepare":
             owner.prepare()
         else:
-            owner.edit_document(lambda document: document.update(window_size=19))
-    assert path.read_bytes() == original
-    assert not (tmp_path / ".config-migrations").exists()
-
-
-def test_generation_one_does_not_replay_retired_agent_policy(tmp_path):
-    path = tmp_path / "config.json"
-    original = b'{"_reflexio_config_file":{"version":1},"storage_config":null,"playbook_optimizer_config":{"optimize_agent_playbooks":true},"retrieval_floor":{"enabled":true}}'
-    path.write_bytes(original)
-    with pytest.raises(StoredConfigurationError):
-        LocalConfigFile(path).prepare()
+            owner.edit_document(
+                lambda document: document.update(profile_window_size=19)
+            )
     assert path.read_bytes() == original
     assert not (tmp_path / ".config-migrations").exists()
 
@@ -736,7 +825,7 @@ def test_output_budget_file_upgrade_is_sparse_and_current_writes_preserve_policy
     document["llm_config"]["generation_max_output_tokens"] = 1024
     owner.publish_document(encode_config_document(document))
     document = owner.read_document()
-    document["window_size"] = 15
+    document["profile_window_size"] = 15
     owner.publish_document(encode_config_document(document))
     assert owner.read_document()["llm_config"]["generation_max_output_tokens"] == 1024
     assert not owner.prepare()
@@ -907,9 +996,13 @@ def test_current_preparation_edits_fence_intervening_source_changes(tmp_path, ch
     path = tmp_path / "config.json"
     owner = LocalConfigFile(path)
     owner.publish_document(
-        '{"storage_config":{"type":"sqlite"},"window_size":23,"stride_size":7}'
+        '{"storage_config":{"type":"sqlite"},"profile_window_size":23,"profile_stride_size":7,"playbook_window_size":23,"playbook_stride_size":7}'
     )
-    later = path.read_text().replace('"window_size": 23', '"window_size": 31').encode()
+    later = (
+        path.read_text()
+        .replace('"profile_window_size": 23', '"profile_window_size": 31')
+        .encode()
+    )
     assert later != path.read_bytes()
 
     def race(document, generation):
@@ -977,6 +1070,12 @@ def test_preparation_retires_timing_and_preserves_creation_optout_and_original(
     }
     assert payload["pending_tool_call_config"]["enabled"] is False
     expected["pending_tool_call_config"]["pending_ttl_seconds"] = 0
+    expected.update(
+        profile_window_size=10,
+        profile_stride_size=8,
+        playbook_window_size=10,
+        playbook_stride_size=8,
+    )
     assert owner.read_document() == expected
     assert (
         json.loads(path.read_text())["_reflexio_config_file"]["version"]

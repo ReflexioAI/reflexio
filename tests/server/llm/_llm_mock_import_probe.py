@@ -204,7 +204,10 @@ def main() -> None:
                 helper.cleanup_llm_mock(collect)
             helper.configure_llm_mock(collect)
             assert "litellm" not in sys.modules
-            assert registrations == ["litellm"]
+            assert registrations == [
+                "reflexio.server.llm._litellm_text_generation",
+                "litellm",
+            ]
             module = importlib.import_module("litellm")
             assert module.completion() == "MOCK"
             helper.cleanup_llm_mock(collect)

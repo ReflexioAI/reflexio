@@ -1,0 +1,1182 @@
+"""Operator-authorized native CLI as a LiteLLM custom provider.
+
+Routes ``litellm.completion(model="local-cli/<host>[/model]", ...)`` through the
+user's locally-installed ``claude`` CLI (the Claude Code binary), so
+reflexio's extractors can run with no external LLM API key — they reuse
+whatever auth the user already has for Claude Code.
+
+One REFLEXIO_NATIVE_CLI_MODEL binds the permitted host and physical-model
+selection. Registration grants no authority; every completion checks the exact
+operator target. Omitted model delegates to the selected CLI's own default.
+
+Structured output: when callers pass a Pydantic ``response_format``,
+the JSON schema is appended to the system prompt instructing the CLI
+to reply with matching JSON. The CLI's text reply is returned as
+``message.content``; ``LiteLLMClient._maybe_parse_structured_output``
+then parses it into the Pydantic instance via the existing pipeline.
+"""
+
+from __future__ import annotations
+
+# Complete provider initialization before importing the third-party library.
+import reflexio.provider_bootstrap  # noqa: F401
+
+# isort: split
+
+import json
+import logging
+import os
+import shutil
+import subprocess  # noqa: S404 — subprocess is the integration point; inputs are sanitised.
+import tempfile
+import time
+from contextlib import nullcontext, suppress
+from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, cast
+
+import litellm
+from litellm.llms.custom_llm import CustomLLM
+from litellm.types.utils import (
+    ChatCompletionMessageToolCall,
+    Choices,
+    Function,
+    Message,
+    ModelResponse,
+    Usage,
+)
+
+from reflexio.server.env_utils import env_str
+from reflexio.server.llm._litellm_types import LLMHardTimeoutError
+from reflexio.server.llm._native_cli import (
+    native_cli_directory,
+    private_cli_directory,
+    remaining_native_time,
+    request_timeout_seconds,
+    run_native_cli,
+)
+from reflexio.server.llm._native_model_ref import (
+    CLI_TIMEOUT_ENV as _ENV_TIMEOUT,
+)
+from reflexio.server.llm._native_model_ref import (
+    PLUGIN_OPENCODE_EXECUTABLE_ENV,
+    PROVIDER_KEY,
+    NativeModelRef,
+    authorize_native_model,
+    native_child_path_environment,
+    reject_native_selection,
+)
+from reflexio.server.llm.providers.claude_code_stream_parser import (
+    ParseResult,
+    classify_stall,
+    parse_reset_estimate,
+    parse_stream_json,
+)
+from reflexio.server.llm.providers.cli_tool_protocol import (
+    append_schema_instruction as _maybe_append_schema,
+)
+from reflexio.server.llm.providers.cli_tool_protocol import (
+    append_tools_instruction as _maybe_append_tools_instruction,
+)
+from reflexio.server.llm.providers.cli_tool_protocol import (
+    parse_tool_use as _parse_tool_use,
+)
+from reflexio.server.llm.providers.cli_tool_protocol import (
+    tool_call_attr as _tool_call_attr,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+_ENV_CLI_PATH = "CLAUDE_SMART_CLI_PATH"
+_RETIRED_CODEX_PATH = "CLAUDE_SMART_CODEX_PATH"
+_HOST_CODEX = "codex"
+_HOST_CLAUDE_CODE = "claude-code"
+_HOST_OPENCODE = "opencode"
+_COMPAT_HOSTS = {
+    f"{_HOST_OPENCODE}-claude-compat{suffix}": _HOST_OPENCODE
+    for suffix in ("", ".cmd", ".js")
+}
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+_RETIRED_CODEX_BRIDGES = frozenset(
+    f"codex-claude-compat{suffix}" for suffix in ("", ".cmd", ".js")
+)
+_DEFAULT_TIMEOUT_SECONDS = 120
+_WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT = 3_000
+_WINDOWS_CLI_SUFFIXES = (".cmd", ".exe", ".bat")
+
+_UNSUPPORTED_PARAMS_WARNED: set[str] = set()
+_IMAGE_WARNED = False
+_MULTITURN_WARNED = False
+
+
+class ClaudeCodeCLIError(RuntimeError):
+    """Raised when the claude CLI subprocess fails in a way we cannot recover from."""
+
+
+class ClaudeCodeCLITimeoutError(ClaudeCodeCLIError):
+    """The immediate native CLI exhausted its selected timeout."""
+
+
+def _diagnostic_excerpt(text: str, limit: int = 500) -> str:
+    """Return a bounded single-line excerpt for local CLI diagnostics."""
+    compact = " ".join((text or "").split())
+    return compact[:limit]
+
+
+def _cli_name(host: str) -> str:
+    """Map the validated host identity to its executable name."""
+    return "claude" if host == _HOST_CLAUDE_CODE else host
+
+
+def _compat_host(cli_path: str) -> str | None:
+    """Known plugin adapters speak Claude protocol, independent of coding host."""
+    return _COMPAT_HOSTS.get(Path(cli_path).name.lower())
+
+
+def _windows_cli_suffixes() -> tuple[str, ...]:
+    suffixes: list[str] = []
+    for suffix in os.environ.get("PATHEXT", "").split(";"):
+        suffix = suffix.strip().lower()
+        if not suffix:
+            continue
+        suffix = suffix if suffix.startswith(".") else f".{suffix}"
+        # PowerShell scripts require a PowerShell host; do not return them as
+        # directly executable CLI shims for subprocess.run([...]).
+        if suffix == ".ps1":
+            continue
+        suffixes.append(suffix)
+    for suffix in _WINDOWS_CLI_SUFFIXES:
+        if suffix not in suffixes:
+            suffixes.append(suffix)
+    return tuple(suffixes)
+
+
+def _resolve_cli_override_path(cli_path: str) -> str:
+    if not _is_windows():
+        return cli_path
+    path = Path(cli_path)
+    # A bare name is looked up on PATH (with these suffixes) by
+    # ``_which_on_path``; probing it here would test the working directory.
+    if path.suffix or path.name == cli_path:
+        return cli_path
+
+    # Windows package managers expose extensioned shims while users often
+    # configure the extensionless binary name.
+    for suffix in _windows_cli_suffixes():
+        candidate = path.with_suffix(suffix)
+        if candidate.exists():
+            # pathlib drops a leading `.\`, so `.\tool` would come back as the
+            # bare `tool.exe` and be looked up on PATH instead; anchor it.
+            return str(candidate.absolute())
+    return cli_path
+
+
+def _resolve_cli_path(host: str) -> str | None:
+    """Return the path to the active host CLI, or None if unavailable.
+
+    Honours the ``CLAUDE_SMART_CLI_PATH`` override before falling back to
+    host-specific native defaults. Retired assignments never select a path.
+
+    Returns:
+        str | None: Absolute path to the CLI, or None if not found.
+    """
+    override = os.environ.get(_ENV_CLI_PATH)
+    if host == _HOST_OPENCODE:
+        from reflexio.opencode_executable import OpenCodeCLIError, resolve_executable
+
+        try:
+            selected = override or "opencode"
+            if override and _compat_host(override):
+                selected = _resolve_cli_override_path(override)
+            return str(resolve_executable(selected))
+        except OpenCodeCLIError:
+            if override:
+                _LOGGER.warning(
+                    "%s is unavailable; refusing OpenCode selection", _ENV_CLI_PATH
+                )
+            return None
+    if override:
+        selected = _anchored_override(_resolve_cli_override_path(override))
+        if selected is not None:
+            return selected
+        _LOGGER.warning(
+            "%s is not an executable file; falling back to PATH",
+            _ENV_CLI_PATH,
+        )
+    return _which_on_path("codex" if host == _HOST_CODEX else "claude")
+
+
+def _anchored_executable(cli_path: str) -> str:
+    """Anchor a relative executable path to the caller's cwd before launch.
+
+    Native CLIs run from a private working directory, so a relative path with
+    a directory component (an explicit constructor path such as
+    ``./bin/claude``) would otherwise be looked up THERE. A bare name stays a
+    PATH lookup, exactly as before.
+    """
+    if Path(cli_path).name == cli_path:
+        return cli_path
+    return str(Path(cli_path).absolute())
+
+
+def _absolute(path: str | None) -> str | None:
+    """Anchor a resolved executable without following symlinks."""
+    return str(Path(path).absolute()) if path else None
+
+
+def _which_on_path(name: str) -> str | None:
+    """Look a bare executable name up on PATH only, never the working directory.
+
+    POSIX ``shutil.which`` searches the given PATH entries. On Windows it
+    also searches the current directory first (implicitly, even with an
+    explicit ``path=``), so there each PATH entry is probed by exact file
+    name, trying only the PATHEXT-derived shim suffixes for an extensionless
+    name (as ``shutil.which`` does there).
+    An entry that is itself relative is part of PATH and is anchored, as
+    before; an EMPTY entry (e.g. a trailing separator) is an implicit
+    working-directory search on every platform and is skipped.
+    """
+    if not _is_windows():
+        entries = [entry for entry in os.get_exec_path() if entry.strip()]
+        # An empty `path=` searches nothing (``shutil.which`` returns None).
+        return _absolute(shutil.which(name, path=os.pathsep.join(entries)))
+    names = (
+        (name,)
+        if Path(name).suffix
+        else tuple(name + suffix for suffix in _windows_cli_suffixes())
+    )
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory.strip():
+            continue
+        for candidate_name in names:
+            candidate = Path(directory, candidate_name)
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate.absolute())
+    return None
+
+
+def _anchored_override(override: str) -> str | None:
+    """Resolve an override to the ONE absolute path that will be launched.
+
+    A bare name is what ``subprocess`` would look up on PATH, so it is looked
+    up on PATH here too, never as a file in the working directory; a path is
+    anchored against the working directory. The result is what dispatch runs
+    AND what the native launch identity fingerprints, so the two cannot name
+    different files.
+    """
+    if Path(override).name == override:
+        return _which_on_path(override)
+    candidate = Path(override)
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate.absolute())
+    return None
+
+
+def _codex_migration_error(host: str, explicit_path: str | None = None) -> str | None:
+    """Inspect obsolete intent without ever resolving its executable value."""
+    canonical = explicit_path or os.environ.get(_ENV_CLI_PATH)
+    if canonical and Path(canonical).name.lower() in _RETIRED_CODEX_BRIDGES:
+        return (
+            "Codex compatibility bridge is retired. Select local-cli/codex "
+            "and use the native executable through CLAUDE_SMART_CLI_PATH or PATH."
+        )
+    if host != _HOST_CODEX or not env_str(_RETIRED_CODEX_PATH):
+        return None
+    # Constructor paths already dominated all environment selection. A valid
+    # canonical env override also dominated the old key; preserve that choice.
+    if explicit_path:
+        return None
+    # Judge the canonical override with the very resolver launch uses: a bare
+    # name found only on PATH dominates, a working-directory file does not.
+    if canonical and _anchored_override(_resolve_cli_override_path(canonical)):
+        return None
+    return (
+        f"{_RETIRED_CODEX_PATH} no longer selects an executable. Preserve the "
+        "intended path in CLAUDE_SMART_CLI_PATH before removing the old assignment, "
+        "or remove it deliberately to adopt Codex from PATH."
+    )
+
+
+def validate_native_selection(host: str, explicit_path: str | None = None) -> None:
+    """Refuse obsolete or conflicting known runtime selection before dispatch."""
+    message = _codex_migration_error(host, explicit_path)
+    if message:
+        reject_native_selection(message)
+    path = explicit_path or env_str(_ENV_CLI_PATH)
+    bridge_host = _compat_host(path) if path else None
+    if bridge_host is not None and bridge_host != host:
+        reject_native_selection(
+            "Configured bridge runtime conflicts with the operator native target. "
+            "OpenCode bridges require a local-cli/opencode reference."
+        )
+
+
+def _flatten_content(content: Any) -> str:
+    """Collapse LiteLLM content (string or content-block list) to plain text.
+
+    Image blocks are silently skipped with a one-time WARN log (see
+    ``_warn_image_dropped_once``). cache_control markers are ignored
+    since the CLI does not accept them.
+
+    Args:
+        content: LiteLLM content — string, list of content blocks, or None.
+
+    Returns:
+        str: Plain-text content; empty string if no text survives.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                block_type = block.get("type")
+                if block_type in {"image", "image_url"}:
+                    _warn_image_dropped_once()
+                    continue
+                text = block.get("text") or block.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    return str(content)
+
+
+def _warn_image_dropped_once() -> None:
+    """Emit a single WARN when image content is dropped by the CLI bridge.
+
+    Returns:
+        None
+    """
+    global _IMAGE_WARNED
+    if not _IMAGE_WARNED:
+        _LOGGER.warning(
+            "claude-code provider: image content blocks are dropped — "
+            "the CLI bridge accepts text only. Install an image-capable "
+            "LLM provider for screenshot analysis."
+        )
+        _IMAGE_WARNED = True
+
+
+def _warn_multiturn_once() -> None:
+    """Emit a single WARN when multi-turn context gets flattened to text.
+
+    Returns:
+        None
+    """
+    global _MULTITURN_WARNED
+    if not _MULTITURN_WARNED:
+        _LOGGER.warning(
+            "claude-code provider: multi-turn messages are flattened into a "
+            "single 'User:/Assistant:' transcript. Quality may differ from "
+            "the Anthropic messages API."
+        )
+        _MULTITURN_WARNED = True
+
+
+def _warn_unsupported_param_once(name: str) -> None:
+    """Emit a single WARN when a LiteLLM param has no CLI equivalent.
+
+    Args:
+        name: Parameter name that was ignored (e.g. ``"temperature"``).
+
+    Returns:
+        None
+    """
+    if name in _UNSUPPORTED_PARAMS_WARNED:
+        return
+    _UNSUPPORTED_PARAMS_WARNED.add(name)
+    _LOGGER.warning(
+        "claude-code provider: ignoring unsupported parameter %r — "
+        "the CLI does not expose this control.",
+        name,
+    )
+
+
+def _split_system_and_dialogue(
+    messages: list[dict[str, Any]],
+) -> tuple[str, str]:
+    """Split chat messages into (system_prompt, dialogue) for the CLI.
+
+    The ``claude -p`` CLI takes one stdin prompt and an optional
+    ``--append-system-prompt``. Multi-turn context is flattened into a
+    single textual dialogue prefixed with role labels, since the CLI
+    does not accept a messages array.
+
+    System messages are merged (joined with blank lines) and returned
+    separately for the ``--append-system-prompt`` flag. ``tool`` role
+    messages are folded in as ``Tool:`` lines.
+
+    Args:
+        messages: LiteLLM-style chat messages.
+
+    Returns:
+        tuple[str, str]: ``(system_prompt, dialogue)``. Either may be empty.
+    """
+    systems: list[str] = []
+    turns: list[str] = []
+    non_system_roles = 0
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = _flatten_content(msg.get("content"))
+        tool_calls = msg.get("tool_calls") if role == "assistant" else None
+        if not content and not tool_calls:
+            continue
+        if role == "system":
+            systems.append(content)
+            continue
+        non_system_roles += 1
+        if role == "assistant":
+            # When the assistant message carries tool_calls (content is
+            # typically None), serialise them as breadcrumbs so the CLI's
+            # next-turn context shows which tools were invoked. This is
+            # required for multi-turn tool loops to converge.
+            if tool_calls:
+                breadcrumbs = []
+                for tc in tool_calls:
+                    name = _tool_call_attr(tc, "name") or "?"
+                    args = _tool_call_attr(tc, "arguments") or "{}"
+                    breadcrumbs.append(f"called {name} with {args}")
+                prefix = "; ".join(breadcrumbs)
+                if content:
+                    turns.append(f"Assistant: {content}\n[tools: {prefix}]")
+                else:
+                    turns.append(f"Assistant: [tools: {prefix}]")
+            else:
+                turns.append(f"Assistant: {content}")
+        elif role == "tool":
+            tcid = msg.get("tool_call_id") or "?"
+            turns.append(f"Tool[{tcid}]: {content}")
+        else:
+            turns.append(f"User: {content}")
+    if non_system_roles > 1:
+        _warn_multiturn_once()
+    return "\n\n".join(systems), "\n\n".join(turns)
+
+
+def _run_cli_stream(
+    cli_path: str,
+    system_prompt: str,
+    dialogue: str,
+    timeout_seconds: float,
+    host: str,
+    model: str | None,
+) -> ParseResult:
+    """Invoke the active host CLI and return a ParseResult.
+
+    Args:
+        cli_path (str): Path to the host executable or compatibility wrapper.
+        system_prompt (str): Combined system prompt to append (may be empty).
+        dialogue (str): Flattened user/assistant dialogue sent on stdin.
+        timeout_seconds (int): Subprocess timeout.
+
+    Returns:
+        ParseResult: Aggregated state of the stream — success flag, terminal
+            text, retry errors observed, and stderr.
+
+    Raises:
+        ClaudeCodeCLIError: On timeout or missing binary.
+    """
+    validate_native_selection(host, cli_path)
+    bridge = _compat_host(cli_path)
+    if bridge:
+        return replace(
+            _run_claude_stream(
+                cli_path=cli_path,
+                system_prompt=system_prompt,
+                dialogue=dialogue,
+                timeout_seconds=timeout_seconds,
+                model=model,
+            ),
+            cli_binary=bridge,
+        )
+    selected = host
+    if selected == _HOST_OPENCODE:
+        from reflexio.server.llm.providers._opencode_cli import (
+            OpenCodeCLIError,
+            run_opencode,
+        )
+
+        try:
+            return run_opencode(
+                cli_path=cli_path,
+                system_prompt=system_prompt,
+                dialogue=dialogue,
+                model=model,
+                deadline=time.monotonic() + request_timeout_seconds(timeout_seconds),
+                wire="plugin"
+                if os.environ.get(PLUGIN_OPENCODE_EXECUTABLE_ENV) == cli_path
+                else "native",
+            )
+        except OpenCodeCLIError as exc:
+            raise ClaudeCodeCLIError(str(exc)) from None
+    if selected == _HOST_CODEX:
+        return _run_codex_stream(
+            codex_path=cli_path,
+            system_prompt=system_prompt,
+            dialogue=dialogue,
+            deadline=time.monotonic() + request_timeout_seconds(timeout_seconds),
+            model=model,
+        )
+    return _run_claude_stream(
+        cli_path=cli_path,
+        system_prompt=system_prompt,
+        dialogue=dialogue,
+        timeout_seconds=timeout_seconds,
+        model=model,
+    )
+
+
+def _run_claude_stream(
+    *,
+    cli_path: str,
+    system_prompt: str,
+    dialogue: str,
+    timeout_seconds: float,
+    model: str | None,
+) -> ParseResult:
+    """Invoke ``claude -p --output-format stream-json`` and return a ParseResult."""
+    inline_system_prompt = (
+        _is_windows() and len(system_prompt) > _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT
+    )
+    cmd = [
+        _anchored_executable(cli_path),
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+    ]
+    if model:
+        cmd.extend(["--model", model])
+    if system_prompt and not inline_system_prompt:
+        cmd.extend(["--append-system-prompt", system_prompt])
+    stdin_text = dialogue
+    if inline_system_prompt:
+        stdin_text = f"{system_prompt}\n\n{dialogue}" if dialogue else system_prompt
+
+    # Tag the child process so any hooks it fires (e.g. claude-smart's
+    # Stop hook) can detect that this is a reflexio-internal invocation
+    # and skip publishing — otherwise extractor system prompts get
+    # re-published as user interactions and contaminate the corpus.
+    # The host CLI owns retries; this invocation retains its SDK deadline.
+    # Path variables reach the child anchored here, not in its private cwd.
+    env = {**os.environ, **native_child_path_environment()}
+    if _compat_host(cli_path) == _HOST_OPENCODE:
+        # The known wrapper otherwise prefers shared learning hints to --model.
+        # Bind only this child to the native request; independently invoked
+        # optimizer scripts retain their own model and variant environment.
+        env["CLAUDE_SMART_LEARNING_MODEL"] = model or ""
+        env["CLAUDE_SMART_OPENCODE_MODEL"] = ""
+        env["CLAUDE_SMART_OPENCODE_VARIANT"] = ""
+    env["CLAUDE_SMART_INTERNAL"] = "1"
+
+    try:
+        # A private empty cwd: the daemon's project `.claude/settings.json`
+        # must never select this call's model or endpoint.
+        with private_cli_directory("claude-") as workdir:
+            env["PWD"] = str(workdir)
+            proc = run_native_cli(  # noqa: S603 — cmd is constructed from validated parts.
+                cmd,
+                input=stdin_text,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace" if _is_windows() else "strict",
+                timeout=timeout_seconds,
+                check=False,
+                cwd=str(workdir),
+                env=env,
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise ClaudeCodeCLITimeoutError(
+            f"claude CLI timed out after {timeout_seconds}s"
+        ) from exc
+    except FileNotFoundError as exc:
+        raise ClaudeCodeCLIError(f"claude CLI not found at {cli_path}") from exc
+
+    return replace(
+        parse_stream_json(
+            proc.stdout, exit_code=proc.returncode, stderr_text=proc.stderr
+        ),
+        cli_binary="claude",
+    )
+
+
+def _run_codex_stream(
+    *,
+    codex_path: str,
+    system_prompt: str,
+    dialogue: str,
+    deadline: float,
+    model: str | None = None,
+    optimizer: bool = False,
+) -> ParseResult:
+    """Spend one absolute deadline on Codex setup, execution and output reads."""
+    output_path: Path | None = None
+    try:
+        remaining_native_time(deadline)
+        output_path = _temporary_output_path()
+        cmd = [
+            _anchored_executable(codex_path),
+            "exec",
+            "--sandbox",
+            "read-only",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-rules",
+            "--output-last-message",
+            str(output_path),
+        ]
+        # A role label such as claude-code/default is not a native model selector.
+        if model:
+            cmd.extend(["--model", model])
+        cmd.append("-")
+        # Path variables reach the child anchored here, not in its private cwd.
+        env = {**os.environ, **native_child_path_environment()}
+        env["CLAUDE_SMART_INTERNAL"] = "1"
+        if optimizer:
+            env["CLAUDE_CODE_ENTRYPOINT"] = "optimizer"
+        prompt = _codex_prompt(prompt=dialogue, system_prompt=system_prompt)
+        # A generation call runs from a private empty cwd, so the daemon's
+        # project `.codex/config.toml` never selects its model or endpoint.
+        # The optimizer assistant keeps its existing working-directory contract.
+        with (
+            nullcontext(None) if optimizer else private_cli_directory("codex-")
+        ) as workdir:
+            if workdir is not None:
+                env["PWD"] = str(workdir)
+            proc = run_native_cli(  # noqa: S603 — fixed protocol plus selected executable/model.
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace" if _is_windows() else "strict",
+                timeout=remaining_native_time(deadline),
+                check=False,
+                cwd=None if workdir is None else str(workdir),
+                env=env,
+            )
+        try:
+            terminal_text = output_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            terminal_text = ""
+        remaining_native_time(deadline)
+    except (subprocess.TimeoutExpired, LLMHardTimeoutError) as exc:
+        raise ClaudeCodeCLITimeoutError("codex CLI timed out") from exc
+    except FileNotFoundError as exc:
+        raise ClaudeCodeCLIError(f"codex CLI not found at {codex_path}") from exc
+    finally:
+        # Delegated output belongs to the parent until native reaping completes.
+        if output_path is not None and native_cli_directory() is None:
+            with suppress(OSError):
+                output_path.unlink()
+    return ParseResult(
+        success=proc.returncode == 0 and bool(terminal_text),
+        terminal_text=terminal_text,
+        stderr_text=proc.stderr,
+        raw_lines_parsed=1 if terminal_text else 0,
+        cli_binary="codex",
+    )
+
+
+def _temporary_output_path() -> Path:
+    with tempfile.NamedTemporaryFile(
+        prefix="claude-smart-codex-", delete=False, dir=native_cli_directory()
+    ) as handle:
+        return Path(handle.name)
+
+
+def _codex_prompt(*, prompt: str, system_prompt: str) -> str:
+    if not system_prompt:
+        return prompt
+    return f"{system_prompt}\n\n## Task\n{prompt}"
+
+
+def _build_model_response(
+    model: str,
+    terminal_text: str,
+    elapsed_seconds: float,
+    *,
+    served_model: str | None = None,
+    served_provider: str | None = None,
+    cli_binary: str | None = None,
+) -> ModelResponse:
+    """Wrap the CLI's terminal text in a LiteLLM ``ModelResponse``.
+
+    The stream-json transport does not surface usage tokens at the terminal
+    event, so prompt/completion counts are reported as zero. Downstream
+    LiteLLM callers tolerate this (usage is informational, not load-bearing).
+
+    Args:
+        model (str): The model string originally requested
+            (e.g. ``local-cli/codex/owned-model``). Populates the public LiteLLM
+            ``ModelResponse.model`` field the same way other providers do.
+        terminal_text (str): The terminal ``result`` text from the CLI.
+        elapsed_seconds (float): Wall time the subprocess took — for logging only.
+        served_model: Observed served model from stream-json, if any. Stamped on
+            hidden metadata for provenance; not used to overwrite ``model``.
+
+    Returns:
+        ModelResponse: Shaped to match what callers of ``litellm.completion`` expect.
+    """
+    message = Message(role="assistant", content=terminal_text)
+    choice = Choices(index=0, message=message, finish_reason="stop")
+    usage = Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+    response = ModelResponse(
+        id=f"claude-code-{int(time.time())}",
+        choices=[choice],
+        created=int(time.time()),
+        model=model,
+        object="chat.completion",
+        usage=usage,
+    )
+    _set_cli_response_metadata(
+        response,
+        served_model=served_model,
+        served_provider=served_provider,
+        cli_binary=cli_binary,
+    )
+    _LOGGER.debug(
+        "claude-code provider: model=%s elapsed=%.2fs",
+        model,
+        elapsed_seconds,
+    )
+    return response
+
+
+def _set_cli_response_metadata(
+    response: ModelResponse,
+    *,
+    served_model: str | None,
+    served_provider: str | None,
+    cli_binary: str | None,
+) -> None:
+    """Stamp truthful route metadata on a CLI-backed completion response."""
+    hidden = dict(getattr(response, "_hidden_params", {}) or {})
+    hidden["reflexio_provider"] = PROVIDER_KEY
+    if cli_binary:
+        hidden["reflexio_cli_binary"] = cli_binary
+    if served_model:
+        hidden["reflexio_served_model"] = served_model
+    if served_provider:
+        hidden["reflexio_served_provider"] = served_provider
+    response._hidden_params = hidden
+
+
+def _build_model_response_with_tool_call(
+    *,
+    model: str,
+    terminal_text: str,
+    elapsed_seconds: float,
+    tool_use: dict[str, Any],
+    served_model: str | None = None,
+    served_provider: str | None = None,
+    cli_binary: str | None = None,
+) -> ModelResponse:
+    """Wrap the CLI terminal text as a ``ModelResponse`` carrying one ``tool_calls`` entry.
+
+    The stream-json transport does not surface usage tokens at the terminal
+    event, so prompt/completion counts are reported as zero (same convention
+    as :func:`_build_model_response`). Downstream LiteLLM callers tolerate
+    this — usage is informational, not load-bearing.
+
+    Args:
+        terminal_text: The terminal ``result`` text from the CLI (retained
+            for signature parity with the plain-text branch; surfaced via
+            logging only).
+        elapsed_seconds: Subprocess wall time, for logging only.
+        tool_use: Parsed ``{"name": str, "args": dict}`` from the model output.
+
+    Returns:
+        ModelResponse: A LiteLLM response with ``choices[0].message.tool_calls`` set
+            and ``content`` set to ``None`` — matches OpenAI/Anthropic tool-call shape.
+    """
+    del terminal_text  # retained for signature parity only
+    call_id = f"call_{int(time.time() * 1000)}"
+    tool_call = ChatCompletionMessageToolCall(
+        id=call_id,
+        type="function",
+        function=Function(
+            name=tool_use["name"],
+            arguments=json.dumps(tool_use["args"]),
+        ),
+    )
+    message = Message(role="assistant", content=None, tool_calls=[tool_call])
+    choice = Choices(index=0, message=message, finish_reason="tool_calls")
+    usage = Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+    response = ModelResponse(
+        id=f"claude-code-{int(time.time())}",
+        choices=[choice],
+        created=int(time.time()),
+        model=model,
+        object="chat.completion",
+        usage=usage,
+    )
+    _set_cli_response_metadata(
+        response,
+        served_model=served_model,
+        served_provider=served_provider,
+        cli_binary=cli_binary,
+    )
+    _LOGGER.debug(
+        "claude-code provider: tool_call name=%s elapsed=%.2fs",
+        tool_use["name"],
+        elapsed_seconds,
+    )
+    return response
+
+
+_IGNORED_PARAMS: tuple[str, ...] = (
+    "temperature",
+    "max_tokens",
+    "top_p",
+    "stop",
+    "seed",
+    "frequency_penalty",
+    "presence_penalty",
+)
+
+
+def _warn_on_ignored_params(*sources: Any) -> None:
+    """Emit one-time warnings for LiteLLM params the CLI cannot honour.
+
+    Args:
+        *sources: Any number of dict-like sources (kwargs, ``optional_params``).
+
+    Returns:
+        None
+    """
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for name in _IGNORED_PARAMS:
+            if source.get(name) is not None:
+                _warn_unsupported_param_once(name)
+
+
+def resolve_cli_request_timeout(
+    value: Any, explicit_timeout: int | None = None
+) -> float:
+    """Bound dispatch by the caller allowance and any explicit shorter cap.
+
+    Retiring caps belongs to the matching producer migration. A supplied
+    caller budget never acquires an implicit provider duration default.
+    """
+    timeout = request_timeout_seconds(value)
+    if explicit_timeout is not None:
+        return min(timeout, request_timeout_seconds(explicit_timeout))
+    raw = env_str(_ENV_TIMEOUT)
+    if not raw:
+        return timeout
+    try:
+        cap = max(1, int(raw))
+    except ValueError:
+        raise ValueError("CLAUDE_SMART_CLI_TIMEOUT must be integer seconds") from None
+    return min(timeout, cap)
+
+
+class NativeCLILLM(CustomLLM):
+    """LiteLLM custom handler routing completions through the ``claude`` CLI."""
+
+    def __init__(
+        self,
+        cli_path: str | None = None,
+        timeout_seconds: int | None = None,
+        storage: Any | None = None,
+    ):
+        """Initialise the handler.
+
+        Args:
+            cli_path (str | None): Override for the ``claude`` binary path.
+            timeout_seconds (int | None): Override for subprocess timeout.
+            storage (Any | None): A BaseStorage-shaped object used to persist
+                stall_state on credit/auth failures. Typed as ``Any`` to avoid
+                a circular import with ``server.services.storage``. When None,
+                stall state is not recorded (back-compat).
+        """
+        super().__init__()
+        self._explicit_cli_path = cli_path
+        self._explicit_timeout = timeout_seconds
+        self._storage = storage
+
+    def _cli_path(self, host: str) -> str:
+        """Resolve the CLI path, raising when unavailable.
+
+        Returns:
+            str: Absolute path to the ``claude`` executable.
+
+        Raises:
+            ClaudeCodeCLIError: If the CLI cannot be located.
+        """
+        validate_native_selection(host, self._explicit_cli_path)
+        path = self._explicit_cli_path or _resolve_cli_path(host)
+        if not path:
+            raise ClaudeCodeCLIError(
+                f"{_cli_name(host)} CLI not found for {host}. Install the host "
+                f"CLI or set {_ENV_CLI_PATH} to an executable path."
+            )
+        return path
+
+    def _timeout(self) -> int:
+        """Resolve the subprocess timeout.
+
+        Returns:
+            int: Timeout in seconds.
+        """
+        if self._explicit_timeout is not None:
+            return self._explicit_timeout
+        raw = os.environ.get(_ENV_TIMEOUT)
+        if raw:
+            try:
+                return max(1, int(raw))
+            except ValueError:
+                _LOGGER.warning("Ignoring non-integer %s", _ENV_TIMEOUT)
+        return _DEFAULT_TIMEOUT_SECONDS
+
+    def completion(  # type: ignore[override]
+        self,
+        *args: Any,
+        model: str,
+        messages: list[dict[str, Any]] | None = None,
+        optional_params: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> ModelResponse:
+        """Execute a completion via the ``claude`` CLI.
+
+        Args:
+            *args: Ignored; LiteLLM may pass ``model_response`` positionally.
+            model: The requested model slug (e.g. ``local-cli/codex/owned-model``).
+            messages: LiteLLM-style chat messages.
+            optional_params: LiteLLM's bag of generation params — checked for
+                ``response_format`` and logged when unsupported knobs are set.
+            **kwargs: Other LiteLLM arguments (api_key, logging_obj, etc.);
+                ignored by this handler.
+
+        Returns:
+            ModelResponse: Shaped to match what ``litellm.completion`` callers expect.
+
+        Raises:
+            ClaudeCodeCLIError: On CLI failure or missing binary.
+        """
+        del args
+        # LiteLLM strips the outer provider prefix before invoking CustomLLM.
+        target = cast(NativeModelRef, authorize_native_model(model, PROVIDER_KEY))
+        model = target.reference
+        messages = messages or []
+        optional_params = optional_params or {}
+
+        # Tools may arrive in either ``optional_params["tools"]`` (LiteLLM's
+        # standard plumbing for custom providers) or as a top-level ``tools``
+        # kwarg. Read both before discarding kwargs.
+        tools = optional_params.get("tools") or kwargs.get("tools")
+        has_request_timeout = "timeout" in kwargs
+        request_timeout = kwargs.get("timeout")
+        del kwargs
+
+        _warn_on_ignored_params(optional_params)
+
+        response_format = optional_params.get("response_format")
+        system_prompt, dialogue = _split_system_and_dialogue(messages)
+        # When ``tools`` is present, render the tools spec into the system
+        # prompt and ignore response_format (mutually exclusive with our
+        # tool_use JSON output contract).
+        if tools:
+            system_prompt = _maybe_append_tools_instruction(system_prompt, tools)
+        else:
+            system_prompt = _maybe_append_schema(system_prompt, response_format)
+
+        host = target.host
+        cli_path = self._cli_path(host)
+        timeout = (
+            resolve_cli_request_timeout(request_timeout, self._explicit_timeout)
+            if has_request_timeout
+            or (host == _HOST_OPENCODE and _compat_host(cli_path) is None)
+            else self._timeout()
+        )
+        started = time.perf_counter()
+        result = _run_cli_stream(
+            cli_path=cli_path,
+            system_prompt=system_prompt,
+            dialogue=dialogue,
+            timeout_seconds=timeout,
+            host=host,
+            model=target.model,
+        )
+
+        if result.success:
+            self._clear_stall_safely()
+            elapsed = time.perf_counter() - started
+
+            # When ``tools`` are provided, attempt to parse the model's
+            # terminal text as a ``{"tool": ..., "args": ...}`` JSON object.
+            # If parsing succeeds, return a tool-call ModelResponse; otherwise
+            # warn (so the silent fall-through is observable) and return a
+            # plain-text response, which the caller treats as "no tool_calls"
+            # and uses to terminate the tool loop.
+            if tools:
+                tool_names: set[str] = {
+                    name
+                    for tool in tools
+                    if isinstance(tool, dict)
+                    and isinstance(
+                        name := (tool.get("function") or {}).get("name"), str
+                    )
+                }
+                tool_use = _parse_tool_use(result.terminal_text, tool_names)
+                if tool_use is not None:
+                    return _build_model_response_with_tool_call(
+                        model=model,
+                        terminal_text=result.terminal_text,
+                        elapsed_seconds=elapsed,
+                        tool_use=tool_use,
+                        served_model=result.served_model,
+                        served_provider=result.served_provider,
+                        cli_binary=result.cli_binary,
+                    )
+                # Log a metadata-only warning (no raw payload) — the model
+                # output can carry user content / source code; deferring the
+                # body to a DEBUG fingerprint avoids turning a recoverable
+                # parse miss into a log-retention concern.
+                _LOGGER.warning(
+                    "claude-code provider: tools=%s were provided but no valid "
+                    "tool_use JSON was parsed from model output; the tool loop "
+                    "will terminate without a finish_tool call.",
+                    sorted(tool_names),
+                )
+                _LOGGER.debug(
+                    "claude-code provider: unparsable tool-use payload length=%d",
+                    len(result.terminal_text),
+                )
+
+            return _build_model_response(
+                model=model,
+                terminal_text=result.terminal_text,
+                elapsed_seconds=elapsed,
+                served_model=result.served_model,
+                served_provider=result.served_provider,
+                cli_binary=result.cli_binary,
+            )
+
+        self._record_stall_safely(result)
+        raise ClaudeCodeCLIError(
+            f"claude -p stream failed; retry_errors={result.retry_errors}; "
+            f"stderr={_diagnostic_excerpt(result.stderr_text)!r}; "
+            f"stdout={_diagnostic_excerpt(result.terminal_text)!r}; "
+            f"parsed={result.raw_lines_parsed}; failed={result.raw_lines_failed}"
+        )
+
+    def _record_stall_safely(self, result: ParseResult) -> None:
+        """Persist a stall_state row on credit/auth failure. Never raises.
+
+        Args:
+            result (ParseResult): Output of :func:`_run_cli_stream`.
+
+        Returns:
+            None
+        """
+        reason = classify_stall(result)
+        if reason is None or self._storage is None:
+            return
+        try:
+            self._storage.upsert_stall_state(
+                reason=reason,
+                stalled_at=datetime.now(UTC),
+                reset_estimate=result.reset_estimate
+                or parse_reset_estimate(f"{result.stderr_text} {result.terminal_text}"),
+                error_message=(result.stderr_text or result.terminal_text)[:1000],
+            )
+        except Exception as exc:  # noqa: BLE001 — never crash the provider over telemetry.
+            _LOGGER.warning("Failed to record stall_state: %s", exc)
+
+    def _clear_stall_safely(self) -> None:
+        """Clear any prior stall_state row after a successful run. Never raises.
+
+        Returns:
+            None
+        """
+        if self._storage is None:
+            return
+        try:
+            self._storage.clear_stall_state()
+        except Exception as exc:  # noqa: BLE001 — never crash the provider over telemetry.
+            _LOGGER.warning("Failed to clear stall_state: %s", exc)
+
+    async def acompletion(  # type: ignore[override]
+        self, *args: Any, **kwargs: Any
+    ) -> ModelResponse:
+        """Async entry point — delegates to the sync CLI call via ``to_thread``.
+
+        Args:
+            *args: Forwarded to :meth:`completion`.
+            **kwargs: Forwarded to :meth:`completion`.
+
+        Returns:
+            ModelResponse: The CLI-backed completion result.
+        """
+        import asyncio
+
+        return await asyncio.to_thread(self.completion, *args, **kwargs)
+
+
+_HANDLER: NativeCLILLM | None = None
+
+
+def register_native_provider(storage: Any | None = None) -> bool:
+    """Register a name resolver, never a grant to execute a native account.
+
+    Each completion authorizes the exact operator target before path lookup.
+    Registration is unconditional so invalid native intent cannot fall through
+    to implicit HTTP autodetection, including in spawned workers.
+    """
+    global _HANDLER
+    existing = list(getattr(litellm, "custom_provider_map", None) or [])
+    for entry in existing:
+        if entry.get("provider") == PROVIDER_KEY:
+            handler = entry.get("custom_handler")
+            if isinstance(handler, NativeCLILLM):
+                _HANDLER = handler
+                if storage is not None:
+                    handler._storage = storage
+            return True
+    _HANDLER = NativeCLILLM(storage=storage)
+    existing.append({"provider": PROVIDER_KEY, "custom_handler": _HANDLER})
+    litellm.custom_provider_map = existing
+    return True
+
+
+def set_storage(storage: Any) -> None:
+    """Bind storage onto the registered handler after registration.
+
+    The provider is registered at LiteLLM-import time, before any
+    request-scoped storage exists. Once a storage instance is available,
+    call this to enable stall_state persistence on the live handler.
+
+    Args:
+        storage (Any): BaseStorage-shaped instance.
+
+    Returns:
+        None
+    """
+    if _HANDLER is not None:
+        _HANDLER._storage = storage
+
+
+__all__ = [
+    "PROVIDER_KEY",
+    "ClaudeCodeCLIError",
+    "NativeCLILLM",
+    "register_native_provider",
+    "set_storage",
+]

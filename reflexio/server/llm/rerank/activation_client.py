@@ -10,9 +10,7 @@ from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
     checkpoint,
     inference_http_client,
-    inference_service_url,
     remaining,
-    search_reranker_service_url,
     validate_search_reranker_service,
 )
 from reflexio.server.llm.rerank.common import (
@@ -37,11 +35,7 @@ def score_user_playbook_activation(
         raise CrossEncoderUnavailableError("USER-playbook activation is unavailable")
     checkpoint()
     try:
-        service_url = (
-            validate_search_reranker_service()
-            if search_reranker_service_url()
-            else inference_service_url()
-        )
+        service_url = validate_search_reranker_service()
     except EmbeddingUnavailableError as exc:
         checkpoint()
         raise CrossEncoderUnavailableError(

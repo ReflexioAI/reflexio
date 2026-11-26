@@ -1,16 +1,13 @@
-"""Tests for the no-auth default org resolver.
-
-``default_get_org_id`` controls the request org for local / no-auth
-deployments, which in turn names the ``config_<org>.json`` file and scopes
-SQLite data. claude-smart sets ``REFLEXIO_DEFAULT_ORG_ID`` so it stops sharing
-``config_self-host-org.json`` with the self-host backend; these tests pin that
-contract (and its backward-compatible default).
-"""
+"""No-auth runtime identity is resolved from the saved installation binding."""
 
 from __future__ import annotations
 
 import pytest
+from fastapi import APIRouter, Depends
+from fastapi.testclient import TestClient
 
+from reflexio.config_file import encode_local_config_document
+from reflexio.local_instance import bind_local_instance
 from reflexio.server import api
 from reflexio.server.auth import DEFAULT_ORG_ID, default_get_org_id
 
@@ -22,19 +19,115 @@ def test_defaults_to_self_host_org_when_unset(monkeypatch: pytest.MonkeyPatch) -
     assert default_get_org_id() == DEFAULT_ORG_ID == "self-host-org"
 
 
-def test_honors_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(_ENV, "claude-smart")
-    assert default_get_org_id() == "claude-smart"
+@pytest.mark.parametrize("value", ["other-org", "", "   "])
+def test_removed_selector_refuses_before_runtime_lookup(monkeypatch, value) -> None:
+    monkeypatch.setenv(_ENV, value)
+    with pytest.raises(ValueError, match="Removed env.*REFLEXIO_DEFAULT_ORG_ID"):
+        default_get_org_id()
 
 
-@pytest.mark.parametrize("blank", ["", "   "])
-def test_blank_value_falls_back_to_default(
-    monkeypatch: pytest.MonkeyPatch, blank: str
+@pytest.fixture
+def select_bound_installation(monkeypatch, tmp_path):
+    monkeypatch.setenv("REFLEXIO_LOG_DIR", str(tmp_path))
+    root = tmp_path / ".reflexio" / "configs"
+    root.mkdir(parents=True)
+
+    def bind(org_id: str) -> None:
+        path = root / f"config_{org_id}.json"
+        path.write_text(
+            encode_local_config_document(
+                {
+                    "storage_config": {
+                        "type": "postgres",
+                        "db_url": "postgresql://fixture@localhost/db",
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("REFLEXIO_ENV_FILE", str(tmp_path / f"{org_id}.env"))
+        assert bind_local_instance(org_id) == org_id
+
+    return bind
+
+
+def test_local_apps_retain_independent_construction_identities(
+    select_bound_installation,
 ) -> None:
-    # A blank ``KEY=`` line (python-dotenv exports "") must not strand the org
-    # at the empty string — it resolves to the default, like unset.
-    monkeypatch.setenv(_ENV, blank)
-    assert default_get_org_id() == DEFAULT_ORG_ID
+    router = APIRouter()
+
+    @router.get("/test/local-identity")
+    def org(org_id: str = Depends(default_get_org_id)) -> str:
+        return org_id
+
+    select_bound_installation("standalone-local")
+    standalone = api.create_app(mount_data_plane=False, additional_routers=[router])
+    select_bound_installation("claude-smart")
+    plugin = api.create_app(mount_data_plane=False, additional_routers=[router])
+    select_bound_installation("later-process-value")
+
+    assert (
+        TestClient(standalone).get("/test/local-identity").json() == "standalone-local"
+    )
+    assert TestClient(plugin).get("/test/local-identity").json() == "claude-smart"
+
+
+def test_local_lifespan_uses_the_same_bound_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    select_bound_installation,
+) -> None:
+    from reflexio.server.api_endpoints import request_context
+    from reflexio.server.llm import model_defaults
+    from reflexio.server.services import durable_learning, search_metering_worker
+    from reflexio.server.services.lineage import gc_scheduler, vector_backfill_sweep
+    from reflexio.server.services.playbook import aggregation_scheduler
+
+    observed: dict[str, str] = {}
+
+    def record_scheduler(name: str):
+        def start(_factory, *, bootstrap_org_id: str, **_kwargs) -> None:
+            observed[name] = bootstrap_org_id
+
+        return start
+
+    router = APIRouter()
+
+    @router.get("/test/local-identity")
+    def org(org_id: str = Depends(default_get_org_id)) -> str:
+        return org_id
+
+    monkeypatch.setattr(api, "freeze_startup_heap", lambda: None)
+    monkeypatch.setattr(model_defaults, "validate_llm_availability", lambda: None)
+    monkeypatch.setattr(
+        vector_backfill_sweep, "install_missing_vector_backfill_sweep", lambda: None
+    )
+    monkeypatch.setattr(gc_scheduler, "maybe_start_lineage_gc", record_scheduler("gc"))
+    monkeypatch.setattr(
+        durable_learning, "maybe_start_durable_learning", record_scheduler("durable")
+    )
+    monkeypatch.setattr(request_context, "RequestContext", lambda *, org_id: org_id)
+    monkeypatch.setattr(
+        aggregation_scheduler,
+        "ensure_local_playbook_aggregation_scheduler",
+        lambda org_id: observed.update(aggregation=org_id),
+    )
+    monkeypatch.setattr(
+        search_metering_worker, "start_search_metering_worker", lambda: None
+    )
+    monkeypatch.setattr(
+        search_metering_worker, "stop_search_metering_worker", lambda **_kwargs: 0
+    )
+    monkeypatch.setattr(api, "_lifespan_org_id_resolver", lambda: "unrelated-app")
+
+    select_bound_installation("local-at-launch")
+    app = api.create_app(additional_routers=[router])
+    select_bound_installation("later-process-value")
+    with TestClient(app) as client:
+        assert client.get("/test/local-identity").json() == "local-at-launch"
+    assert observed == {
+        "gc": "local-at-launch",
+        "durable": "local-at-launch",
+        "aggregation": "local-at-launch",
+    }
 
 
 class TestLifespanOrgIdResolver:

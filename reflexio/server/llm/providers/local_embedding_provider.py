@@ -15,6 +15,7 @@ this provider (mixing providers has always required a DB wipe).
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import logging
@@ -23,6 +24,7 @@ import shutil
 import tarfile
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -377,7 +379,15 @@ def _minilm_cache_lock_path(cache_path: Path) -> Path:
 
 
 @contextmanager
-def _exclusive_file_lock(lock_path: Path) -> Iterator[None]:
+def _exclusive_file_lock(
+    lock_path: Path, *, wait_forever: bool = False
+) -> Iterator[None]:
+    """Hold an exclusive lock on ``lock_path``.
+
+    ``wait_forever`` only changes Windows, where ``LK_LOCK`` gives up with an
+    ``OSError`` after about ten seconds: it retries the non-blocking lock until it
+    is held. POSIX ``flock`` always blocks.
+    """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as lock_file:
         lock_file.seek(0)
@@ -393,11 +403,27 @@ def _exclusive_file_lock(lock_path: Path) -> Iterator[None]:
             finally:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         elif msvcrt is not None:
-            msvcrt.locking(  # type: ignore[reportAttributeAccessIssue]
-                lock_file.fileno(),
-                msvcrt.LK_LOCK,  # type: ignore[reportAttributeAccessIssue]
-                1,
-            )
+            if wait_forever:
+                while True:
+                    try:
+                        msvcrt.locking(  # type: ignore[reportAttributeAccessIssue]
+                            lock_file.fileno(),
+                            msvcrt.LK_NBLCK,  # type: ignore[reportAttributeAccessIssue]
+                            1,
+                        )
+                        break
+                    except OSError as error:
+                        # Only contention is worth waiting for; a filesystem
+                        # that rejects byte-range locks must fail startup.
+                        if error.errno != errno.EACCES:
+                            raise
+                        time.sleep(0.1)
+            else:
+                msvcrt.locking(  # type: ignore[reportAttributeAccessIssue]
+                    lock_file.fileno(),
+                    msvcrt.LK_LOCK,  # type: ignore[reportAttributeAccessIssue]
+                    1,
+                )
             try:
                 yield
             finally:

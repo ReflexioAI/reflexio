@@ -15,7 +15,7 @@ from reflexio.models.profile_id import new_profile_id
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool
 from reflexio.server.llm._litellm_types import ProviderRequestGuardError
-from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
 from reflexio.server.llm.tools import describe_tool_loop_error
@@ -46,12 +46,16 @@ if TYPE_CHECKING:
     )
     from reflexio.server.services.storage.storage_base import AgentRunRecord
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.services.profile.lifecycle import (
+    ExplicitStorageDeadline,
+    expiration_for,
+    new_features,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     PROFILE_SOURCE_EVIDENCE_INSTRUCTION,
     ProfileGenerationServiceConstants,
     ProfileTimeToLive,
     StructuredProfilesOutput,
-    calculate_expiration_timestamp,
     construct_profile_extraction_messages_from_sessions,
     prepare_profile_extraction_prompt,
 )
@@ -59,8 +63,8 @@ from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
     format_sessions_to_history_string,
     log_llm_messages,
+    visible_interaction_evidence_texts,
 )
-from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 logger = logging.getLogger(__name__)
 PROFILE_EXTRACTION_TIMEOUT_SECONDS = 300
@@ -86,14 +90,25 @@ def _is_transient_extraction_failure(exc: BaseException) -> bool:
     return describe_tool_loop_error(exc)[1] == "transient"
 
 
-def _profile_evidence_validation_errors(
-    output: BaseModel, spans: tuple[SourceSpan, ...]
+def profile_source_evidence_texts(
+    request_interaction_data_models: list[RequestInteractionDataModel],
+    *,
+    visible_spans: tuple[SourceSpan, ...] | None = None,
 ) -> list[str]:
-    """A source quote must occur in one contiguous original field, never a splice."""
-    if not isinstance(output, StructuredProfilesOutput):
-        return ["Return the supplied profile extraction schema."]
+    """Use the actual prompt view, preserving contiguous original field ranges.
+
+    Ordinary prompts hide expert/shadow fields. Prepared consumers instead
+    supply their authenticated visible spans, never the complete hidden source.
+    """
+    if visible_spans is None:
+        return [
+            text
+            for model in request_interaction_data_models
+            for interaction in model.interactions
+            for text in visible_interaction_evidence_texts(interaction)
+        ]
     fields: dict[tuple[int, str, str], list[SourceSpan]] = {}
-    for span in spans:
+    for span in visible_spans:
         fields.setdefault(
             (span.interaction_id, span.request_id, span.field), []
         ).append(span)
@@ -111,18 +126,86 @@ def _profile_evidence_validation_errors(
                 text[span.start - run_start : span.start - run_start + overlap]
                 != span.text[:overlap]
             ):
-                return ["Visible original evidence disagrees at overlapping offsets."]
+                raise ValueError(
+                    "Visible original evidence disagrees at overlapping offsets."
+                )
             text += span.text[overlap:]
             previous_end = max(previous_end, span.end)
         if text:
             contiguous_texts.append(text)
-    return [
+    return contiguous_texts
+
+
+def profile_forget_authority_texts(
+    request_interaction_data_models: list[RequestInteractionDataModel],
+    *,
+    visible_spans: tuple[SourceSpan, ...] | None = None,
+) -> list[str]:
+    """Visible original User instructions, separate from factual source context.
+
+    Attached tool results and expert/shadow annotations are factual context,
+    not User instructions. Filtering precedes contiguous-range reconstruction,
+    so other roles or missing excerpts cannot complete an authority quotation.
+    """
+    if visible_spans is not None:
+        return profile_source_evidence_texts(
+            [],
+            visible_spans=tuple(
+                span
+                for span in visible_spans
+                if span.role.strip().casefold() == "user"
+                and span.field in {"content", "user_action_description"}
+            ),
+        )
+    texts = []
+    for model in request_interaction_data_models:
+        for interaction in model.interactions:
+            if interaction.role.strip().casefold() != "user":
+                continue
+            if interaction.content:
+                texts.append(interaction.content)
+            # Match ordinary prompt visibility without promoting the rendered
+            # action label or attached tool serialization into User authority.
+            if (
+                interaction.user_action.value != "none"
+                and interaction.user_action_description
+            ):
+                texts.append(interaction.user_action_description)
+    return texts
+
+
+def _profile_evidence_validation_errors(
+    output: BaseModel, spans: tuple[SourceSpan, ...]
+) -> list[str]:
+    """A source quote must occur in one contiguous original field, never a splice."""
+    if not isinstance(output, StructuredProfilesOutput):
+        return ["Return the supplied profile extraction schema."]
+    try:
+        contiguous_texts = profile_source_evidence_texts([], visible_spans=spans)
+        user_texts = profile_forget_authority_texts([], visible_spans=spans)
+    except ValueError as error:
+        return [str(error)]
+    errors = [
         f"profiles[{index}]: quote exact visible original evidence in source_span."
         for index, profile in enumerate(output.profiles or [])
         if not profile.source_span
         or not profile.source_span.strip()
         or not any(profile.source_span in text for text in contiguous_texts)
     ]
+    for index, profile in enumerate(output.profiles or []):
+        deadline = profile.explicit_storage_deadline
+        if deadline is not None and not any(
+            deadline.source_quote in text for text in contiguous_texts
+        ):
+            errors.append(
+                f"profiles[{index}]: storage deadline must quote exact visible original source."
+            )
+        quote = profile.explicit_forget_quote
+        if quote is not None and not any(quote in text for text in user_texts):
+            errors.append(
+                f"profiles[{index}]: forget authority must quote exact visible original User instruction."
+            )
+    return errors
 
 
 class ProfileExtractor:
@@ -165,21 +248,10 @@ class ProfileExtractor:
         # Get LLM config overrides from configuration
         config = self.request_context.configurator.get_config()
         llm_config = config.llm_config if config else None
+        api_key_config = config.api_key_config if config else None
 
-        # Resolve model names: config override → site var → auto-detect
-        model_setting = SiteVarManager().get_site_var("llm_model_setting")
-        site_var = model_setting if isinstance(model_setting, dict) else {}
-        api_key_config = self.request_context.configurator.get_config().api_key_config
-
-        self.should_run_model_name = resolve_model_name(
-            ModelRole.SHOULD_RUN,
-            site_var_value=site_var.get("should_run_model_name"),
-            llm_config=llm_config,
-            api_key_config=api_key_config,
-        )
         self.default_generation_model_name = resolve_model_name(
             ModelRole.GENERATION,
-            site_var_value=site_var.get("default_generation_model_name"),
             llm_config=llm_config,
             api_key_config=api_key_config,
         )
@@ -202,7 +274,8 @@ class ProfileExtractor:
         Get interactions for this extractor based on its config.
 
         Handles:
-        - Getting window parameters (extractor override or global fallback)
+        - Returning supplied frozen window interactions without a new lookup
+        - Reading the explicit profile window size for direct collection
         - Source filtering based on extractor config
         - Time range filtering for rerun flows
 
@@ -215,17 +288,8 @@ class ProfileExtractor:
         if self.service_config.window_interactions is not None:
             return self.service_config.window_interactions
 
-        # Get global config values
         config = self.request_context.configurator.get_config()
-        global_window_size = getattr(config, "window_size", None) if config else None
-        global_stride_size = getattr(config, "stride_size", None) if config else None
-
-        # Get effective window_size for this extractor
-        window_size, _ = get_extractor_window_params(
-            self.config,
-            global_window_size,
-            global_stride_size,
-        )
+        window_size, _ = get_extractor_window_params(config, "profile")
 
         # Get effective source filter (None = get ALL sources)
         should_skip, effective_source = get_effective_source_filter(
@@ -312,11 +376,25 @@ class ProfileExtractor:
             for interaction in request_model.interactions
             if interaction.interaction_id
         ]
+        coordinator = current_overflow_coordinator.get()
         user_profiles = self._convert_raw_to_user_profiles(
             raw_profiles=raw_profiles or [],
             user_id=self.service_config.user_id,
             request_id=self.service_config.request_id,
             source_interaction_ids=source_interaction_ids,
+            source_texts=profile_source_evidence_texts(
+                request_interaction_data_models,
+                visible_spans=(coordinator.carried_source_spans or ())
+                if coordinator is not None
+                else None,
+            ),
+            user_source_texts=profile_forget_authority_texts(
+                request_interaction_data_models,
+                visible_spans=(coordinator.carried_source_spans or ())
+                if coordinator is not None
+                else None,
+            ),
+            committed_run=self._last_resumable_run,
         )
         # Defer the stride-bookmark advance onto the outcome instead of
         # self-advancing here (F1): the advance is applied downstream — inside
@@ -354,12 +432,15 @@ class ProfileExtractor:
         user_id: str,
         request_id: str,
         source_interaction_ids: list[int] | None = None,
+        source_texts: list[str] | None = None,
+        user_source_texts: list[str] | None = None,
+        committed_run: AgentRunRecord | None = None,
     ) -> list[UserProfile]:
         """
         Convert raw profile dicts from LLM to UserProfile objects.
 
         Args:
-            raw_profiles: List of profile dicts with content, time_to_live, and optional metadata
+            raw_profiles: List of profile dicts with content, explicit storage permission, and optional metadata
             user_id: User ID
             request_id: Request ID
             source_interaction_ids: Stored interaction ids used as the extraction window
@@ -388,15 +469,72 @@ class ProfileExtractor:
                 if k
                 not in {
                     "content",
-                    "time_to_live",
+                    "explicit_storage_deadline",
+                    "explicit_forget_quote",
                     "source_span",
                     "notes",
                     "reader_angle",
+                    "time_to_live",
                 }
             }
 
-            now_ts = int(datetime.now(UTC).timestamp())
-            ttl = ProfileTimeToLive(profile_content.get("time_to_live", "infinity"))
+            legacy_ttl = None
+            if "time_to_live" in profile_content:
+                from reflexio.server.services.extraction.resumable_agent import (
+                    decode_committed_output,
+                )
+                from reflexio.server.services.profile.committed_output import (
+                    read_saved_structured_output,
+                )
+
+                if committed_run is None or committed_run.committed_output is None:
+                    raise ValueError("TTL-free extraction cannot accept guessed TTL")
+                if (
+                    committed_run.binding.user_id != user_id
+                    or committed_run.binding.request_id != request_id
+                    or list(committed_run.binding.source_interaction_ids)
+                    != profile_source_interaction_ids
+                ):
+                    raise ValueError("Committed legacy profile scope changed")
+                saved, _ = decode_committed_output(committed_run.committed_output)
+                validated = read_saved_structured_output(
+                    StructuredProfilesOutput, saved
+                )
+                if profile_content not in [
+                    item.model_dump() for item in validated.profiles or []
+                ]:
+                    raise ValueError("Legacy profile is absent from committed output")
+                clock = committed_run.agent_completed_at or committed_run.created_at
+                if clock is None or clock.tzinfo is None:
+                    raise ValueError("Committed legacy profile has no recorded clock")
+                now_ts = int(clock.timestamp())
+                legacy_ttl = ProfileTimeToLive(profile_content["time_to_live"])
+            else:
+                now_ts = int(datetime.now(UTC).timestamp())
+            raw_deadline = profile_content.get("explicit_storage_deadline")
+            custom_features = new_features(
+                custom_features,
+                now=now_ts,
+                deadline=ExplicitStorageDeadline.model_validate(raw_deadline)
+                if raw_deadline is not None
+                else None,
+                source_texts=source_texts or [],
+                user_source_texts=user_source_texts or [],
+                forget_quote=profile_content.get("explicit_forget_quote"),
+            )
+            if legacy_ttl is not None:
+                from reflexio.server.services.profile.lifecycle import KEY
+                from reflexio.server.services.profile.profile_generation_service_utils import (
+                    calculate_expiration_timestamp,
+                )
+
+                custom_features[KEY].update(
+                    created_at=None,
+                    legacy_origin=True,
+                    legacy_expiration_timestamp=calculate_expiration_timestamp(
+                        now_ts, legacy_ttl
+                    ),
+                )
 
             added_profile = UserProfile(
                 profile_id=new_profile_id(),
@@ -404,8 +542,8 @@ class ProfileExtractor:
                 content=profile_content["content"],
                 last_modified_timestamp=now_ts,
                 generated_from_request_id=request_id,
-                profile_time_to_live=ttl,
-                expiration_timestamp=calculate_expiration_timestamp(now_ts, ttl),
+                profile_time_to_live=legacy_ttl or ProfileTimeToLive.INFINITY,
+                expiration_timestamp=expiration_for(custom_features),
                 custom_features=custom_features or None,
                 extractor_names=None,
                 source_interaction_ids=profile_source_interaction_ids,
@@ -435,7 +573,7 @@ class ProfileExtractor:
             existing_profiles: List of existing user profiles for context
 
         Returns:
-            list[dict]: List of profile dicts with content, time_to_live, and optional metadata
+            list[dict]: List of profile dicts with content, explicit storage permission, and optional metadata
         """
         # Check if mock mode is enabled
         if env_bool("MOCK_LLM_RESPONSE", default=False):
@@ -523,7 +661,7 @@ class ProfileExtractor:
                 != identity
                 for prompt_id, identity in templates.items()
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Profile templates changed while constructing extraction"
                 )
             return OverflowExtractionCall(
@@ -661,7 +799,7 @@ class ProfileExtractor:
 
         mock_profile = {
             "content": " ".join(summary_parts),
-            "time_to_live": "one_month",
+            "explicit_storage_deadline": None,
         }
 
         return [mock_profile]

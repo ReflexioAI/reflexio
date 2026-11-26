@@ -15,13 +15,16 @@ from reflexio.config_file import LocalConfigFile
 
 @pytest.fixture
 def saved_local_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    env_file = tmp_path / "launch.env"
+    env_file.touch()
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(env_file))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("REFLEXIO_LOG_DIR", str(tmp_path))
-    monkeypatch.setenv("REFLEXIO_DEFAULT_ORG_ID", "startup-owner")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://127.0.0.1:9")
     monkeypatch.delenv("REFLEXIO_STORAGE", raising=False)
-    monkeypatch.setattr(run_services, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(run_services, "load_local_launch_env", lambda: None)
     fixture = Path(__file__).parents[1] / "fixtures/local_config_generation0.json"
     data = json.loads(fixture.read_text())
     data["storage_config"]["db_path"] = str(tmp_path / "owned.sqlite")
@@ -81,6 +84,7 @@ def test_occupied_backend_never_prepares_when_pid_tools_cannot_see_it(
     assert not (saved_local_config.parent / ".config-migrations").exists()
 
 
+@pytest.mark.parametrize("manual", [False, True])
 @pytest.mark.parametrize("tagged_sqlite", [False, True])
 @pytest.mark.parametrize("explicit_storage", [None, "sqlite"])
 def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
@@ -88,11 +92,15 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     monkeypatch,
     explicit_storage,
     tagged_sqlite,
+    manual,
 ):
+    original = json.loads(saved_local_config.read_text())
+    # Keep the frozen generation-zero corpus literal; exercise its old mode
+    # through the real CLI owner before the process-launch stub.
+    original["profile_extractor_config"]["manual_trigger"] = manual
     if not tagged_sqlite:
-        original = json.loads(saved_local_config.read_text())
         original["storage_config"].pop("type")
-        saved_local_config.write_text(json.dumps(original))
+    saved_local_config.write_text(json.dumps(original))
     before = decode_config_document(saved_local_config.read_text())
     launches = []
     monkeypatch.setattr(
@@ -116,17 +124,7 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     logical = LocalConfigFile(saved_local_config).read_document()
     assert logical["storage_config"] == before["storage_config"]
     expected = dict(before)
-    optimizer = dict(expected["playbook_optimizer_config"])
-    optimizer.pop("optimize_agent_playbooks")
-    optimizer.pop("auto_update_pending_agent_playbooks")
-    optimizer["agent_playbooks_enabled"] = False
-    enabled = optimizer.pop("enabled")
-    limit = optimizer.pop("max_metric_calls")
-    optimizer["metric_call_budget"] = limit if enabled else 0
-    optimizer.pop("scheduler_jitter_seconds")
-    optimizer.pop("webhook_max_retries", None)
-    optimizer.pop("webhook_backoff_base_seconds", None)
-    expected["playbook_optimizer_config"] = optimizer
+    expected.pop("playbook_optimizer_config")
     floor = dict(expected["retrieval_floor"])
     assert floor.pop("enabled") is False
     assert floor.pop("pool_size") == 30
@@ -150,11 +148,50 @@ def test_ordinary_restart_preserves_database_and_unrelated_raw_fields(
     assert pending["pending_ttl_seconds"] == 86_400
     pending["pending_ttl_seconds"] = 0
     expected["pending_tool_call_config"] = pending
+    assert expected.pop("window_size") == 11
+    assert expected.pop("stride_size") == 3
+    for kind in ("profile_extractor_config", "user_playbook_extractor_config"):
+        extractor = dict(expected[kind])
+        assert extractor.pop("window_size_override") is None
+        assert extractor.pop("stride_size_override") is None
+        expected[kind] = extractor
+    assert expected["profile_extractor_config"].pop("manual_trigger") is manual
+    expected.update(
+        profile_window_size=11,
+        profile_stride_size=0 if manual else 3,
+        playbook_window_size=11,
+        playbook_stride_size=3,
+    )
     assert logical == expected
     first = saved_local_config.read_bytes()
     run_services.execute(args, storage=explicit_storage)
     assert saved_local_config.read_bytes() == first
     assert len(launches) == 2
+
+
+def test_explicit_storage_writes_only_to_the_selected_project_dotenv(
+    saved_local_config, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    project = tmp_path / ".env"
+    project.write_text("PROJECT_SETTING=project\n")
+    user = tmp_path / "user.env"
+    original = "USER_SETTING=user\n"
+    user.write_text(original)
+    monkeypatch.setenv("REFLEXIO_ENV_FILE", str(user))
+    monkeypatch.setattr(run_services, "run_services", lambda *_: None)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    args = run_services._build_run_services_parser().parse_args(
+        ["--only", "backend", "--backend-port", str(port), "--no-reload"]
+    )
+
+    run_services.execute(args, storage="sqlite")
+
+    assert 'REFLEXIO_STORAGE="sqlite"' in project.read_text()
+    assert user.read_text() == original
 
 
 def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
@@ -174,6 +211,12 @@ def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
     original = saved_local_config.read_bytes()
     document = decode_config_document(original.decode())
     database = document["storage_config"]["db_path"]
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
+    # This test upgrades saved settings around an already qualified dataset.
+    # Historical data without authority requires explicit maintenance first.
+    storage = SQLiteStorage(org_id="self-host-org", db_path=database)
+    storage.conn.close()
     with sqlite3.connect(database) as connection:
         connection.execute("CREATE TABLE upgrade_identity (value TEXT)")
         connection.execute("INSERT INTO upgrade_identity VALUES ('same-owned-dataset')")
@@ -199,7 +242,6 @@ def test_real_server_upgrades_before_serving_and_keeps_owned_dataset(
         USERPROFILE=str(tmp_path),
         REFLEXIO_LOG_DIR=str(tmp_path),
         REFLEXIO_ENV_FILE=str(empty_env),
-        REFLEXIO_DEFAULT_ORG_ID="startup-owner",
         LOCAL_STORAGE_PATH=str(tmp_path / "sqlite"),
         REFLEXIO_STORAGE="sqlite",
         PYTHONPATH=str(Path(__file__).parents[2]),
@@ -256,12 +298,7 @@ runpy.run_module("reflexio.server", run_name="__main__")
                 f"http://127.0.0.1:{port}/api/get_config", timeout=10
             ) as response:
                 config = json.load(response)
-            optimizer = config["playbook_optimizer_config"]
-            assert optimizer["agent_playbooks_enabled"] is False
-            assert optimizer["user_playbooks_enabled"] is True
-            assert optimizer["metric_call_budget"] == 7
-            assert "optimize_agent_playbooks" not in optimizer
-            assert "auto_update_pending_agent_playbooks" not in optimizer
+            assert "playbook_optimizer_config" not in config
             assert config["storage_config"]["db_path"] == database
             assert "_reflexio_config_file" not in config
             with sqlite3.connect(database) as connection:

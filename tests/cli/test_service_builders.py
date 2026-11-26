@@ -173,6 +173,27 @@ class TestParseOnlyFlag:
 class TestBuildBackendService:
     """Tests for build_backend_service()."""
 
+    def test_local_backend_inherits_the_lexical_env_file(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        rotated = tmp_path / "credential-version"
+        rotated.touch()
+        selected = tmp_path / "selected.env"
+        selected.symlink_to(rotated)
+        monkeypatch.setenv("REFLEXIO_ENV_FILE", selected.name)
+
+        local = build_backend_service({"backend": 8081}, reload=False)
+        embedded = build_backend_service(
+            {"backend": 8081}, reload=False, app_module="embedded:app"
+        )
+
+        assert local.env == {
+            "REFLEXIO_ENV_FILE": str(selected),
+            "PYTHON_DOTENV_DISABLED": "1",
+        }
+        assert embedded.env is None
+
     def test_reload_true_adds_reload_flag(self) -> None:
         svc = build_backend_service({"backend": 8081}, reload=True, workers=1)
         assert "--reload" in svc.command
@@ -182,7 +203,8 @@ class TestBuildBackendService:
 
         assert svc.name == "embedding"
         assert "reflexio.server.llm.embedding_service:app" in svc.command
-        assert svc.env is None
+        assert svc.env is not None
+        assert svc.env["PYTHON_DOTENV_DISABLED"] == "1"
 
     def test_build_embedding_service_accepts_app_module_override(self) -> None:
         svc = build_embedding_service(

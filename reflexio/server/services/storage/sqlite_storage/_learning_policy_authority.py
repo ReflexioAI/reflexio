@@ -1,0 +1,652 @@
+"""New-file provisioning and explicit qualified SQLite policy establishment.
+
+New files retain a SEALED creation root before ordinary migrations. Existing
+files require the explicit stopped-host upgrade owner; normal construction never
+chooses their policy, even when application tables are empty.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sqlite3
+import tempfile
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from reflexio.profile_authoring_protocol import (
+    PROFILE_AUTHORING_POLICY,
+)
+from reflexio.server.services.storage.storage_base.learning_transition import (
+    LearningPolicyAuthority,
+    LearningTransitionBlockedError,
+    _change_learning_policy_authority_db,
+)
+
+AUTHORITY_DDL = """CREATE TABLE IF NOT EXISTS _learning_policy_authority (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    authority TEXT NOT NULL CHECK (json_valid(authority))
+)"""
+
+
+@dataclass(frozen=True)
+class SQLiteDatasetUpgradeResult:
+    """A new establishment has provenance; a retry retains only its digest."""
+
+    authority: LearningPolicyAuthority
+    established: bool
+    provenance: dict[str, Any] | None
+
+
+def _upgrade_refused(reason: str) -> LearningTransitionBlockedError:
+    return LearningTransitionBlockedError(
+        f"Local dataset upgrade refused: {reason}. "
+        "Keep the original dataset and use its supported recovery owner; "
+        "this command never repairs or discards retained work."
+    )
+
+
+def _catalog(conn: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in conn.execute(
+            "SELECT type,name,tbl_name AS 'table',sql FROM sqlite_schema "
+            "ORDER BY type,name LIMIT ?",
+            (limit,),
+        )
+    ]
+
+
+def _owned_identifier(name: str) -> str:
+    # Only names from the packaged, independently qualified schema contract.
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _check_upgrade_schema(
+    conn: sqlite3.Connection, contract: dict[str, Any]
+) -> tuple[bool, bool, list[dict[str, Any]]]:
+    from ._ddl import VEC_PENDING_DDL
+    from ._extraction_stream import CURSOR_WINDOW_INDEX_DDL, CURSOR_WINDOW_INDEX_NAME
+
+    expected = contract["catalog"]
+    # The authority, the optional index and the vector-pending table may coexist.
+    # Read one more row so no addition can hide an unsupported trailing catalog
+    # object.
+    observed = _catalog(conn, len(expected) + 4)
+    window_index = {
+        "type": "index",
+        "name": CURSOR_WINDOW_INDEX_NAME,
+        "table": "extraction_cursors",
+        # SQLite removes IF NOT EXISTS in the stored definition.
+        "sql": CURSOR_WINDOW_INDEX_DDL.replace(" IF NOT EXISTS", "", 1),
+    }
+    vec_pending = {
+        "type": "table",
+        "name": "vec_pending",
+        "table": "vec_pending",
+        "sql": VEC_PENDING_DDL.replace(" IF NOT EXISTS", "", 1),
+    }
+    authority_objects = [
+        row for row in observed if row["table"] == "_learning_policy_authority"
+    ]
+    if authority_objects:
+        reference = sqlite3.connect(":memory:")
+        reference.row_factory = sqlite3.Row
+        try:
+            reference.execute(AUTHORITY_DDL)
+            if authority_objects != _catalog(reference, 2):
+                raise _upgrade_refused("unsupported authority schema")
+        finally:
+            reference.close()
+    has_identity = any(row["table"] == "_dataset_identity" for row in observed)
+    if not has_identity:
+        expected = [row for row in expected if row["table"] != "_dataset_identity"]
+    historical_objects = [
+        row
+        for row in observed
+        if row not in authority_objects and row not in (window_index, vec_pending)
+    ]
+    if historical_objects != expected:
+        raise _upgrade_refused("unsupported historical schema")
+    for name, shape in contract["tables"].items():
+        if name == "_dataset_identity" and not has_identity:
+            continue
+        if shape.get("virtual"):
+            continue  # Exact catalog/ownership proof, never query a virtual parent.
+        columns = [
+            row["name"]
+            for row in conn.execute(
+                f"PRAGMA table_info({_owned_identifier(name)})"  # noqa: S608 -- Packaged schema names, not observed identifiers.
+            )
+        ]
+        if columns != shape["columns"]:
+            raise _upgrade_refused("unsupported historical columns")
+    return bool(authority_objects), has_identity, observed
+
+
+def _upgrade_identity(conn: sqlite3.Connection) -> str:
+    from ._dataset_path import DatasetIdentityError, validate_dataset_identity
+
+    rows = conn.execute("SELECT k,org_id FROM _dataset_identity LIMIT 2").fetchall()
+    if len(rows) != 1 or rows[0]["k"] != 1:
+        raise _upgrade_refused("retained identity is unavailable")
+    org_id = rows[0]["org_id"]
+    if not isinstance(org_id, str):
+        raise _upgrade_refused("retained identity is invalid")
+    try:
+        return validate_dataset_identity(org_id)
+    except DatasetIdentityError:
+        raise _upgrade_refused("retained identity is invalid") from None
+
+
+def _check_upgrade_scope(
+    conn: sqlite3.Connection, contract: dict[str, Any], org_id: str
+) -> None:
+    for name in contract["ownership"]["direct_scope"]:
+        columns = contract["tables"][name]["columns"]
+        predicates = []
+        parameters = []
+        if "org_id" in columns:
+            predicates.append("org_id IS NULL OR org_id != ?")
+            parameters.append(org_id)
+        if "project_id" in columns:
+            predicates.append("project_id IS NULL OR project_id != ''")
+        if conn.execute(
+            f"SELECT 1 FROM {_owned_identifier(name)} WHERE "  # noqa: S608 -- Packaged schema names; predicates are fixed above.
+            + " OR ".join(predicates)
+            + " LIMIT 1",
+            parameters,
+        ).fetchone():
+            raise _upgrade_refused("retained scope differs from its identity")
+    known_tables = tuple(contract["tables"])
+    placeholders = ",".join("?" for _ in known_tables)
+    if conn.execute(
+        f"SELECT 1 FROM sqlite_sequence WHERE name NOT IN ({placeholders}) LIMIT 1",  # noqa: S608 -- Parameter placeholders only.
+        known_tables,
+    ).fetchone():
+        raise _upgrade_refused("unknown sequence owner")
+
+
+def _select_upgrade_namespace(
+    conn: sqlite3.Connection,
+    selected: str | None,
+    *,
+    has_identity: bool,
+    has_authority: bool,
+) -> str:
+    """Select explicitly or retain the immutable claim; never infer ownership."""
+    from ._dataset_path import DatasetIdentityError, validate_dataset_identity
+
+    if selected is not None:
+        try:
+            validate_dataset_identity(selected)
+        except DatasetIdentityError:
+            raise _upgrade_refused("the selected namespace is invalid") from None
+    if has_identity:
+        retained = _upgrade_identity(conn)
+        if selected is not None and selected != retained:
+            raise _upgrade_refused("the selected namespace conflicts with its claim")
+        return retained
+    if has_authority:
+        raise _upgrade_refused("retained authority has no identity claim")
+    if selected is None:
+        raise _upgrade_refused("an unclaimed dataset requires explicit --org-id")
+    return selected
+
+
+def upgrade_existing_sqlite_dataset(
+    path: Path, *, org_id: str | None = None
+) -> SQLiteDatasetUpgradeResult:
+    """Explicitly establish future policy on one qualified, stopped local cohort.
+
+    Stop affected services/coding hosts and filesystem changes first. This never
+    invokes normal storage construction, migrations, operator env or inference.
+    Unknown schemas and retained independent work remain held, without cleanup.
+    """
+    from ..storage_base.transition_closure import derive_project_transition_closure_db
+    from ._dataset_path import _claim_or_read_identity_db
+    from ._extraction_stream import SQLiteStreamSQL, register_window_delivery_validator
+
+    if not path.is_absolute():
+        raise _upgrade_refused("an explicit absolute existing file is required")
+    target = path.resolve(strict=True)
+    if not target.is_file():
+        raise _upgrade_refused("an existing regular file is required")
+    original = target.stat()
+    contract_bytes = (
+        Path(__file__).with_name("_historical_schema_70daf32c.json").read_bytes()
+    )
+    contract = json.loads(contract_bytes)
+    conn = sqlite3.connect(target.as_uri() + "?mode=rw", uri=True)
+    conn.row_factory = sqlite3.Row
+
+    def check_target() -> None:
+        current = target.stat()
+        if (current.st_dev, current.st_ino) != (original.st_dev, original.st_ino):
+            raise _upgrade_refused("the selected file changed")
+
+    try:
+        register_window_delivery_validator(conn)
+        check_target()
+        conn.execute("BEGIN IMMEDIATE")
+        check_target()
+        has_authority, has_identity, catalog = _check_upgrade_schema(conn, contract)
+        org_id = _select_upgrade_namespace(
+            conn, org_id, has_identity=has_identity, has_authority=has_authority
+        )
+        _check_upgrade_scope(conn, contract, org_id)
+        db = SQLiteStreamSQL(conn)
+        raw = db.read_learning_policy_authority() if has_authority else None
+        if raw is not None:
+            retained = LearningPolicyAuthority.from_dict(raw)
+            if (
+                retained.phase != "open"
+                or retained.active_policy != PROFILE_AUTHORING_POLICY
+            ):
+                raise _upgrade_refused("retained authority needs its transition owner")
+            check_target()
+            conn.commit()
+            check_target()
+            return SQLiteDatasetUpgradeResult(retained, False, None)
+        for name in contract["empty_controls"]:
+            if conn.execute(
+                f"SELECT 1 FROM {_owned_identifier(name)} LIMIT 1"  # noqa: S608 -- Exact packaged ordinary-control table list.
+            ).fetchone():
+                raise _upgrade_refused(f"retained independent control {name}")
+        stall = conn.execute("SELECT id,stalled FROM stall_state LIMIT 2").fetchall()
+        if len(stall) != 1 or tuple(stall[0]) != (1, 0):
+            raise _upgrade_refused("retained learning is stalled or unknown")
+        closure = derive_project_transition_closure_db(db, org_id=org_id, project_id="")
+        if not closure.ready or closure.blockers:
+            raise _upgrade_refused(
+                "retained execution or financial closure is incomplete"
+            )
+        nonce = uuid.uuid4().hex
+        provenance = {
+            "protocol": "sqlite-qualified-upgrade-v1",
+            "source_schema_sha256": hashlib.sha256(contract_bytes).hexdigest(),
+            "source_catalog_sha256": hashlib.sha256(
+                json.dumps(
+                    catalog,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+            "identity_origin": "retained_claim"
+            if has_identity
+            else "operator_established",
+            "org_id": org_id,
+            "file_identity": [original.st_dev, original.st_ino],
+            "policy": PROFILE_AUTHORING_POLICY,
+            "initialization_nonce": nonce,
+            "closure_counts": closure.counts,
+        }
+        root = LearningPolicyAuthority(
+            1,
+            uuid.uuid4().hex,
+            0,
+            "sealed",
+            PROFILE_AUTHORING_POLICY,
+            PROFILE_AUTHORING_POLICY,
+            "sqlite-upgrade:" + nonce,
+            "qualified_upgrade",
+            nonce,
+            hashlib.sha256(
+                json.dumps(provenance, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            True,
+        )
+        if not has_identity and _claim_or_read_identity_db(conn, org_id) != org_id:
+            raise _upgrade_refused("the selected namespace conflicts with its claim")
+        conn.execute(AUTHORITY_DDL)
+        conn.execute(
+            "INSERT INTO _learning_policy_authority(singleton,authority) VALUES(1,?)",
+            (json.dumps(root.to_dict(), sort_keys=True, separators=(",", ":")),),
+        )
+        for action in ("arm", "activate"):
+            root = _change_learning_policy_authority_db(
+                db,
+                action=action,
+                operation_id="sqlite-upgrade:" + nonce,
+                expected_nonce=root.authority_nonce,
+                expected_generation=root.generation,
+            )
+        check_target()
+        if _upgrade_identity(conn) != org_id:
+            raise _upgrade_refused("the retained identity changed")
+        _check_upgrade_scope(conn, contract, org_id)
+        if (
+            LearningPolicyAuthority.from_dict(db.read_learning_policy_authority())
+            != root
+        ):
+            raise _upgrade_refused("the published authority changed")
+        conn.commit()
+        check_target()
+        return SQLiteDatasetUpgradeResult(root, True, provenance)
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _provenance(path: str, org_id: str, nonce: str) -> str:
+    identity: list[str | int] = ["sqlite-first-dataset", org_id, nonce]
+    if path == ":memory:":
+        identity.append("private-memory-connection")
+    else:
+        stat = Path(path).stat()
+        identity.extend((stat.st_dev, stat.st_ino))
+    return hashlib.sha256(
+        json.dumps(identity, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def claim_existing_first_dataset(path: Path, org_id: str) -> None:
+    """Establish the namespace of an explicitly selected, stopped SQLite file.
+
+    Only the retained first-creation proof can authorize this metadata write.
+    The storage constructor, schema migrations and policy activation stay bypassed.
+    """
+    from ._dataset_path import (
+        IDENTITY_CLAIM_TABLE,
+        DatasetIdentityError,
+        _claim_or_read_identity_db,
+        _table_exists,
+        validate_dataset_identity,
+    )
+    from ._extraction_stream import SQLiteStreamSQL
+
+    validate_dataset_identity(org_id)
+    if not path.is_absolute() or not path.is_file():
+        raise DatasetIdentityError(
+            "Select the existing SQLite file by its absolute path."
+        )
+    missing_proof = (
+        "The SQLite dataset has no matching creation proof. "
+        "Use data upgrade-local for supported historical datasets before binding."
+    )
+    try:
+        target = path.resolve(strict=True)
+        original = target.stat()
+
+        def check_target() -> None:
+            current = path.stat()
+            if (current.st_dev, current.st_ino) != (original.st_dev, original.st_ino):
+                raise DatasetIdentityError(
+                    "The selected SQLite file changed during binding."
+                )
+
+        conn = sqlite3.connect(target.as_uri() + "?mode=rw", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            check_target()
+            if _table_exists(conn, IDENTITY_CLAIM_TABLE):
+                if _upgrade_identity(conn) != org_id:
+                    raise DatasetIdentityError(
+                        "The SQLite dataset belongs to a different organization."
+                    )
+                return  # Another maintenance operation established our claim.
+            if not _table_exists(conn, "_learning_policy_authority"):
+                raise DatasetIdentityError(missing_proof)
+            authority = LearningPolicyAuthority.from_dict(
+                SQLiteStreamSQL(conn).read_learning_policy_authority()
+            )
+            if (
+                authority.initialization_kind != "first_dataset"
+                or authority.phase != "open"
+                or authority.provenance_sha256
+                != _provenance(str(target), org_id, authority.initialization_nonce)
+            ):
+                raise DatasetIdentityError(missing_proof)
+            # Explicit SQLite paths historically allowed several organizations.
+            # Inspect stored labels in this transaction before making a claim.
+            # Virtual indexes are derived and can require an unloaded SQLite
+            # module. The ordinary tables own the persisted scope.
+            for (name,) in conn.execute(
+                "SELECT name FROM sqlite_schema "
+                "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' "
+                "AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'"
+            ).fetchall():
+                if (
+                    conn.execute(
+                        "SELECT 1 FROM pragma_table_xinfo(?) "
+                        "WHERE name = 'org_id' COLLATE NOCASE",
+                        (name,),
+                    ).fetchone()
+                    is None
+                ):
+                    continue
+                if conn.execute(
+                    f"SELECT 1 FROM {_owned_identifier(name)} "  # noqa: S608 -- Quoted catalog identifier.
+                    "WHERE org_id IS NOT NULL AND org_id <> '' "
+                    "AND org_id COLLATE BINARY <> ? LIMIT 1",
+                    (org_id,),
+                ).fetchone():
+                    raise DatasetIdentityError(
+                        "The selected SQLite file contains a different organization's data."
+                    )
+            if _claim_or_read_identity_db(conn, org_id) != org_id:
+                raise DatasetIdentityError(
+                    "The SQLite dataset owner changed during binding."
+                )
+            check_target()
+            conn.commit()
+        finally:
+            conn.close()
+        check_target()
+    except (sqlite3.Error, OSError, ValueError, LearningTransitionBlockedError) as exc:
+        raise DatasetIdentityError(
+            "Could not verify ownership of the selected SQLite dataset."
+        ) from exc
+
+
+def _retain_creation(conn: sqlite3.Connection, path: str, org_id: str) -> None:
+    nonce = uuid.uuid4().hex
+    root = LearningPolicyAuthority(
+        1,
+        uuid.uuid4().hex,
+        0,
+        "sealed",
+        PROFILE_AUTHORING_POLICY,
+        PROFILE_AUTHORING_POLICY,
+        "sqlite-first:" + nonce,
+        "first_dataset",
+        nonce,
+        _provenance(path, org_id, nonce),
+        True,
+    )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(AUTHORITY_DDL)
+        conn.execute(
+            "INSERT INTO _learning_policy_authority(singleton,authority) VALUES(1,?)",
+            (json.dumps(root.to_dict(), sort_keys=True, separators=(",", ":")),),
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def reserve_new_sqlite_dataset(
+    path: str, org_id: str, *, claim_owner: bool = False
+) -> None:
+    """Publish a self-contained SEALED file with exclusive create semantics.
+
+    A private same-directory file retains the proof and is checkpointed/closed
+    before atomic hard-link publication. Losing creators discard only their own
+    unpublished file. No opener can see an authority-less creation reservation.
+    Existing actual targets are never replaced or initialized by this helper.
+    """
+    if path == ":memory:":
+        return  # The constructor owns the actual private connection instead.
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        return  # Optimization only: the atomic link below establishes ownership.
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=target.parent, prefix=f".{target.name}.learning-policy.", delete=False
+        ) as reservation:
+            temporary = Path(reservation.name)
+        conn = sqlite3.connect(temporary)
+        try:
+            if conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
+                raise RuntimeError("SQLite creation requires its supported WAL owner")
+            _retain_creation(conn, str(temporary), org_id)
+            if claim_owner:
+                from ._dataset_path import _claim_or_read_identity_db
+
+                conn.execute("BEGIN IMMEDIATE")
+                _claim_or_read_identity_db(conn, org_id)
+                conn.commit()
+            if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] != 0:
+                raise RuntimeError("SQLite creation proof could not be checkpointed")
+        finally:
+            conn.close()
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            return
+        # Match the maintained config-file publisher's directory durability.
+        # Windows has no POSIX directory fsync; publication remains atomic.
+        if os.name == "posix":
+            descriptor = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    finally:
+        if temporary is not None:
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                Path(str(temporary) + suffix).unlink(missing_ok=True)
+
+
+def verify_sqlite_creation_reservation(path: Path, org_id: str) -> None:
+    """Admit an owned, uninitialized reservation for first config publication."""
+    from ._dataset_path import DatasetIdentityError
+    from ._extraction_stream import SQLiteStreamSQL
+
+    target = path.resolve(strict=True)
+    conn = sqlite3.connect(target.as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN")
+        objects = {
+            (row["type"], row["name"])
+            for row in conn.execute(
+                "SELECT type, name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
+            )
+        }
+        if (
+            objects
+            != {
+                ("table", "_learning_policy_authority"),
+                ("table", "_dataset_identity"),
+            }
+            or _upgrade_identity(conn) != org_id
+        ):
+            raise DatasetIdentityError(
+                "The selected SQLite file is not an owned first-install reservation."
+            )
+        authority = LearningPolicyAuthority.from_dict(
+            SQLiteStreamSQL(conn).read_learning_policy_authority()
+        )
+        if (
+            authority.initialization_kind != "first_dataset"
+            or authority.phase != "sealed"
+            or not authority.bootstrap
+            or authority.active_policy != PROFILE_AUTHORING_POLICY
+            or authority.target_policy != PROFILE_AUTHORING_POLICY
+            or authority.operation_id
+            != "sqlite-first:" + authority.initialization_nonce
+            or authority.provenance_sha256
+            != _provenance(str(target), org_id, authority.initialization_nonce)
+        ):
+            raise DatasetIdentityError(
+                "The selected SQLite reservation does not match this installation."
+            )
+    finally:
+        conn.close()
+
+
+def retain_private_memory_creation(conn: sqlite3.Connection, org_id: str) -> None:
+    """SQLite guarantees that this fresh private ':memory:' connection is new."""
+    _retain_creation(conn, ":memory:", org_id)
+
+
+def complete_sqlite_dataset_creation(
+    conn: sqlite3.Connection, path: str, org_id: str
+) -> None:
+    """Resume only matching retained first-creation proof after normal migration.
+
+    No authority in an old file is initialized here. A crash before the retained
+    proof needs explicit upgrade/recovery; a retained matching proof can retry.
+    """
+    from ..storage_base.transition_closure import derive_project_transition_closure_db
+    from ._extraction_stream import CURSOR_WINDOW_INDEX_DDL, SQLiteStreamSQL
+
+    conn.execute(AUTHORITY_DDL)
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        db = SQLiteStreamSQL(conn)
+        raw = db.read_learning_policy_authority()
+        if raw is None:
+            conn.commit()
+            return
+        authority = LearningPolicyAuthority.from_dict(raw)
+        if not authority.bootstrap or authority.initialization_kind != "first_dataset":
+            if (
+                authority.phase == "open"
+                and authority.active_policy == PROFILE_AUTHORING_POLICY
+            ):
+                conn.execute(CURSOR_WINDOW_INDEX_DDL)
+            conn.commit()
+            return
+        if (
+            authority.provenance_sha256
+            != _provenance(path, org_id, authority.initialization_nonce)
+            or authority.active_policy != PROFILE_AUTHORING_POLICY
+            or authority.target_policy != PROFILE_AUTHORING_POLICY
+            or authority.operation_id
+            != "sqlite-first:" + authority.initialization_nonce
+        ):
+            raise LearningTransitionBlockedError(
+                "SQLite first-dataset initialization requires its retained source/file owner"
+            )
+        closure = derive_project_transition_closure_db(db, org_id=org_id, project_id="")
+        if not closure.ready or closure.blockers:
+            raise LearningTransitionBlockedError(
+                "SQLite first-dataset initialization closure is incomplete"
+            )
+        if authority.phase == "sealed":
+            authority = _change_learning_policy_authority_db(
+                db,
+                action="arm",
+                operation_id=authority.operation_id or "",
+                expected_nonce=authority.authority_nonce,
+                expected_generation=authority.generation,
+            )
+        if authority.phase != "armed":
+            raise LearningTransitionBlockedError(
+                "SQLite first-dataset initialization is not held"
+            )
+        _change_learning_policy_authority_db(
+            db,
+            action="activate",
+            operation_id=authority.operation_id or "",
+            expected_nonce=authority.authority_nonce,
+            expected_generation=authority.generation,
+        )
+        conn.execute(CURSOR_WINDOW_INDEX_DDL)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise

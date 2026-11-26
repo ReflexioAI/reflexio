@@ -57,8 +57,10 @@ def _context(base_dir, org_id: str) -> RequestContext:
     configurator.set_config(
         Config(
             storage_config=StorageConfigSQLite(db_path=str(base_dir / "lifecycle.db")),
-            window_size=1,
-            stride_size=1,
+            profile_window_size=1,
+            playbook_window_size=1,
+            profile_stride_size=1,
+            playbook_stride_size=1,
             profile_extractor_config=ProfileExtractorConfig(
                 extraction_definition_prompt="Preferences"
             ),
@@ -234,7 +236,14 @@ def test_library_reopen_resumes_idle_deadline_without_another_publish(
     context = _context(tmp_path / "idle-reopen", "idle-reopen")
     config = context.configurator
     config.set_config(
-        config.get_config().model_copy(update={"window_size": 5, "stride_size": 3})
+        config.get_config().model_copy(
+            update={
+                "profile_window_size": 5,
+                "profile_stride_size": 3,
+                "playbook_window_size": 5,
+                "playbook_stride_size": 3,
+            }
+        )
     )
     engine = Reflexio(
         org_id=context.org_id,

@@ -15,12 +15,15 @@ from typing import Any
 from reflexio.models.api_schema.service_schemas import UserProfile
 from reflexio.server.env_utils import env_bool, env_str
 from reflexio.server.llm.input_budget import (
-    InputBudgetConfigurationError,
+    ExtractionInputIntegrityError,
     declared_context_limits,
 )
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.base_generation_service import PreparedGenerationRun
-from reflexio.server.services.deferred_learning_plan import GenerationComputePlan
+from reflexio.server.services.deferred_learning_plan import (
+    GenerationComputePlan,
+    ProfileWritePlan,
+)
 from reflexio.server.services.durable_learning.window_codec import encode_plan
 from reflexio.server.services.durable_learning.window_executor import WindowExecutor
 from reflexio.server.services.extraction.agent_run_records import (
@@ -57,10 +60,17 @@ from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.profile.components.extractor import (
     MAX_EXISTING_PROFILES_FOR_CONTEXT,
     ProfileExtractor,
+    profile_forget_authority_texts,
+    profile_source_evidence_texts,
+)
+from reflexio.server.services.profile.lifecycle import (
+    metadata,
+    validate_forget_authority,
 )
 from reflexio.server.services.profile.service import ProfileGenerationService
 from reflexio.server.services.storage.storage_base import AgentRunStatus, canonical_json
 from reflexio.server.services.storage.storage_base._extraction_stream import Window
+from reflexio.server.services.write_plan_codec import decode_write_plan
 
 
 class _PackageProfileService(ProfileGenerationService):
@@ -85,7 +95,7 @@ class _ProfilePackageCoordinator(OverflowCoordinator):
             cache_only=True,
         )
         if self.checkpoint.get("stage") not in {"extracted", "gated_false"}:
-            raise InputBudgetConfigurationError("Profile processing is incomplete")
+            raise ExtractionInputIntegrityError("Profile processing is incomplete")
 
     def billing_input_text(self) -> str:
         return "\n".join(
@@ -115,7 +125,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
 
     def service(self, window: Window) -> tuple[Any, Any, Any]:
         if window.kind != "profile" or env_bool("MOCK_LLM_RESPONSE", default=False):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Profile package requires real textual profile work"
             )
         return super().service(window)
@@ -124,7 +134,14 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         return _PackageProfileService(self.client, self.context)
 
     def _coordinator(
-        self, window: Window, token: str, service: Any, request: Any, config: Any
+        self,
+        window: Window,
+        token: str,
+        service: Any,
+        request: Any,
+        config: Any,
+        *,
+        preview_only: bool = False,
     ) -> _ProfilePackageCoordinator:
         from reflexio.server.services.durable_learning.user_lease import (
             adopt_agent_run_for_execution,
@@ -134,11 +151,11 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         known = self.storage.get_agent_run(f"window:{window.window_id}")
         manifest = self._overflow_manifest(known)
         if known is not None and (manifest is None or manifest["version"] != 2):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Existing extraction requires its original protocol"
             )
         if known is None and window.outcome is not None:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Cached extraction lacks its package parent"
             )
         groups = service.service_config.window_interactions
@@ -154,7 +171,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         )
         if known:
             if not isinstance(snapshot, dict):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Frozen profile preparation unavailable"
                 )
             profiles = [
@@ -174,11 +191,10 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                     for key, value in snapshot["templates"].items()
                 },
             )
-            gate_enabled = snapshot["consumer"]["gate_enabled"]
             gate_model = (
                 snapshot["consumer"]["ladders"]["gate"][0]
-                if gate_enabled
-                else service._resolve_should_run_model()
+                if snapshot["consumer"]["gate_enabled"]
+                else None
             )
             dedup_model = snapshot["consumer"]["ladders"]["dedup"][0]
             tools_active = snapshot["pending_tool_config"] is not None
@@ -216,7 +232,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             gate_enabled = not (
                 window.force or window.policy.get("skip_should_run_check", False)
             )
-            gate_model = service._resolve_should_run_model()
+            gate_model = service._resolve_should_run_model() if gate_enabled else None
             # Resolve the same native dedup model as the ordinary service.
             from reflexio.server.services.profile.components.consolidator import (
                 ProfileConsolidator,
@@ -242,7 +258,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         if known is not None and not matches_frozen_extractor_binding(
             known, expected, window.policy["extractor"]
         ):
-            raise InputBudgetConfigurationError("Profile package admission changed")
+            raise ExtractionInputIntegrityError("Profile package admission changed")
         preparation = prepare_profile_package(
             groups,
             org_id=self.storage.org_id,
@@ -255,7 +271,6 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             extractor_config=config,
             existing_profiles=profiles,
             agent_context=context,
-            gate_enabled=gate_enabled,
             gate_model=gate_model,
             dedup_model=dedup_model,
             prior_context=prior,
@@ -269,7 +284,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
             ),
         )
         if snapshot is not None and preparation.snapshot != snapshot:
-            raise InputBudgetConfigurationError("Frozen profile preparation changed")
+            raise ExtractionInputIntegrityError("Frozen profile preparation changed")
         plan = preparation.compression
         descriptor = {
             "name": "source-package",
@@ -293,42 +308,50 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         if known is not None and (
             manifest is None or manifest["input_protocol"] != descriptor
         ):
-            raise InputBudgetConfigurationError("Profile package admission changed")
-        with self.storage.commit_scope():
-            self.storage.fence_user_extraction(window.user_id, token)
-            self.storage.validate_extraction_inputs(window)
-            self.storage.validate_extraction_source_digest(window, plan.source_digest)
-            self.storage.validate_extraction_answers(
-                prior.answer_witnesses if prior else {}
-            )
-            witnesses = {row.profile_id: profile_witness(row) for row in profiles}
-            self.storage.validate_extraction_historical_profiles(window, witnesses)
+            raise ExtractionInputIntegrityError("Profile package admission changed")
+        if preview_only:
             if known is None:
-                manifest = OverflowCoordinator.initial_package_manifest(
-                    plan.source_digest, descriptor
+                raise ExtractionInputIntegrityError(
+                    "Original profile parent unavailable"
                 )
-                manifest["checkpoint"].update(
-                    answer_witnesses=prior.answer_witnesses if prior else {},
-                    historical_profiles=witnesses,
+        else:
+            with self.storage.commit_scope():
+                self.storage.fence_user_extraction(window.user_id, token)
+                self.storage.validate_extraction_inputs(window)
+                self.storage.validate_extraction_source_digest(
+                    window, plan.source_digest
                 )
-                expected = replace(expected, id=f"window:{window.window_id}")
-                expected.generation_request_snapshot.update(
-                    overflow=manifest,
-                    profile_package_preparation=preparation.snapshot,
-                    profile_dedup_template=template,
+                self.storage.validate_extraction_answers(
+                    prior.answer_witnesses if prior else {}
                 )
-                known = create_owned_agent_run(self.storage, expected)
-                if (
-                    known.generation_request_snapshot
-                    != expected.generation_request_snapshot
-                ):
-                    raise InputBudgetConfigurationError(
-                        "Profile parent admission lost ownership"
+                witnesses = {row.profile_id: profile_witness(row) for row in profiles}
+                self.storage.validate_extraction_historical_profiles(window, witnesses)
+                if known is None:
+                    manifest = OverflowCoordinator.initial_package_manifest(
+                        plan.source_digest, descriptor
                     )
-            else:
-                known = adopt_agent_run_for_execution(self.storage, known)
+                    manifest["checkpoint"].update(
+                        answer_witnesses=prior.answer_witnesses if prior else {},
+                        historical_profiles=witnesses,
+                    )
+                    expected = replace(expected, id=f"window:{window.window_id}")
+                    expected.generation_request_snapshot.update(
+                        overflow=manifest,
+                        profile_package_preparation=preparation.snapshot,
+                        profile_dedup_template=template,
+                    )
+                    known = create_owned_agent_run(self.storage, expected)
+                    if (
+                        known.generation_request_snapshot
+                        != expected.generation_request_snapshot
+                    ):
+                        raise ExtractionInputIntegrityError(
+                            "Profile parent admission lost ownership"
+                        )
+                else:
+                    known = adopt_agent_run_for_execution(self.storage, known)
         if manifest is None:
-            raise InputBudgetConfigurationError("Profile manifest unavailable")
+            raise ExtractionInputIntegrityError("Profile manifest unavailable")
         coordinator = _ProfilePackageCoordinator(
             self.storage,
             window,
@@ -414,12 +437,20 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                     request.user_id,
                     request.request_id,
                     [row["interaction_id"] for row in coordinator.window.manifest],
+                    source_texts=profile_source_evidence_texts(
+                        [], visible_spans=result.package.presentation.visible_spans
+                    ),
+                    user_source_texts=profile_forget_authority_texts(
+                        [], visible_spans=result.package.presentation.visible_spans
+                    ),
+                    committed_run=result.agent.execution_run,
                 )
             checkpoint = coordinator.checkpoint
             converted = [row.model_dump(mode="json") for row in profiles]
             checkpoint["profile_package_candidates"] = converted
             coordinator.save_checkpoint(checkpoint)
         profiles = [UserProfile.model_validate(row) for row in converted]
+        self._validate_candidate_authority(profiles, result)
         service._last_model_provenance = result.agent.model_provenance
         coordinator.candidate_models.update(
             {row.profile_id: result.agent.model_provenance for row in profiles}
@@ -480,10 +511,20 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                 allow_nan=False,
             )
         except (TypeError, ValueError) as exc:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Profile write plan is not finite JSON"
             ) from exc
         return hashlib.sha256(encoded.encode()).hexdigest()
+
+    @staticmethod
+    def _validate_candidate_authority(profiles: list[UserProfile], result: Any) -> None:
+        user_texts = profile_forget_authority_texts(
+            [], visible_spans=result.package.presentation.visible_spans
+        )
+        for profile in profiles:
+            validate_forget_authority(
+                metadata(profile).get("explicit_forget_quote"), user_texts
+            )
 
     def _validate_host_binding(self, coordinator: Any, result: Any) -> None:
         checkpoint = coordinator.checkpoint
@@ -492,15 +533,46 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                 "version": 1,
                 "skipped": True,
             }:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Negative profile gate has a write plan"
                 )
             return
         if checkpoint.get("profile_package_plan_digest") != self._plan_digest(
             coordinator, result, checkpoint
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Frozen profile write plan binding changed"
+            )
+        # The frozen digest establishes integrity, not User permission. Recheck
+        # cached conversions and compiled erasures against authenticated originals
+        # without changing any prepared plan bytes or recovery hashes.
+        profiles = [
+            UserProfile.model_validate(row)
+            for row in checkpoint.get("profile_package_candidates", [])
+        ]
+        self._validate_candidate_authority(profiles, result)
+        saved = checkpoint["profile_package_plan"]
+        plan = decode_write_plan(saved.get("write_plan"), "profile")
+        if not isinstance(plan, ProfileWritePlan):
+            return
+        self._validate_candidate_authority(plan.new_profiles, result)
+        candidates = {
+            row.profile_id: metadata(row).get("explicit_forget_quote")
+            for row in profiles
+        }
+        for instruction in plan.erasure_instructions:
+            if not instruction.source_quote or (
+                candidates.get(instruction.source_profile_id)
+                != instruction.source_quote
+            ):
+                raise ExtractionInputIntegrityError(
+                    "Frozen erasure lacks original User authority candidate"
+                )
+            validate_forget_authority(
+                instruction.source_quote,
+                profile_forget_authority_texts(
+                    [], visible_spans=result.package.presentation.visible_spans
+                ),
             )
 
     def _complete_parent(self, coordinator: Any, result: Any) -> None:
@@ -511,10 +583,10 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         if not result.gate_decision:
             return
         if result.agent is None or result.agent.output is None:
-            raise InputBudgetConfigurationError("Completed profile child unavailable")
+            raise ExtractionInputIntegrityError("Completed profile child unavailable")
         run = coordinator.saved_run
         if run is None:
-            raise InputBudgetConfigurationError("Profile parent execution unavailable")
+            raise ExtractionInputIntegrityError("Profile parent execution unavailable")
         with owned_agent_run_write(self.storage, run):
             coordinator.require_full_source_coverage()
             self.storage.validate_extraction_historical_profiles(
@@ -534,7 +606,7 @@ class ProfilePackageWindowExecutor(WindowExecutor):
                 ),
             )
             if completed is None or completed.status != AgentRunStatus.AGENT_COMPLETED:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Profile package completion lost ownership"
                 )
         coordinator.saved_run = completed
@@ -556,4 +628,4 @@ class ProfilePackageWindowExecutor(WindowExecutor):
         if encode_plan(plan, service) != coordinator.checkpoint.get(
             "profile_package_plan"
         ):
-            raise InputBudgetConfigurationError("Cached profile write plan changed")
+            raise ExtractionInputIntegrityError("Cached profile write plan changed")

@@ -1429,7 +1429,7 @@ def _build_qualification_authority() -> tuple[  # noqa: C901 - one shared closur
             or type(identity) is not ComponentIdentity
         ):
             raise TypeError("suite and identity must be exact qualification contracts")
-        if identity.component_role == "candidate":
+        if identity.component_role not in ("discovery", "held_out", "confirmation"):
             raise ValueError("only analyst components may be qualified")
         if type(observed) is not tuple or any(
             type(item) is not QualificationCaseObservation for item in observed

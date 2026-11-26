@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -125,6 +126,51 @@ def window_handoff_facts(kind: str, billing: Any) -> tuple[list[str], dict[str, 
         },
     )
     return ids, facts
+
+
+def window_delivery_facts(
+    kind: str, billing: Mapping[str, Any]
+) -> tuple[list[str], dict[str, Any]]:
+    """Validate delivery facts, including the legacy explicit pipeline field."""
+    descriptor = dict(billing)
+    if "pipeline" in descriptor and descriptor.pop("pipeline") != kind:
+        raise ValueError("Window financial pipeline does not match its owner")
+    return window_handoff_facts(kind, descriptor)
+
+
+def valid_window_delivery_payload(kind: str | None, billing_json: bytes | None) -> int:
+    """SQLite proof adapter for the same validation used during delivery."""
+    if kind is None or billing_json is None:
+        return 0
+    try:
+        # SQLite emits a compact object and CAST preserves its database encoding.
+        encoding = {b"{\0": "utf-16-le", b"\0{": "utf-16-be"}.get(
+            billing_json[:2], "utf-8"
+        )
+        billing = json.loads(billing_json.decode(encoding))
+        if not isinstance(billing, dict):
+            return 0
+        window_delivery_facts(kind, billing)
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        return 0
+    return 1
+
+
+def window_delivery_ids_match(
+    kind: str | None, billing_json: bytes | None, ids_json: bytes | None
+) -> int:
+    """Compare a validated historical descriptor to native publication IDs.
+
+    BLOB arguments preserve SQLite encodings and escaped NULs. This checks
+    identity only; it creates no publication or financial delivery receipt.
+    """
+    if kind is None or billing_json is None or ids_json is None:
+        return 0
+    try:
+        ids, _facts = window_delivery_facts(kind, json.loads(billing_json))
+        return int(ids == require_learning_ids(json.loads(ids_json)))
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        return 0
 
 
 def window_handoff_matches(

@@ -17,31 +17,19 @@ from reflexio.config_env import (
     POSTGRES_POOL_ENV_FIELDS,
     PostgresPoolDefaults,
     reject_postgres_pool_conflicts,
+    reject_postgres_schema_conflict,
     resolve_data_db_url,
     resolve_postgres_pool_defaults,
 )
 from reflexio.config_migration import StoredConfigurationError
+from reflexio.local_instance import configured_local_org_id as default_org_id
 
 from .paths import reflexio_home
 
 logger = logging.getLogger(__name__)
 
 _VALID_STORAGE_BACKENDS = frozenset({"sqlite", "supabase", "postgres"})
-_DEFAULT_ORG_ID = "self-host-org"
 _DEFAULT_STORAGE = "sqlite"
-
-
-def default_org_id() -> str:
-    """Resolve the default org id, honoring ``REFLEXIO_DEFAULT_ORG_ID``.
-
-    Mirrors :func:`reflexio.server.auth.default_get_org_id` so the local CLI
-    helpers (``setup``, ``config show`` / ``config local``) resolve the same
-    ``config_<org>.json`` the running no-auth server reads. Uses ``os.environ``
-    directly (not ``env_utils``) to keep this module's import lightweight — see
-    the ``_TYPE_TO_BACKEND`` note above.
-    """
-    return os.environ.get("REFLEXIO_DEFAULT_ORG_ID", "").strip() or _DEFAULT_ORG_ID
-
 
 # Maps StorageConfig subclass to backend string.  Lazy-imported in functions
 # that need it so module-level import stays lightweight (no Pydantic at import).
@@ -104,7 +92,7 @@ def load_storage_from_config(
 
     Args:
         org_id: Organization ID for the config file name. Defaults to the
-            ``REFLEXIO_DEFAULT_ORG_ID``-aware default org.
+            saved local organization, or the standalone default.
         base_dir: Override base directory (for testing). If None, uses ~/.reflexio/.
 
     Returns:
@@ -150,13 +138,14 @@ def save_storage_to_config(
     selections retain their historical environment policy once; current files
     own their canonical budgets. Selecting SQLite again preserves its database
     path. Re-selecting either remote adapter for the exact same primary DSN
-    retains its saved schema unless a nonblank namespace is explicitly selected.
+    retains its saved schema. A matching obsolete environment namespace only
+    verifies that selection; a conflicting assignment cannot replace it.
     Unrelated raw fields, including extension fields, are preserved.
 
     Args:
         storage_type: Backend name ("sqlite", "supabase", "postgres").
         org_id: Organization ID for the config file name. Defaults to the
-            ``REFLEXIO_DEFAULT_ORG_ID``-aware default org.
+            saved local organization, or the standalone default.
         base_dir: Override base directory (for testing).
     """
     from reflexio.models.config_schema import (
@@ -189,10 +178,8 @@ def save_storage_to_config(
                 )
         case "postgres":
             db_url = os.environ.get("DATA_DB_URL", "").strip()
-            schema = os.environ.get("REFLEXIO_POSTGRES_SCHEMA", "").strip()
             postgres_kwargs: dict[str, Any] = {
                 "db_url": db_url,
-                "schema": schema or None,
                 "read_db_url": os.environ.get(
                     "REFLEXIO_POSTGRES_READ_DB_URL", ""
                 ).strip()
@@ -235,6 +222,13 @@ def save_storage_to_config(
             # namespace. Do not carry it across an actual primary retarget.
             selected = selected.model_copy(update={"schema_name": existing.schema_name})
         if isinstance(selected, StorageConfigPostgres):
+            if reject_postgres_schema_conflict(
+                os.environ, schema_name=selected.schema_name
+            ):
+                logger.warning(
+                    "REFLEXIO_POSTGRES_SCHEMA no longer selects a namespace; "
+                    "the canonical storage_config.schema is unchanged."
+                )
             if (
                 isinstance(existing, StorageConfigPostgres)
                 and selected.db_url == existing.db_url

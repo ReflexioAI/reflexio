@@ -526,6 +526,9 @@ def test_migrate_brings_a_ledger_without_integrity_forward(
     conn = port_harness.storage.conn
     conn.executescript(_LEDGER_WITHOUT_INTEGRITY)
 
+    port_harness.storage.conn.execute(
+        "PRAGMA user_version = 0"
+    )  # emulate a pre-ledger database
     port_harness.storage.migrate()
     port_harness.storage.migrate()
 
@@ -693,6 +696,7 @@ def test_migrate_gives_owned_playbooks_their_subject_ref(
     before = storage.get_user_playbook_by_id(owned)
     assert before is not None and before.governance_subject_ref is None
 
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.migrate()
     storage.migrate()
 
@@ -838,6 +842,7 @@ def test_migrate_brings_a_previous_release_database_forward(
         )
     storage.conn.rollback()
 
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.migrate()
     storage.migrate()
 
@@ -985,6 +990,7 @@ def test_migrate_brings_the_release_before_provisional_publication_forward(
         is None
     )
 
+    storage.conn.execute("PRAGMA user_version = 0")  # emulate a pre-ledger database
     storage.migrate()
     storage.migrate()
 

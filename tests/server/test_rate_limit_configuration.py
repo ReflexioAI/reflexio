@@ -3,7 +3,7 @@
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
@@ -13,7 +13,8 @@ from reflexio.server import rate_limit
 @pytest.fixture
 def isolated_limiter(monkeypatch):
     monkeypatch.setattr(rate_limit, "_configured_key_func", None, raising=False)
-    limiter = Limiter(key_func=rate_limit.get_rate_limit_key, storage_uri="memory://")
+    monkeypatch.setenv("RATELIMIT_STORAGE_URL", "memory://")
+    limiter = type(rate_limit.limiter)(key_func=rate_limit.get_rate_limit_key)
     monkeypatch.setattr(rate_limit, "limiter", limiter)
     return limiter
 

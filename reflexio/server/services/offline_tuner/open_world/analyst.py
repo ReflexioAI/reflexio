@@ -22,6 +22,17 @@ from pydantic import ValidationError
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm import ProviderRequestGuardError
 from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
+from reflexio.server.llm._native_model_ref import PROVIDER_KEY as _NATIVE_CLI_ROUTE
+from reflexio.server.llm._native_model_ref import (
+    native_launch_identity_digest,
+    parse_native_model_ref,
+)
+from reflexio.server.llm._served_model_identity import (
+    native_served_model_admitted as _native_served_model_admitted,
+)
+from reflexio.server.llm._served_model_identity import (
+    served_model_admitted as _served_model_admitted,
+)
 from reflexio.server.llm.failure import (
     OutageWait,
     Transient,
@@ -1132,12 +1143,42 @@ _DEFAULT_OPENAI_ROUTE = "openai-default"
 # client and never contacts a provider at all, so it grades the harness, not the
 # model.
 #
-# What still protects a call is unchanged and lives below: the observed-provider
-# and observed-model echo checks reject a substitution WITHIN a request, and
-# post-composition drift detection rejects a transport whose live config moved.
+# What still protects a call lives below: the observed-provider echo check and
+# the served-model admission (`_served_model_admitted`) reject a substitution
+# WITHIN a request, and post-composition drift detection rejects a transport
+# whose live config moved. The served model is admitted when it is the
+# configured id exactly, or the configured id followed by one provider date
+# stamp (`gpt-4o` served as `gpt-4o-2024-08-06`, `claude-x` as
+# `claude-x-20250101`) -- that is how a provider resolves an alias. Anything
+# else (`gpt-4o-mini` for `gpt-4o`, a partial `-2024-08`, another family) is
+# refused. The recorded identity stays the CONFIGURED id, so an alias moving
+# to a newer snapshot does not churn qualification caches; the concrete served
+# model is kept as diagnostic data in `usage_json["served_model"]`.
 # Model-quality risk is carried by the pipeline harness and by the tuner's
 # own next evidence pass, which revises a published playbook (the 14-day
 # observation window that once auto-restored one is deleted).
+#
+# The native `local-cli/<host>[/model]` route (`_NATIVE_CLI_ROUTE`) has its own
+# rule: whatever the CLI reports is admitted, including nothing. There the
+# CLI, not Reflexio, picks the concrete model, and its provenance carries only
+# what the CLI host itself stamps (`reflexio_served_provider` /
+# `reflexio_served_model`). The claude-code host stamps an OPTIONAL provider
+# label from an open set (whatever backend the CLI talks to) and usually a
+# model; codex and opencode stamp neither. None of that can ever echo the
+# composed `local-cli` route, so an echo check there could only refuse every
+# call. Blank stamps count as missing; present stamps are kept as diagnostic
+# data in `usage_json`, and the recorded identity is still the configured id.
+# One exception: an EXPLICIT pin (`local-cli/<host>/<model>`) is the physical
+# selection, so a reported served model that contradicts it is refused under
+# the same rules as any other route (exact, or a dated snapshot of an undated
+# pin) -- except Claude Code's documented aliases (`sonnet`, `opus`, `best`,
+# `haiku`, `fable`, `opusplan`, any with `[1m]`), which name a family and
+# admit `claude-<family>-...`, and its `default`, which delegates. Every
+# physical response is checked, not only the final one. A missing stamp is still
+# admitted, and a host-only reference
+# (`local-cli/<host>`) delegates the model to the CLI and admits anything.
+# Every other route keeps the strict echo checks, including refusing a
+# response with no observed provider or model.
 
 
 def _strip_route_prefix(model: str, *, route: str) -> str:
@@ -1190,6 +1231,11 @@ class _LiteLLMTransportIdentity:
     It exists only so dataclass equality still notices a credential that
     changed underneath a live composition; see
     ``_credential_drift_fingerprint``.
+
+    The native ``local-cli`` route is the one exception to "scope, never the
+    account": its digest also binds ``native_launch_identity_digest()`` (the
+    resolved executable and account directories), so who answers is PART of
+    the persisted identity. See the payload below.
     """
 
     provider: str
@@ -1292,6 +1338,19 @@ def _litellm_transport_identity(client: LiteLLMClient) -> _LiteLLMTransportIdent
         # the difference legible.
         "schema_version": "offline-tuner-litellm-transport-v3",
     }
+    if route == _NATIVE_CLI_ROUTE:
+        # On the native route the CLI, not this client, owns dispatch: it
+        # re-resolves its executable and account on every call. So the native
+        # launch IDENTITY -- the resolved binary and account directories, not
+        # the wider environment (cwd, PATH, timeout) -- is part of what this
+        # transport IS and is bound into the persisted identity. One digest
+        # serves both checks: a change after composition fails the in-process
+        # drift checks before every dispatch, and one across a restart fails
+        # the durable attempt-context binding instead of resuming under a
+        # different executable or account. A PATH or cwd change that still
+        # resolves to the same binary changes neither. Other routes add no
+        # key, so their digests are unchanged.
+        payload["native_launch_identity"] = native_launch_identity_digest()
     digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
     return _LiteLLMTransportIdentity(
         provider=f"litellm:{route}:{digest}",
@@ -1507,6 +1566,15 @@ class _LiteLLMOpenWorldModelClient:
             )
         self._client = client
         self._transport = transport
+        # The model an explicit native reference pins, or None when the
+        # reference delegates to the CLI host's own default.
+        native = transport.route == _NATIVE_CLI_ROUTE
+        self._native_host = (
+            parse_native_model_ref(transport.model_revision).host if native else None
+        )
+        self._native_pin = (
+            _native_pinned_model(transport.model_revision) if native else None
+        )
         # Seconds of sleep this COMPOSED CLIENT may still spend absorbing
         # provider rate limits. Not reset per call: one composition is one
         # attempt in both live callers, and the budget is deliberately shared
@@ -1775,10 +1843,24 @@ class _LiteLLMOpenWorldModelClient:
 
             Raises:
                 ProviderRequestGuardError: When the request is not the qualified
-                    one, or is a second DIFFERENT request rather than a re-issue
+                    one, is a second DIFFERENT request rather than a re-issue,
+                    or the composed transport (including the native launch
+                    policy) drifted since composition
             """
             nonlocal provider_attempts, first_messages
             del hard_timeout
+            # Re-checked immediately before EVERY physical dispatch -- the
+            # first crossing, a parse-retry re-issue, the corrective turn, a
+            # credential retry, each rate-limited re-crossing -- because the
+            # shared client calls this guard right before each one. A check
+            # made once before the loop cannot see a native launch input (the
+            # CLI executable, its timeout, PATH, ...) changed between
+            # crossings, which would then be recorded under the composed
+            # identity.
+            if _litellm_transport_identity(self._client) != self._transport:
+                raise ProviderRequestGuardError(
+                    "LiteLLM transport configuration changed after composition"
+                )
             provider_attempts += 1
             messages = params.get("messages")
             corrective = False
@@ -1878,6 +1960,7 @@ class _LiteLLMOpenWorldModelClient:
                         for message in messages
                     ],
                     provider_request_guard=guard_exact_request,
+                    provider_response_guard=self._admit_each_response,
                     **options,
                 )
             except Exception as exc:
@@ -1899,8 +1982,121 @@ class _LiteLLMOpenWorldModelClient:
             break
         if type(result.value) is not response_format:
             raise TypeError("provider returned the wrong structured output type")
-        observed_provider = result.provenance.provider
-        observed_model = result.provenance.model_name
+        # Every physical response already passed `admit_each_response`; this
+        # recomputes the diagnostics of the one that is recorded.
+        served = self._admit_served(
+            observed_provider=result.provenance.provider,
+            observed_model=result.provenance.model_name,
+        )
+        raw_usage = result.usage
+        final_usage = _final_response_usage(raw_usage)
+        return ObservedStructuredCompletion(
+            value=cast(StrictStructuredOutput, result.value),
+            observed_provider=self._transport.provider,
+            observed_model_revision=model_revision,
+            called_at=started_at,
+            latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
+            usage_json=(
+                canonical_json_bytes(
+                    {
+                        "scope": "final successful response plus observed-response lower bounds; unavailable usage remains unknown",
+                        "final_response": final_usage,
+                        # Diagnostic, not identity: what actually answered.
+                        # `observed_model_revision` stays the configured id.
+                        **served,
+                        "usage_observed_responses": usage_responses,
+                        "observed_response_token_lower_bounds": {
+                            **dataclasses.asdict(usage),
+                            "total_tokens": usage.prompt_tokens
+                            + usage.completion_tokens,
+                        },
+                    }
+                ).decode()
+                if usage_responses or raw_usage is not None or served
+                else None
+            ),
+        )
+
+    def _admit_each_response(self, provenance: ModelProvenance) -> None:
+        """Refuse a physical response before it is parsed or can trigger a retry.
+
+        The shared client calls this for EVERY provider response, including
+        one without usage metadata and one that later fails structured
+        validation. Checking only the final response would accept an attempt
+        whose earlier crossing already reported a substitution, once a
+        re-issue or corrective turn answered with the expected model.
+
+        Args:
+            provenance (ModelProvenance): What this one response reported.
+
+        Raises:
+            ProviderRequestGuardError: When the response's provenance is
+                refused; the walk then stops without another dispatch.
+        """
+        try:
+            self._admit_served(
+                observed_provider=provenance.provider,
+                observed_model=provenance.model_name,
+            )
+        except ValueError as exc:
+            raise ProviderRequestGuardError(str(exc)) from exc
+
+    def _admit_served(
+        self, *, observed_provider: str | None, observed_model: str | None
+    ) -> dict[str, str]:
+        """Admit one response's provenance and return its served diagnostics.
+
+        Args:
+            observed_provider (str | None): Provider label the response carried.
+            observed_model (str | None): Model the response says served it.
+
+        Returns:
+            dict[str, str]: Non-identity ``served_*`` diagnostics.
+
+        Raises:
+            ValueError: When the provenance is refused.
+        """
+        if self._transport.route != _NATIVE_CLI_ROUTE:
+            return self._admit_served_model(
+                observed_provider=observed_provider, observed_model=observed_model
+            )
+        served = _native_cli_served_stamps(
+            provider=observed_provider, model=observed_model
+        )
+        # An explicit pin is the physical selection, so a reported served
+        # model must be that pin (same rules as any other route). A missing
+        # stamp proves nothing either way and stays admitted, and a host-only
+        # reference delegates the choice to the CLI entirely.
+        if (
+            self._native_pin is not None
+            and "served_model" in served
+            and not _native_served_model_admitted(
+                host=self._native_host,
+                pin=self._native_pin,
+                served=served["served_model"],
+            )
+        ):
+            raise ValueError(
+                "provider served a different model than the qualified revision"
+            )
+        return served
+
+    def _admit_served_model(
+        self, *, observed_provider: str | None, observed_model: str | None
+    ) -> dict[str, str]:
+        """Apply the strict echo checks of every non-native route.
+
+        Args:
+            observed_provider (str | None): Provider label the response carried.
+            observed_model (str | None): Model the response says served it.
+
+        Returns:
+            dict[str, str]: ``{"served_model": <bare served model>}``.
+
+        Raises:
+            ValueError: When provenance is missing, the provider label does not
+                match the composed route, or a different model served the call.
+        """
         if observed_provider is None or observed_model is None:
             raise ValueError("provider did not return immutable observed provenance")
         # Two separate namespaces meet here. `observed_provider` is the
@@ -1920,39 +2116,61 @@ class _LiteLLMOpenWorldModelClient:
             )
         # Silent substitution: the provider answered with a model other than the
         # qualified revision. Refuse rather than record an invocation whose
-        # provenance disagrees with the identity that authorized it.
-        if (
-            _strip_route_prefix(observed_model.strip(), route=self._transport.route)
-            != self._transport.bare_model_revision
+        # provenance disagrees with the identity that authorized it. A dated
+        # snapshot of the configured alias is the same revision; see
+        # `_served_model_admitted`.
+        served_model = _strip_route_prefix(
+            observed_model.strip(), route=self._transport.route
+        )
+        if not _served_model_admitted(
+            configured_bare=self._transport.bare_model_revision,
+            observed_bare=served_model,
         ):
             raise ValueError(
                 "provider served a different model than the qualified revision"
             )
-        raw_usage = result.usage
-        final_usage = _final_response_usage(raw_usage)
-        return ObservedStructuredCompletion(
-            value=cast(StrictStructuredOutput, result.value),
-            observed_provider=self._transport.provider,
-            observed_model_revision=model_revision,
-            called_at=started_at,
-            latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
-            usage_json=(
-                canonical_json_bytes(
-                    {
-                        "scope": "final successful response plus observed-response lower bounds; unavailable usage remains unknown",
-                        "final_response": final_usage,
-                        "usage_observed_responses": usage_responses,
-                        "observed_response_token_lower_bounds": {
-                            **dataclasses.asdict(usage),
-                            "total_tokens": usage.prompt_tokens
-                            + usage.completion_tokens,
-                        },
-                    }
-                ).decode()
-                if usage_responses or raw_usage is not None
-                else None
-            ),
-        )
+        return {"served_model": served_model}
+
+
+def _native_pinned_model(reference: str) -> str | None:
+    """Return the model an explicit native reference pins, if any.
+
+    ``local-cli/<host>`` delegates to the CLI's own default and pins nothing.
+    OpenCode's ``#variant`` suffix selects a reasoning variant, not a model, so
+    it is not part of the comparable model id; ``#high`` alone pins nothing.
+
+    Args:
+        reference (str): The configured ``local-cli/...`` model reference.
+
+    Returns:
+        str | None: The pinned model id, or None for a delegated default.
+    """
+    ref = parse_native_model_ref(reference)
+    model = ref.model
+    if model is not None and ref.host == "opencode":
+        model = model.partition("#")[0]
+    return model or None
+
+
+def _native_cli_served_stamps(
+    *, provider: str | None, model: str | None
+) -> dict[str, str]:
+    """Keep whatever a native CLI host reported, treating blanks as missing.
+
+    Args:
+        provider (str | None): The CLI-reported served provider, if any.
+        model (str | None): The CLI-reported served model, if any.
+
+    Returns:
+        dict[str, str]: ``served_provider`` / ``served_model`` for each stamp
+            that is present and non-blank.
+    """
+    stamps = {"served_provider": provider, "served_model": model}
+    return {
+        key: value.strip()
+        for key, value in stamps.items()
+        if value is not None and value.strip()
+    }
 
 
 def _final_response_usage(raw_usage: Any) -> dict[str, int | None]:

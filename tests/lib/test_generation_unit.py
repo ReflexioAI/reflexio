@@ -233,7 +233,6 @@ class TestRunGenerationService:
         mock_service_cls.assert_called_once_with(
             llm_client=mixin.llm_client,
             request_context=mixin.request_context,
-            allow_manual_trigger=True,
             output_pending_status=True,
         )
         # Verify the request was converted from dict to the correct type

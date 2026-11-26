@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -74,6 +74,7 @@ def test_user_selection_refusal_never_commits_session(native):
     with pytest.raises(ReadinessUnavailableError):
         run(native, session_id="s")
     assert not session_seen_cache.seen("org", "s")
+    native.storage.record_served_profile_access.assert_not_called()
 
 
 @pytest.fixture
@@ -114,6 +115,7 @@ def native(monkeypatch):
         supports_embedding=True,
         _query_embedding_cache_identity=object(),
         _get_embedding=MagicMock(return_value=vector),
+        record_served_profile_access=MagicMock(),
         get_source_user_playbook_ids_for_agent_playbooks=MagicMock(
             return_value={1: [11]}
         ),
@@ -169,6 +171,13 @@ def test_exact_native_query_vector_used_once_and_only_agents_change(native):
     assert received["storage"] is native.storage and received["org_id"] == "org"
     assert [a.agent_playbook_id for a in response.agent_playbooks] == [1, 3]
     assert response.profiles == native.profiles
+    native.storage.record_served_profile_access.assert_called_once_with(
+        user_id="u", profile_ids=["p"], accessed_at=ANY
+    )
+    assert isinstance(
+        native.storage.record_served_profile_access.call_args.kwargs["accessed_at"],
+        int,
+    )
     assert [p.user_playbook_id for p in response.user_playbooks] == [12]
 
 
@@ -196,6 +205,7 @@ def test_provider_refusal_never_serves_native_agents_or_records_seen(native):
     with pytest.raises(ReadinessUnavailableError, match="stale"):
         run(native, session_id="session")
     assert not session_seen_cache.seen("org", "session")
+    native.storage.record_served_profile_access.assert_not_called()
 
 
 @pytest.mark.parametrize("choice", ["reverse", "duplicate", "new", "mutate_list"])

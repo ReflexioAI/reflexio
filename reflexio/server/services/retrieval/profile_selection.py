@@ -91,9 +91,12 @@ def select_profiles(
     floor_on: bool,
     temporal_reorder: bool,
     retrieve: ProfileRetrieval,
+    recover_empty_for_joint_user: bool = False,
 ) -> list[UserProfile]:
     """Run one secondary retrieval for qualifying hybrid default-five requests.
 
+    Empty recovery is enabled only by the shared caller for eligible mixed
+    PROFILE+USER joint selection with a retained native USER anchor.
     Sparse results preserve their native prefix and append unseen secondary
     identities. A full native five protects its first three and puts the first
     two FTS-ranked identities outside that prefix ahead of them. A small lexical
@@ -101,7 +104,7 @@ def select_profiles(
     recency, session filtering and final served-state recording.
     """
     if (
-        not items
+        (not items and not recover_empty_for_joint_user)
         or degraded
         or (request.entity_types and "profiles" not in request.entity_types)
         or not request.user_id

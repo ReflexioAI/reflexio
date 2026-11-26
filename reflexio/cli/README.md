@@ -8,7 +8,7 @@ Description: Typer command layer for local service management and typed calls to
 
 - **`root_app.py`** — shared global options without service imports
 - **`app.py`** — full command-group registration after environment bootstrap
-- **`offline.py`** — explicit file-command dispatch before environment bootstrap
+- **`offline.py`** — explicit config-copy and existing local-dataset upgrade dispatch before environment bootstrap
 - **`config_upgrade.py`** — explicit current-generation JSON-copy publication and selected-org pre-launch preparation
 - **`commands/`** — domain command handlers
 - **`_client.py`** — configured SDK client construction
@@ -27,6 +27,11 @@ Expose the SDK and local service lifecycle through consistent commands and outpu
 
 
 Global options and persisted state configure a shared client; domain commands validate input and call the SDK. Service commands manage local processes. Enterprise reuses the CLI and overrides the services group.
+
+Set `REFLEXIO_ENV_FILE` in the launch environment to select a different
+user-level dotenv file. The local service launcher passes the absolute
+launch path to the server, including when that path is a symlink. A
+project dotenv can still supply setting values in the current directory.
 
 ## Table of Contents
 
@@ -61,6 +66,8 @@ Most common commands at a glance:
 | List profiles | `reflexio user-profiles list --user-id USER` |
 | List playbooks | `reflexio agent-playbooks list` |
 | Check health | `reflexio status check` |
+| Qualify a stopped, supported retained SQLite dataset | `reflexio --json data upgrade-local /absolute/existing.sqlite` |
+| Qualify the exact unclaimed plugin predecessor with an explicit namespace | `reflexio --json data upgrade-local /absolute/existing.sqlite --org-id YOUR_NAMESPACE` |
 | Stop server | `reflexio services stop` |
 
 ## Install & invoke
@@ -304,6 +311,37 @@ uv run reflexio user-playbooks delete <playbook-id>
 ```
 
 ## Config
+
+
+Before upgrading an installation that uses `REFLEXIO_DEFAULT_ORG_ID`, stop
+the local backend with the previous CLI or the service manager that started
+it. Keep the original configuration and database. If the saved
+configuration needs file preparation, run
+`reflexio config upgrade-file <saved-config> --output <prepared-copy>`, review
+the copy, and install it at the saved config path while the backend is
+stopped. Then remove the old assignment and run
+`reflexio config bind-local <organization>` with the previous organization.
+
+Run binding and startup from the same project directory if it supplies
+`./.env`. Otherwise, use the same user-level `REFLEXIO_ENV_FILE` path for
+setup, CLI commands, and server starts. Later startups use that source's
+saved binding. If your project previously inherited a user-level binding,
+bind its existing organization explicitly from that project directory.
+An already bound installation can retry `reflexio config bind-local`
+without supplying the organization again. Local server workers inherit the
+launch settings and binding from their parent. Restart the local backend
+after editing its dotenv file.
+
+The command verifies the existing SQLite owner claim. For a database with a
+matching creation record, the command can establish the claim in place. For
+an implicit SQLite path, it pins the verified file in the existing config.
+If a supported historical file has no owner claim, qualify it separately
+with `reflexio data upgrade-local` using its exact path and known organization.
+
+Local host installers can prepare a binding for a brand-new SQLite file
+before launching the server. The first server open completes SQLite's
+normal initialization. Retrying setup uses the same reservation. Existing
+installations keep their saved database target.
 
 
 ```shell

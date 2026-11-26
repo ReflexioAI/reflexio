@@ -26,6 +26,12 @@ def storage(request: pytest.FixtureRequest) -> Generator[BaseStorage]:
             with patch.object(
                 SQLiteStorage, "_get_embedding", return_value=[0.0] * 512
             ):
-                yield SQLiteStorage(
+                store = SQLiteStorage(
                     org_id="contract_test", db_path=f"{temp_dir}/reflexio.db"
                 )
+                from reflexio.test_support.learning_transition import (
+                    qualify_empty_learning_scope,
+                )
+
+                qualify_empty_learning_scope(store)
+                yield store

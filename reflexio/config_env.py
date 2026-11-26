@@ -93,6 +93,28 @@ def resolve_postgres_pool_defaults(env: Mapping[str, str]) -> PostgresPoolDefaul
     )
 
 
+def reject_postgres_schema_conflict(
+    env: Mapping[str, str], *, schema_name: str | None
+) -> bool:
+    """Verify obsolete bootstrap intent without selecting a SQL namespace.
+
+    The typed target owns its schema. Matching legacy assignments can be left
+    during an upgrade; a conflicting one must not rewrite that target. The
+    omitted-schema interpretation is the native adapters' existing SQL default.
+    Returns whether the caller should warn about an inert obsolete assignment.
+    """
+    legacy = env.get("REFLEXIO_POSTGRES_SCHEMA", "").strip()
+    if not legacy:
+        return False
+    if legacy != (schema_name or "public"):
+        raise ValueError(
+            "REFLEXIO_POSTGRES_SCHEMA no longer selects a namespace. Configure "
+            "storage_config.schema for the selected database; the conflicting "
+            "legacy assignment was not applied."
+        )
+    return True
+
+
 def resolve_data_db_url(env: Mapping[str, str]) -> str:
     """Resolve the canonical data target; never fall back to another DSN."""
     reject_removed_env(env, canonical="DATA_DB_URL")

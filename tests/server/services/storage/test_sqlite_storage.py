@@ -403,6 +403,9 @@ def test_unicode_lexical_index_backfills_existing_records_on_upgrade():
                DROP TABLE agent_playbooks_unicode_fts;
                DELETE FROM interactions_unicode_fts WHERE rowid = -1;"""
         )
+        original.conn.execute(
+            "PRAGMA user_version = 0"
+        )  # emulate a pre-ledger database
         original.conn.close()
 
         upgraded = SQLiteStorage(org_id="0", db_path=db_path)
@@ -789,7 +792,7 @@ class TestVectorRankRowsLogging:
         ]
         with caplog.at_level(
             "INFO",
-            logger="reflexio.server.services.storage.sqlite_storage._base",
+            logger="reflexio.server.services.storage.sqlite_storage._search_ranking",
         ):
             _vector_rank_rows(
                 rows,
@@ -809,7 +812,7 @@ class TestVectorRankRowsLogging:
         """Empty candidate set produces no log line so noise stays bounded."""
         with caplog.at_level(
             "INFO",
-            logger="reflexio.server.services.storage.sqlite_storage._base",
+            logger="reflexio.server.services.storage.sqlite_storage._search_ranking",
         ):
             _vector_rank_rows(
                 [],
@@ -837,7 +840,7 @@ class TestVectorRankRowsLogging:
         rows = [self._row([1.0, 0.0] + [0.0] * 510) for _ in range(50)]
         with caplog.at_level(
             "INFO",
-            logger="reflexio.server.services.storage.sqlite_storage._base",
+            logger="reflexio.server.services.storage.sqlite_storage._search_ranking",
         ):
             _vector_rank_rows(
                 rows,
@@ -1396,9 +1399,7 @@ def test_embedding_input_formatting_is_model_specific():
 
     with (
         tempfile.TemporaryDirectory() as temp_dir,
-        patch(
-            "reflexio.server.services.storage.sqlite_storage._base.LiteLLMClient"
-        ) as mock_cls,
+        patch("reflexio.server.llm.litellm_client.LiteLLMClient") as mock_cls,
     ):
         mock_cls.return_value.get_embedding = mock_llm_get_embedding
         with patch.object(SQLiteStorage, "_try_load_sqlite_vec", return_value=False):
@@ -1433,9 +1434,7 @@ def test_embedding_unavailable_degrades_to_empty_vector():
 
     with (
         tempfile.TemporaryDirectory() as temp_dir,
-        patch(
-            "reflexio.server.services.storage.sqlite_storage._base.LiteLLMClient"
-        ) as mock_cls,
+        patch("reflexio.server.llm.litellm_client.LiteLLMClient") as mock_cls,
     ):
         mock_cls.return_value.get_embedding = mock_llm_get_embedding
         with patch.object(SQLiteStorage, "_try_load_sqlite_vec", return_value=False):

@@ -38,7 +38,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
@@ -49,7 +49,9 @@ from reflexio.server.llm._azure_transport import normalize_azure_v1_endpoints
 from reflexio.server.llm._litellm_subprocess import (
     _litellm_completion_worker,
     _raise_completion_error,
+    require_private_provider_rules,
     retire_completion_worker,
+    start_completion_worker,
 )
 from reflexio.server.llm._litellm_types import (
     CompletionResult,
@@ -58,6 +60,7 @@ from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuard,
     ProviderRequestGuardError,
+    ProviderResponseGuard,
     StructuredOutputParseError,
     StructuredOutputRepairError,
     ToolCallingChatResponse,
@@ -73,17 +76,28 @@ from reflexio.server.llm._model_compat import (
     ensure_model_capabilities,
     reasoning_exhausted_retry_extra_body,
 )
-from reflexio.server.llm._native_cli import NATIVE_CLI_REQUEST, NativeCLIOwner
+from reflexio.server.llm._native_cli import (
+    NATIVE_CLI_REQUEST,
+    NativeCLIOwner,
+)
+from reflexio.server.llm._native_model_ref import NativeModelRef, authorize_native_model
 from reflexio.server.llm._provider_concurrency import (
     ProviderCapSaturatedError,
     provider_slot,
 )
 from reflexio.server.llm.call_deadline import model_call_deadline, remaining_call_time
-from reflexio.server.llm.completion_io import intercept_completion_io
+from reflexio.server.llm.completion_io import (
+    intercept_completion_io,
+    require_no_completion_io_hook,
+)
 from reflexio.server.llm.failure import (
+    TRANSIENT_ERROR_NAMES,
+    TRANSIENT_UPSTREAM_STATUS_CODES,
+    LLMFailureVerdict,
     OutageWait,
     Transient,
     classify_llm_failure,
+    exception_chain,
 )
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
@@ -175,11 +189,13 @@ class LadderBudgetExhaustedError(LiteLLMClientError):
     """
 
 
-def _uses_openclaw_transport(model: str, custom_llm_provider: str | None) -> bool:
+def _uses_native_transport(
+    model: str, custom_llm_provider: str | None, provider_key: str
+) -> bool:
     """Respect LiteLLM's explicit transport before interpreting a model prefix."""
     if custom_llm_provider:
-        return custom_llm_provider == "openclaw"
-    return model.startswith("openclaw/")
+        return custom_llm_provider == provider_key
+    return model.startswith(f"{provider_key}/")
 
 
 def _bounded_repair_errors(errors: Sequence[str]) -> tuple[str, ...]:
@@ -534,6 +550,11 @@ def _log_safe_validation_errors(exc: StructuredOutputParseError, schema: Any) ->
     return ",".join(rendered)
 
 
+def _admit_any_response(provenance: ModelProvenance) -> None:
+    """The default response guard: every response is admitted."""
+    del provenance
+
+
 def _nonempty_string(value: Any) -> str | None:
     """Return trustworthy string metadata without coercing mocks or objects."""
     if not isinstance(value, str):
@@ -556,6 +577,7 @@ class _StructuredAttempt:
     model: str
     provenance: ModelProvenance | None = None
     usage: Any | None = None
+    has_tool_calls: bool = False
 
 
 # A timeout is evidence of a provider outage only when the attempt was given at
@@ -563,6 +585,50 @@ class _StructuredAttempt:
 # 25 s and degrades to plain full-text search) it says the provider was slower
 # than that caller allowed, not that it is down for callers that wait longer.
 _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS = 60.0
+
+
+def _upstream_http_status(error: BaseException) -> int | None:
+    status = getattr(error, "upstream_status_code", None)
+    if status is None:
+        status = getattr(error, "status_code", None)
+    return status if type(status) is int and 100 <= status <= 599 else None
+
+
+def _private_provider_failure(
+    error: Exception, verdict: LLMFailureVerdict
+) -> LiteLLMClientError:
+    error_type = getattr(error, "upstream_error_type", None) or type(error).__name__
+    status = _upstream_http_status(error)
+    if isinstance(verdict, Transient):
+        if verdict.timed_out:
+            error_type = "APITimeoutError"
+        else:
+            error_type = next(
+                (
+                    name
+                    for link in exception_chain(error)
+                    if (
+                        name := getattr(link, "upstream_error_type", None)
+                        or type(link).__name__
+                    )
+                    in TRANSIENT_ERROR_NAMES
+                ),
+                "APIConnectionError",
+            )
+        status = next(
+            (
+                status
+                for link in exception_chain(error)
+                if (status := _upstream_http_status(link))
+                in TRANSIENT_UPSTREAM_STATUS_CODES
+            ),
+            status,
+        )
+    return LiteLLMClientError(
+        "Provider request failed",
+        upstream_error_type=error_type,
+        upstream_status_code=status,
+    )
 
 
 def _reserved_attempt_id(unreserved: dict[str, Any] | None) -> str | None:
@@ -669,7 +735,7 @@ def _run_isolated_completion(params: dict[str, Any], deadline: float) -> Any:
     try:
         if time.monotonic() >= deadline:
             raise LLMHardTimeoutError("LLM request deadline expired before startup")
-        process.start()
+        start_completion_worker(process)
         native_owner.worker_started()
         # Drain the result queue BEFORE joining the child. A large completion
         # payload overflows the OS pipe buffer, so the child's queue-feeder
@@ -872,6 +938,7 @@ class TextGenerationMixin:
         fallback_models: list[str] | None = None,
         structured_output_validator: StructuredOutputValidator | None = None,
         provider_request_guard: ProviderRequestGuard | None = None,
+        provider_response_guard: ProviderResponseGuard | None = None,
         caller_reports_repair_failure: bool = False,
         **kwargs: Any,
     ) -> str | BaseModel | ToolCallingChatResponse:
@@ -899,6 +966,9 @@ class TextGenerationMixin:
                 repair ladder for parse, blank, and semantic failures.
             provider_request_guard: Optional internal guard invoked on the exact
                 built params immediately before each provider attempt.
+            provider_response_guard: Optional internal guard invoked on the
+                observed provenance of each provider response, before it is
+                parsed or can trigger a re-issue or corrective turn.
             caller_reports_repair_failure: Set by a caller that salvages
                 ``StructuredOutputRepairError``. The client then leaves the
                 terminal ``llm.failures`` count to the caller, which records it
@@ -928,6 +998,7 @@ class TextGenerationMixin:
             fallback_models=fallback_models,
             structured_output_validator=structured_output_validator,
             provider_request_guard=provider_request_guard,
+            provider_response_guard=provider_response_guard,
             caller_reports_repair_failure=caller_reports_repair_failure,
             **kwargs,
         ).value
@@ -944,6 +1015,7 @@ class TextGenerationMixin:
         fallback_models: list[str] | None = None,
         structured_output_validator: StructuredOutputValidator | None = None,
         provider_request_guard: ProviderRequestGuard | None = None,
+        provider_response_guard: ProviderResponseGuard | None = None,
         caller_reports_repair_failure: bool = False,
         **kwargs: Any,
     ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
@@ -987,6 +1059,8 @@ class TextGenerationMixin:
             kwargs["structured_output_validator"] = structured_output_validator
         if provider_request_guard is not None:
             kwargs["provider_request_guard"] = provider_request_guard
+        if provider_response_guard is not None:
+            kwargs["provider_response_guard"] = provider_response_guard
         if caller_reports_repair_failure:
             kwargs["caller_reports_repair_failure"] = caller_reports_repair_failure
 
@@ -1040,7 +1114,9 @@ class TextGenerationMixin:
             model_role,
             custom_llm_provider=kwargs.get("custom_llm_provider"),
         )
-        if _uses_openclaw_transport(actual_model, kwargs.get("custom_llm_provider")):
+        if _uses_native_transport(
+            actual_model, kwargs.get("custom_llm_provider"), "openclaw"
+        ):
             from reflexio.server.llm.providers.openclaw_provider import (
                 reject_retired_openclaw_timeout,
                 resolve_openclaw_model,
@@ -1050,6 +1126,21 @@ class TextGenerationMixin:
             # An ambiguous retired default must never dispatch another model.
             resolve_openclaw_model(actual_model)
             reject_retired_openclaw_timeout()
+        if _uses_native_transport(
+            actual_model, kwargs.get("custom_llm_provider"), "local-cli"
+        ):
+            from reflexio.server.llm.providers.native_cli_provider import (
+                resolve_cli_request_timeout,
+                validate_native_selection,
+            )
+
+            # Preparation errors stop the walk before retries or paid fallback.
+            target = cast(
+                NativeModelRef,
+                authorize_native_model(actual_model, kwargs.get("custom_llm_provider")),
+            )
+            validate_native_selection(target.host)
+            resolve_cli_request_timeout(kwargs.get("timeout", self.config.timeout))
         ensure_model_capabilities(actual_model)
 
         if actual_model != self.config.model:
@@ -1217,9 +1308,12 @@ class TextGenerationMixin:
             str: The resolved primary model name.
         """
         actual_model = model or self.config.model
+        native_target = authorize_native_model(actual_model, custom_llm_provider)
+        if native_target is not None:
+            return native_target.reference
         if self.config.api_key_config and self.config.api_key_config.custom_endpoint:
             return actual_model
-        if _uses_openclaw_transport(actual_model, custom_llm_provider):
+        if _uses_native_transport(actual_model, custom_llm_provider, "openclaw"):
             return actual_model
         if model_role is not None:
             actual_model = resolve_model_name(
@@ -1501,7 +1595,7 @@ class TextGenerationMixin:
         served_provider = _nonempty_string(hidden.get("reflexio_served_provider"))
         stamped_served = _nonempty_string(hidden.get("reflexio_served_model"))
 
-        if route_provider in {"claude-code", "openclaw"}:
+        if route_provider in {"local-cli", "openclaw"}:
             provider = served_provider
             model_name = stamped_served
         else:
@@ -1638,6 +1732,19 @@ class TextGenerationMixin:
         provider_request_guard: ProviderRequestGuard | None = kwargs.pop(
             "provider_request_guard", None
         )
+        provider_response_guard: ProviderResponseGuard = (
+            kwargs.pop("provider_response_guard", None) or _admit_any_response
+        )
+        redact_provider_errors = kwargs.pop("redact_provider_errors", False)
+        if redact_provider_errors and (
+            kwargs.get("parse_structured_output") is not False
+            or kwargs.get("tools") is not None
+            or kwargs.get("client") is not None
+        ):
+            raise ValueError("Private requests require plain responses and native IO")
+        if redact_provider_errors:
+            require_private_provider_rules()
+            require_no_completion_io_hook()
         original_kwargs = dict(kwargs)
 
         def _finish(
@@ -1656,6 +1763,8 @@ class TextGenerationMixin:
                 attempt.provenance,
                 usage=attempt.usage,
                 thinking_disabled=thinking_disabled,
+                finish_reason=attempt.finish_reason,
+                has_tool_calls=attempt.has_tool_calls,
             )
 
         if structured_output_validator is not None and (
@@ -1728,6 +1837,20 @@ class TextGenerationMixin:
                 **_detach_request_state(dict(turn_kwargs)),
             )
             params["num_retries"] = 0
+            if redact_provider_errors:
+                # Strip per-request hooks before the worker arguments are
+                # serialized. The child clears inherited global hooks.
+                for name in (
+                    "callbacks",
+                    "input_callback",
+                    "success_callback",
+                    "failure_callback",
+                    "logger_fn",
+                    "litellm_logging_obj",
+                ):
+                    params.pop(name, None)
+                params["no-log"] = True
+                params["reflexio_private_provider_io"] = True
             params.pop("fallbacks", None)  # owned walk: never delegate to litellm
             per_attempt = self._coerce_timeout_seconds(params)
             remaining = walk_deadline - time.monotonic()
@@ -1817,6 +1940,11 @@ class TextGenerationMixin:
                             )
 
                     check_model_input_budget(turn_params)
+                    from reflexio.server.llm.compute_admission import (
+                        check_learning_compute,
+                    )
+
+                    check_learning_compute()
                     unreserved = extraction_request_identity.get()
                     if provider_request_guard is not None:
                         provider_request_guard(
@@ -1862,11 +1990,20 @@ class TextGenerationMixin:
                 # Nothing here needs the parsed body: `_log_token_usage` reads
                 # only `response.usage`, and returns early when it is absent.
                 self._log_token_usage(turn_params, response)
-                check_turn_deadline()
                 provenance = self._build_model_provenance(response)
+                # Every physical response, before it is parsed and before the
+                # deadline check: a response the caller refuses must not be
+                # able to trigger a re-issue, a corrective turn, or (arriving
+                # late) a fallback rung whose answer would then be accepted.
+                provider_response_guard(provenance)
+                check_turn_deadline()
                 message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
                 content = message.content
                 finish_reason = response.choices[0].finish_reason  # type: ignore[reportAttributeAccessIssue]
+                if redact_provider_errors:
+                    finish_reason = _response_hidden_params(response).get(
+                        "reflexio_provider_finish_reason"
+                    )
                 self.logger.info(
                     "event=llm_request_end model=%s timeout=%s has_response_format=%s elapsed_seconds=%.3f success=%s",
                     turn_params.get("model"),
@@ -1929,6 +2066,7 @@ class TextGenerationMixin:
                         model=str(turn_params.get("model")),
                         provenance=provenance,
                         usage=getattr(response, "usage", None),
+                        has_tool_calls=bool(tool_calls),
                     )
 
                 try:
@@ -1956,6 +2094,7 @@ class TextGenerationMixin:
                     model=str(turn_params.get("model")),
                     provenance=provenance,
                     usage=getattr(response, "usage", None),
+                    has_tool_calls=bool(getattr(message, "tool_calls", None)),
                 )
             except (
                 ProviderRequestGuardError,
@@ -1997,14 +2136,12 @@ class TextGenerationMixin:
                     and allowance < _OUTAGE_EVIDENCE_MIN_TIMEOUT_SECONDS
                 ):
                     circuit_call.failed(quota_exhausted=exhausted)
+                status = _upstream_http_status(e)
                 if transient:
                     # This is a physical attempt, not the logical operation's
                     # outcome: another credential/rung or the caller may recover.
                     # Provider exception text can contain credentials/content and
                     # makes a handled WARNING look like an exception alarm.
-                    status = getattr(e, "upstream_status_code", None)
-                    if status is None:
-                        status = getattr(e, "status_code", None)
                     self.logger.warning(
                         "event=llm_request_end model=%s elapsed_seconds=%.3f success=False "
                         "error_type=%s reason=%s upstream_status_code=%s",
@@ -2012,9 +2149,7 @@ class TextGenerationMixin:
                         time.perf_counter() - request_start,
                         type(e).__name__,
                         "quota_exhausted" if exhausted else "transient_provider_error",
-                        status
-                        if type(status) is int and 100 <= status <= 599
-                        else None,
+                        status,
                     )
                 else:
                     self.logger.error(
@@ -2022,17 +2157,24 @@ class TextGenerationMixin:
                         turn_params.get("model"),
                         time.perf_counter() - request_start,
                         type(e).__name__,
-                        e,
+                        "redacted" if redact_provider_errors else e,
                     )
-                failure = LiteLLMClientError(f"API call failed: {e}")
+                failure = (
+                    _private_provider_failure(e, verdict)
+                    if redact_provider_errors
+                    else LiteLLMClientError(f"API call failed: {e}")
+                )
                 # Which breaker decides whether durable work is charged for it.
                 failure.circuit_route = circuit_call.route
                 failure.quota_exhausted = exhausted
-                failure.__cause__ = e  # classified below before it is raised
-                _report_reserved_failure(reserved_attempt_id, failure)
-                raise failure from e
+                if not redact_provider_errors:
+                    failure.__cause__ = e  # classify before it is raised
+                    _report_reserved_failure(reserved_attempt_id, failure)
+                    raise failure from e
             finally:
                 circuit_call.close()
+            _report_reserved_failure(reserved_attempt_id, failure)
+            raise failure from None
 
         def _call_and_parse(
             turn_params: dict[str, Any],
@@ -2475,7 +2617,9 @@ class TextGenerationMixin:
                     _validate_attempt(attempt) if validated else (True, (), "")
                 )
                 if valid:
-                    self.logger.warning(
+                    # The resend recovered the answer: an expected path, not
+                    # a fault. Failed resends below stay WARNING.
+                    self.logger.info(
                         "event=llm_reasoning_exhausted_retry model=%s schema=%s "
                         "thinking=disabled outcome=succeeded%s",
                         model,
@@ -2823,9 +2967,11 @@ class TextGenerationMixin:
             list[dict]: Messages with cache control applied where appropriate.
         """
         model_lower = model.lower()
-        # The claude-code/* custom provider routes through the Claude Code CLI,
-        # which does not accept Anthropic API cache_control content blocks.
-        if model_lower.startswith("claude-code/"):
+        # Native CLI messages have no Anthropic HTTP cache-control protocol.
+        # An old label passed explicitly through HTTP remains opaque and keeps
+        # its previous wire shape; native execution under that label is denied
+        # before parameter preparation, independently of this formatting rule.
+        if model_lower.startswith(("local-cli/", "claude-code/")):
             return messages
         is_anthropic = "claude" in model_lower or "anthropic" in model_lower
 
@@ -2952,7 +3098,7 @@ class TextGenerationMixin:
             True if the model has temperature restrictions.
         """
         model_lower = model.lower()
-        # Strip provider routing prefixes (e.g., "openrouter/openai/gpt-5-nano" -> "gpt-5-nano")
+        # Strip provider routing prefixes (e.g., "openrouter/openai/gpt-6-luna" -> "gpt-6-luna")
         model_name = model_lower.rsplit("/", 1)[-1]
         # Check if model starts with any of the restricted model prefixes
         return any(

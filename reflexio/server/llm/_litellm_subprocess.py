@@ -22,14 +22,20 @@ import reflexio.provider_bootstrap  # noqa: F401
 
 # isort: split
 
+import json
 import logging
 import multiprocessing
+import os
 import pickle
 import threading
 import time
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
+from datetime import datetime
 from multiprocessing.process import BaseProcess
+from pathlib import Path
 from typing import Any, NoReturn
+from uuid import uuid4
 
 import litellm
 from litellm.exceptions import ContextWindowExceededError
@@ -37,6 +43,7 @@ from litellm.exceptions import ContextWindowExceededError
 from reflexio.server.llm._litellm_types import (
     LiteLLMClientError,
     LLMHardTimeoutError,
+    ProviderRequestGuardError,
     completion_metadata,
 )
 from reflexio.server.llm._model_compat import model_completion
@@ -45,9 +52,37 @@ from reflexio.server.llm._native_cli import (
     NativeCLIOwner,
     native_cli_worker,
 )
+from reflexio.server.llm._native_model_ref import (
+    authorize_native_model,
+    native_request_authority,
+)
 from reflexio.server.llm._provider_concurrency import retain_current_provider_slot
 
 logger = logging.getLogger(__name__)
+
+# Starting a worker under the ``fork`` start method is an ``os.fork()`` from a
+# threaded server. filelock (>= 3.30, imported in this process) audits every
+# ``os.fork`` and raises ``RuntimeError("os.fork is unsafe while filelock is
+# changing descriptor ownership")`` while another thread is between its
+# before-fork and after-fork handlers. Concurrent completions therefore must not
+# fork at the same time, and every worker start goes through this lock.
+_worker_start_lock = threading.Lock()
+
+
+def _reset_worker_start_lock() -> None:
+    # The fork child inherits this lock held by the thread that forked it.
+    global _worker_start_lock
+    _worker_start_lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_worker_start_lock)
+
+
+def start_completion_worker(process: BaseProcess) -> None:
+    """Start ``process`` so that no two completion workers fork concurrently."""
+    with _worker_start_lock:
+        process.start()
 
 
 def retire_completion_worker(
@@ -196,6 +231,7 @@ class _CompletionErrorSnapshot:
     input_capacity_exceeded: bool = False
     status_code: int | None = None
     hard_timeout: bool = False
+    request_guard_error: bool = False
 
 
 def _snapshot_completion_error(
@@ -207,6 +243,7 @@ def _snapshot_completion_error(
     return _CompletionErrorSnapshot(
         type_name=type(exc).__name__,
         hard_timeout=isinstance(exc, LLMHardTimeoutError),
+        request_guard_error=isinstance(exc, ProviderRequestGuardError),
         message=str(exc),
         model=str(model) if model else None,
         llm_provider=str(llm_provider) if llm_provider else None,
@@ -219,6 +256,8 @@ def _raise_completion_error(payload: _CompletionErrorSnapshot) -> NoReturn:
     """Restore typed local expiry before treating provider failures generically."""
     from reflexio.server.llm.input_budget import extraction_provider_guard
 
+    if payload.request_guard_error:
+        raise ProviderRequestGuardError(payload.message)
     if payload.hard_timeout:
         raise LLMHardTimeoutError(payload.message)
     if payload.input_capacity_exceeded and extraction_provider_guard.get() is not None:
@@ -355,24 +394,25 @@ def _reset_llm_client_state_after_fork() -> None:
 
 
 def _register_local_cli_providers() -> None:
-    """Register the opt-in CLI providers in this child, if enabled.
+    """Register native name resolution and the independently opted-in OpenClaw.
 
     Under ``fork`` the child inherits the parent's ``custom_provider_map``. But
     uvicorn starts its workers with ``spawn``, and a spawned process inherits
     ``spawn`` as its default start method, so the completion child in a
     multi-worker server re-imports only this module and never runs the
     registration ``litellm_client`` does at import. Every ``openclaw/...`` or
-    ``claude-code/...`` call then failed with "LLM Provider NOT provided".
-    Both registrations are idempotent and no-ops unless their env opt-in is set.
+    ``local-cli/...`` call then failed with "LLM Provider NOT provided".
+    Both registrations are idempotent. Native registration grants no execution;
+    exact operator authorization is repeated inside the handler.
     """
-    from reflexio.server.llm.providers.claude_code_provider import (
-        register_if_enabled as register_claude_code,
+    from reflexio.server.llm.providers.native_cli_provider import (
+        register_native_provider as register_native_cli,
     )
     from reflexio.server.llm.providers.openclaw_provider import (
         register_if_enabled as register_openclaw,
     )
 
-    register_claude_code()
+    register_native_cli()
     register_openclaw()
 
 
@@ -383,19 +423,120 @@ def _litellm_completion_worker(
     native_context: NativeCLIContext | None = None,
 ) -> None:
     _reset_llm_client_state_after_fork()
-    _register_local_cli_providers()
-    try:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise LLMHardTimeoutError(
-                "LLM request deadline expired during child startup"
+    with native_request_authority() as authority:
+        try:
+            if deadline <= time.monotonic():
+                raise LLMHardTimeoutError(
+                    "LLM request deadline expired during child startup"
+                )
+            authorize_native_model(params["model"], params.get("custom_llm_provider"))
+            _register_local_cli_providers()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise LLMHardTimeoutError(
+                    "LLM request deadline expired during child startup"
+                )
+            # Child startup spends the same accepted-work budget as provider IO.
+            params = {
+                **params,
+                "timeout": min(float(params.get("timeout", remaining)), remaining),
+            }
+            private = params.pop("reflexio_private_provider_io", False)
+            native_cli_worker(native_context, result_queue, deadline)
+            response = (
+                _private_completion(params) if private else model_completion(params)
             )
-        # Child startup spends the same accepted-work budget as provider IO.
-        params = {
-            **params,
-            "timeout": min(float(params.get("timeout", remaining)), remaining),
-        }
-        native_cli_worker(native_context, result_queue, deadline)
-        result_queue.put(("ok", _picklable_completion_result(model_completion(params))))
-    except BaseException as exc:
-        result_queue.put(("error", _snapshot_completion_error(exc, params)))
+            authority.raise_if_rejected()
+            result_queue.put(("ok", _picklable_completion_result(response)))
+        except BaseException as exc:
+            result_queue.put(
+                ("error", _snapshot_completion_error(authority.error or exc, params))
+            )
+
+
+def require_private_provider_rules() -> None:
+    # These rules can enforce required request/response policy. A private
+    # request cannot share raw content with them or silently bypass them.
+    if litellm.pre_call_rules or litellm.post_call_rules:
+        raise ProviderRequestGuardError(
+            "Private provider I/O cannot run with global raw-content rules"
+        )
+
+
+def _emit_no_payload(_payload: Any) -> None:
+    """A private child never prints LiteLLM's raw standard logging payload."""
+
+
+def _private_completion(params: dict[str, Any]) -> Any:
+    """Isolate the per-call child before any private provider I/O."""
+    from litellm import utils
+    from litellm.litellm_core_utils import litellm_logging
+    from litellm.litellm_core_utils.rules import Rules
+
+    require_private_provider_rules()
+    # LiteLLM's no-log covers ordinary outcome callbacks, but its raw pre/post
+    # hooks can still invoke integrations or print request and response bodies.
+    # The child serves one completion and owns these inherited settings.
+    logging.disable(logging.CRITICAL)
+    os.environ.pop("LITELLM_PRINT_STANDARD_LOGGING_PAYLOAD", None)
+    litellm.suppress_debug_info = True
+    # Older supported LiteLLM versions also print directly under this flag.
+    litellm.set_verbose = False  # pyright: ignore[reportPrivateImportUsage]
+    litellm.callbacks = []
+    litellm.input_callback = []
+    litellm.success_callback = []
+    litellm.failure_callback = []
+    litellm.service_callback = []
+    litellm.cache = None
+    litellm.model_alias_map = {}
+    params["caching"] = False
+    litellm.client_session = None
+    litellm.aclient_session = None
+    for transport in ("sync_transport", "async_transport"):
+        setattr(litellm, transport, None)
+    for diagnostic_module in (utils, litellm_logging):
+        for hook in ("add_breadcrumb", "capture_exception"):
+            setattr(diagnostic_module, hook, None)
+    # LiteLLM prints the raw standard payload from its BACKGROUND success
+    # handler, after the stdout redirect below has ended, judged by whatever
+    # the print flag holds at that later moment. Popping the flag above cannot
+    # cover that thread, so its print path is closed itself.
+    litellm_logging.emit_standard_logging_payload = _emit_no_payload
+    litellm._async_input_callback = []
+    litellm._async_success_callback = []
+    litellm._async_failure_callback = []
+    finish_reasons: list[str | None] = []
+
+    def capture_finish(original_response: Any, *_args: Any, **_kwargs: Any) -> None:
+        # LiteLLM normalizes null and unfamiliar reasons to "stop". Keep
+        # only the raw reason from the native OpenAI-compatible response.
+        try:
+            if (
+                isinstance(original_response, str)
+                and len(original_response) <= 1_000_000
+            ):
+                original_response = json.loads(original_response)
+            if not isinstance(original_response, dict):
+                return
+            raw = original_response["choices"][0].get("finish_reason")
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            return
+        finish_reasons.append(raw if raw in ("stop", "length") else None)
+
+    params.setdefault("litellm_call_id", str(uuid4()))
+    # LiteLLM can print a raw standard payload directly, outside logging.
+    with (
+        Path(os.devnull).open("w", encoding="utf-8") as sink,
+        redirect_stdout(sink),
+        redirect_stderr(sink),
+    ):
+        logging_obj, request = utils.function_setup(
+            "completion", Rules(), datetime.now(), is_async_call=False, **params
+        )
+        logging_obj.post_call = capture_finish
+        response = model_completion({**request, "litellm_logging_obj": logging_obj})
+    if isinstance(response, litellm.ModelResponse):
+        response._hidden_params["reflexio_provider_finish_reason"] = (
+            finish_reasons[0] if len(finish_reasons) == 1 else None
+        )
+    return response

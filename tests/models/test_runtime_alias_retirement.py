@@ -23,6 +23,8 @@ def test_explicit_upgrade_preserves_reviewed_policy(case):
     source = deepcopy(case["input"])
     converted = canonicalize_config_document(source)
     expected = deepcopy(case["expected"])
+    # Retire the whole GEPA policy without rewriting its frozen historical cases.
+    expected.pop("playbook_optimizer_config", None)
     # The frozen alias corpus predates retirement of the consolidation method
     # selector. Keep that historical witness; assert the new method upgrade
     # independently rather than changing its recorded expected document.
@@ -35,6 +37,36 @@ def test_explicit_upgrade_preserves_reviewed_policy(case):
     if isinstance(storage, dict) and storage.get("type") == "postgres":
         storage.pop("pool_acquire_timeout", None)
         storage.pop("read_pool_acquire_timeout", None)
+    # These immutable fixtures describe the former shared-plus-override schema.
+    # Assert its effective per-kind values independently of the converter.
+    width = expected.pop("window_size", None)
+    stride = expected.pop("stride_size", None)
+    width = 10 if width is None else width
+    stride = 8 if stride is None else stride
+    for kind, name in (
+        ("profile", "profile_extractor_config"),
+        ("playbook", "user_playbook_extractor_config"),
+    ):
+        child = expected.get(name)
+        child_width = (
+            child.pop("window_size_override", None) if isinstance(child, dict) else None
+        )
+        child_stride = (
+            child.pop("stride_size_override", None) if isinstance(child, dict) else None
+        )
+        expected[f"{kind}_window_size"] = width if child_width is None else child_width
+        expected[f"{kind}_stride_size"] = (
+            stride if child_stride is None else child_stride
+        )
+    # The separate historical manual switch is admission policy, not a
+    # surviving runtime alias. Preserve the frozen corpus and derive its off
+    # cadence independently of the installed converter.
+    profile = expected.get("profile_extractor_config")
+    if isinstance(profile, dict) and "manual_trigger" in profile:
+        manual = profile.pop("manual_trigger")
+        assert type(manual) is bool
+        if manual:
+            expected["profile_stride_size"] = 0
     assert converted == expected
     assert source == case["input"]
     assert validate_stored_config(converted) == validate_stored_config(expected)
@@ -71,7 +103,6 @@ def test_frozen_manifest_has_169_unique_paths():
         (None, "batch_size"),
         ("profile_extractor_config", "batch_size_override"),
         ("user_playbook_extractor_config", "feedback_aggregator_config"),
-        ("playbook_optimizer_config", "use_merge"),
         ("storage_config", "storage_type"),
     ],
 )
@@ -91,15 +122,20 @@ def test_opaque_lookalikes_are_not_configuration_paths():
         "opaque": {"batch_size": 17, "storage_type": "private", "use_merge": False},
     }
     before = deepcopy(payload)
-    assert validate_stored_config(payload).window_size == 10
+    assert validate_stored_config(payload).profile_window_size == 10
     assert payload == before
-    assert canonicalize_config_document(payload) == payload
+    assert canonicalize_config_document(payload) == {
+        **payload,
+        "profile_window_size": 10,
+        "profile_stride_size": 8,
+        "playbook_window_size": 10,
+        "playbook_stride_size": 8,
+    }
 
 
 def test_direct_nested_model_rejection_is_value_free():
     from reflexio.models.config_schema import (
         PlaybookAggregatorConfig,
-        PlaybookOptimizerConfig,
         ProfileExtractorConfig,
         StorageConfigPostgres,
     )
@@ -113,7 +149,6 @@ def test_direct_nested_model_rejection_is_value_free():
             },
         ),
         (PlaybookAggregatorConfig, {"min_feedback_threshold": "private-secret"}),
-        (PlaybookOptimizerConfig, {"use_merge": "private-secret"}),
         (
             StorageConfigPostgres,
             {"db_url": "private-secret", "schema_name": "private-secret"},
@@ -191,9 +226,9 @@ def test_named_writes_reject_aliases_without_mutating_live_or_saved_policy(
         configurator.set_config_by_name(name, value)
     assert path.read_bytes() == before
     assert configurator.get_config().model_dump(mode="json") == served
-    configurator.set_config_by_name("window_size", 31)
-    assert configurator.get_config().window_size == 31
-    assert configurator.config_storage.load_config().window_size == 31
+    configurator.set_config_by_name("profile_window_size", 31)
+    assert configurator.get_config().profile_window_size == 31
+    assert configurator.config_storage.load_config().profile_window_size == 31
 
 
 def test_documented_evaluation_file_is_accepted_by_the_current_runtime():
@@ -205,5 +240,5 @@ def test_documented_evaluation_file_is_accepted_by_the_current_runtime():
     config = Config.model_validate(decode_config_document(path.read_text()))
     assert config.profile_extractor_config is not None
     assert config.user_playbook_extractor_config is not None
-    assert config.profile_extractor_config.window_size_override == 20
-    assert config.user_playbook_extractor_config.stride_size_override == 1
+    assert config.profile_window_size == 20
+    assert config.playbook_stride_size == 1

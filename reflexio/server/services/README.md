@@ -31,10 +31,18 @@ strings before deleting old import paths in the same PR.
 | `search_metering_worker.py` | Bounded process-local search-metering queue. Four daemon workers emit `search_request` and `learning_applied` after the response path, with fail-open drops, a five-second shutdown drain, and trace-linked `search.metering` transactions; persistence requires a registered usage recorder. |
 | `base_generation_service.py` + `base_generation/` | `BaseGenerationService` stable import surface plus mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing. Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
-| `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by source / `allow_manual_trigger` / names; per-extractor stride + window + bookmark handling. |
+| `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by request source; per-kind window, automatic cadence and bookmark handling. |
 | `deduplication_utils.py`, `service_utils.py`, `embedding_text.py` | LLM dedup helpers (used by `ProfileConsolidator` + `PlaybookConsolidator`), message construction / JSON extraction / response logging, embedding text builders. |
 
 ### Generation Services
+
+Prechecks and inline metering select input through
+`_collect_scoped_interactions_for_precheck`. When a gate is bypassed, metering
+uses that same collector rather than duplicating its window, source and rerun
+rules. A collected slice, including an empty one, is retained for the run.
+Durable generation already seeds its frozen slice before the gate; session
+evaluation's collector uses its supplied trajectory and still emits no Learning
+billing events. This does not change extraction configuration or billing consent.
 
 
 | Directory | Entry class | Key files |
@@ -60,14 +68,14 @@ strings before deleting old import paths in the same PR.
 |------|---------|
 | `shadow_comparison/` | `ShadowComparisonJudge` (`judge.py`) plus pure outcome helpers (`outcome.py`) - per-turn regular-vs-shadow verdicts written to a separate table. Compact by design; see [README](shadow_comparison/README.md). |
 | `evaluation_overview/` | Dashboard/read-side rollups: `service.py` entry point, `components/` aggregation helpers, and root `eval_sampler.py` shared with regenerate jobs. See [README](evaluation_overview/README.md). |
-| `playbook_optimizer/` | Scenario-based playbook optimization: mature flat package with `optimizer.py`, `scheduler.py`, `rollout.py`, `judge.py`, `models.py`, `scenario_resolver.py`, `gepa_adapter.py`, and `assistant_webhook.py`. See [README](playbook_optimizer/README.md). |
 | `offline_tuner/` | Offline user-playbook tuner engine: deterministic evidence selection, judge+tuner contracts, citation verification, qualification fixtures and sweep progress records. No storage implementation or scheduler of its own. See [README](offline_tuner/README.md). |
-| `braintrust/` | Braintrust export/sync: `service.py`, `client.py`, `_cron.py`, `_encryption.py`. |
+| `braintrust/` | Braintrust export/sync: `service.py`, `client.py`, `_encryption.py`. |
 | `lineage/` | Current-record resolution and tombstone GC: `resolve.py`, `gc_scheduler.py`. |
 | `governance/` | Subject-reference and retention/barrier policy contracts: `config.py`, `service.py`, `subject_refs.py`. Storage and lineage code use these helpers to preserve governance constraints during writes, supersedes, and cleanup. |
 | `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `DocumentExpander` (`_document_expander.py`) - query rewrite and doc expansion for recall. Compact by design; see [README](pre_retrieval/README.md). |
 | `tagging/` | `TaggingService` (`service.py`) + deferred `tagging_scheduler.py` - post-generation profile/playbook tagging. Compact by design; see [README](tagging/README.md). |
-| `unified_search_service.py` | `run_unified_search()` — two-phase parallel search across profiles / agent playbooks / user playbooks. |
+| `unified_search_service.py` | `run_unified_search()` — native retrieval and typed selection across all three memory types, optional bounded judge evidence, then one final response and accepted-result owner. Preserves snapshot, scope, floors, recency, session and source-link ownership. |
+| `retrieval/native_selection.py`, `judge_payload.py`, `judge_client.py` | Immutable native plan and one pure selection rule; exact Jev 1.14 request/Trigger-only playbook evidence; explicit optional direct transport. `REFLEXIO_SEARCH_JUDGE=off` is the default and needs no client/key. `jev` enhances only supported default-five hybrid E5 requests with default recency and no session, explicit floor/threshold, reformulation/history or query-derived time signal. PROFILE-only requests remain native. Enabled failures propagate; no provider retry or native fallback. |
 | `search_observer.py` | Optional best-effort observer of final successful unified searches; carries correlation and learning IDs without response content. Uses the shared bounded callback executor with drop-oldest overflow and explicit tenant scope rebinding; observer latency/failure does not block retrieval. |
 | `search_exposure.py` | Optional synchronous recorder contract for final user-playbook result sets. Enterprise capability registration installs the recorder, which authenticated unified/direct search invokes before metering/response. A recorder failure does NOT fail the search: it is logged, reported as `search_exposure.recorder_failed`, and returned as `RECORDER_FAILED`. An uncorrelated batch is recorded and flagged `integrity_state=incomplete`, not refused. Shared `create_app()` has no default recorder; other constructions persist exposures only when they register one. Direct search omits empty batches. Batch-size and scoped-owner validation happens before recorder lookup and before unified-response acceptance; invalid results are not contained as recorder failures. Unscoped searches may include multiple owners. |
 | `retrieval/` | `agent_selection.py` — optional installed capability that selects a stable subsequence of final native agent results before accepted-response callbacks; bare OSS has no provider. `relevance_floor.py` — result relevance thresholding. `temporal.py` — temporal post-processing driven by reformulation signals: query time windows → per-arm SQL filters, near-duplicate freshness collapse for current-value questions, timestamp ordering for latest-value questions. `user_context_guard.py` — high-precision detection of explicit personalization opt-outs, including Simplified and Traditional Chinese, before user-context retrieval. (Superseded/expired rows are already excluded by storage search SQL.) |
@@ -93,6 +101,16 @@ the default temporal working-pool minimum is not an intermediate result ceiling.
 ## Architecture Pattern
 
 
+Profiles and playbooks implement `_get_extraction_window()` explicitly, reading
+their own two fields from the current request configuration. The generic pipeline
+does not infer a kind from an extractor's Python class or apply shared/override
+precedence. Session evaluation keeps its supplied trajectory. Durable admission
+captures the resolved pair in `Window.policy`; recovery uses that captured pair
+and the authenticated original extractor snapshot. Old snapshot geometry slots
+are inert hash/lookup metadata, never current policy inputs. Profile package
+preparation and parent records share the same snapshot encoder so a retry cannot
+invent a configuration change.
+
 Generation uses configured actors and fenced persistence; deferred workers rebuild request context rather than retaining request objects. Search composes reformulation, parallel entity retrieval, filtering, optional exposure recording, and asynchronous metering. Keep service-owned implementations behind their public entry points.
 
 ## Requirements / Problems to Avoid
@@ -106,6 +124,7 @@ Generation uses configured actors and fenced persistence; deferred workers rebui
   dependencies and finalization receipts join an enclosing transaction. Standalone
   mutations use the same owner for atomic commit/rollback; nested and no-op calls
   cannot publish earlier writes. Keep model calls outside these transactions.
+- **Transition metadata stays source-owned** — `storage_base/closed_window_history.py` proves only detached inert history and numeric queue positions, never publication or financial settlement; `storage_base/transition_sources.py` shares intrinsic non-intake predicates between closure and attributed cursor reads. The fixed `transition_inventory.py` closure iterator reuses full-source checks only within a verified native transaction and rechecks at completion; public pages remain independently guarded, and the private projection retains every classification fact while omitting unused witnesses.
 - **Automatic extraction uses `storage_base/_extraction_stream.py`** — admission locks the user work row first; window output writes, cursor advancement and receipts share one fenced transaction.
 - **Aggregation state is per agent version** — scheduled intake, centroid matching, cluster membership, invalidation, and agent-playbook generation must never cross versions; keep LLM and clustering work outside `commit_scope()`.
 - **`tool_can_use` lives at root `Config`** — shared by playbook extraction and success evaluation, not per-service.

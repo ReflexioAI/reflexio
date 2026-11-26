@@ -19,9 +19,21 @@ from reflexio.native_compute import configure_tokenizer_compute
 from reflexio.removed_env import reject_removed_env
 from reflexio.server.env_utils import env_str
 from reflexio.server.llm._litellm_types import (
+    ComputationEvidenceChangedError as ComputationEvidenceChangedError,
+)
+from reflexio.server.llm._litellm_types import (
+    ExtractionInputIntegrityError as ExtractionInputIntegrityError,
+)
+from reflexio.server.llm._litellm_types import (
+    InputBudgetConfigurationError as InputBudgetConfigurationError,
+)
+from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuard,
     ProviderRequestGuardError,
+)
+from reflexio.server.llm._litellm_types import (
+    SavedOutputIncompatibleError as SavedOutputIncompatibleError,
 )
 from reflexio.server.llm.model_defaults import default_completion_api_base
 from reflexio.server.llm.token_accounting import RunTokenTotals
@@ -59,7 +71,7 @@ def model_input_budget() -> Iterator[None]:
 def _native_capacity_limits(params: Mapping[str, Any]) -> dict[str, int] | None:
     limits = _model_capacity_limits.get()
     if limits is None or params["model"].partition("/")[0] in {
-        "claude-code",
+        "local-cli",
         "openclaw",
     }:
         return None
@@ -138,26 +150,6 @@ extraction_reasoning_exhaustion: ContextVar[ReasoningExhaustionJournal | None] =
 extraction_use_model_capacity: ContextVar[bool] = ContextVar(
     "extraction_use_model_capacity", default=False
 )
-
-
-class InputBudgetConfigurationError(ProviderRequestGuardError):
-    """A safe effective model/endpoint capacity could not be established."""
-
-
-class SavedOutputIncompatibleError(InputBudgetConfigurationError):
-    """Saved extraction output fails the current contract; retrying cannot fix it.
-
-    The worker holds the window for an operator instead of retrying it.
-    """
-
-
-class ComputationEvidenceChangedError(InputBudgetConfigurationError):
-    """Evidence a cached extraction computation was based on has changed.
-
-    The refusal is correct, but retrying the same cached computation cannot
-    pass. The worker discards that computation and recomputes it against
-    current evidence, consuming the window's existing provider attempt budget.
-    """
 
 
 class InputBudgetExceededError(ProviderRequestGuardError):

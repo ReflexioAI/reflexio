@@ -15,7 +15,7 @@ import importlib
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -656,15 +656,19 @@ class TestGetCachedRequestContext:
         max_active = 0
         counter_lock = threading.Lock()
 
+        original_migrate = SQLiteStorageBase.migrate
+
         def slow_migrate(_self: SQLiteStorageBase) -> bool:
             nonlocal active, max_active
             with counter_lock:
                 active += 1
                 max_active = max(max_active, active)
-            time.sleep(0.05)
-            with counter_lock:
-                active -= 1
-            return True
+            try:
+                time.sleep(0.05)
+                return original_migrate(_self)
+            finally:
+                with counter_lock:
+                    active -= 1
 
         monkeypatch.setattr(SQLiteStorageBase, "migrate", slow_migrate)
         start = threading.Barrier(len(org_ids))
@@ -750,6 +754,50 @@ def test_prefetch_overlaps_independent_work_and_reuses_fresh_version(monkeypatch
         release.set()
         search_runtime._scope.reset(token)
         project.reset(project_token)
+
+
+def test_saturated_search_pool_declines_speculative_prefetch(monkeypatch):
+    from reflexio.server import search_runtime
+    from reflexio.server.cache import reflexio_cache as cache
+    from reflexio.server.services import unified_search_service as search
+
+    org = "saturated-prefetch"
+    warmed = _stub_reflexio(("db", 1))
+    warmed.current_config_version.return_value = ("db", 2)
+    replacement = _stub_reflexio(("db", 2))
+    cache._reflexio_cache[(org, None)] = cache._CacheEntry(warmed, ("db", 1))
+    monkeypatch.setattr(cache, "Reflexio", lambda **_kwargs: replacement)
+    started = threading.Event()
+    release = threading.Event()
+
+    def occupied():
+        started.set()
+        assert release.wait(3)
+
+    executor = search._SearchWorkerPool(
+        max_workers=1, thread_name_prefix="prefetch-test"
+    )
+    with ExitStack() as cleanup:
+        cleanup.callback(executor._executor.shutdown)
+        cleanup.callback(release.set)
+        monkeypatch.setattr(search, "_SEARCH_FANOUT_EXECUTOR", executor)
+        pending = executor.submit(occupied)
+        assert started.wait(2)
+        scope = search_runtime.SearchScope(deadline=time.monotonic() + 2)
+        token = search_runtime._scope.set(scope)
+        try:
+            assert cache.prefetch_config_version(org) is None
+            assert not scope.futures
+            assert not scope.active
+            assert not scope.phase_counts
+            warmed.current_config_version.assert_not_called()
+            assert cache.get_reflexio(org) is replacement
+            assert warmed.current_config_version.call_count == 1
+            assert not pending.done()
+        finally:
+            search_runtime._scope.reset(token)
+            release.set()
+        pending.result(timeout=2)
 
 
 def test_prefetch_never_constructs_cold_or_nonsearch_instances(monkeypatch):

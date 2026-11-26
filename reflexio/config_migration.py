@@ -4,7 +4,7 @@ Current schemas own canonical validation. Historical rewrite rules live here so
 explicit upgrades remain usable after runtime compatibility hooks are removed.
 """
 
-import threading
+from copy import deepcopy
 from enum import StrEnum
 from typing import Annotated, Any
 
@@ -15,18 +15,47 @@ from reflexio.config_env import (
 )
 from reflexio.config_env import StoredConfigurationError as StoredConfigurationError
 
-_LEGACY_OPTIMIZER_BOOL = TypeAdapter(bool)
-_LEGACY_MERGE_LIMIT = TypeAdapter(Annotated[int, Field(ge=0)])
-_LEGACY_METRIC_CALL_LIMIT = TypeAdapter(Annotated[int, Field(gt=0)])
+_LEGACY_POLICY_BOOL = TypeAdapter(bool)
 _LEGACY_RETRIEVAL_POOL = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_AUDIT_RETENTION_DAYS = TypeAdapter(Annotated[int, Field(gt=0)])
 _LEGACY_PENDING_LIFETIME = TypeAdapter(Annotated[int, Field(gt=0)])
-_LEGACY_OPTIMIZER_JITTER = TypeAdapter(
-    Annotated[float, Field(ge=0, le=threading.TIMEOUT_MAX, allow_inf_nan=False)]
-)
-_LEGACY_STOP_SCORE = TypeAdapter(
-    Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
-)
+_LEGACY_PROFILE_STRIDE = TypeAdapter(Annotated[int, Field(gt=0)])
+
+
+def retire_profile_manual_trigger(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project a source-qualified old workspace's automatic profile policy.
+
+    The storage owner supplies the historical generation and preserves the
+    original. This function never stamps, writes or admits a current document.
+    Manual extraction consumes the history width, not automatic cadence. A
+    historical manual-only workspace therefore maps to zero cadence, without
+    installing a replacement positive value or a hidden re-enable setting.
+    """
+    if "profile_stride_size" in payload:
+        try:
+            _LEGACY_PROFILE_STRIDE.validate_python(payload["profile_stride_size"])
+        except ValidationError:
+            raise ConfigurationMigrationError(
+                "Invalid historical profile_stride_size"
+            ) from None
+    extractor = payload.get("profile_extractor_config")
+    if extractor is not None and not isinstance(extractor, dict):
+        raise ConfigurationMigrationError("Invalid historical profile_extractor_config")
+    result = deepcopy(payload)
+    if extractor is None:
+        return result
+    try:
+        manual = _LEGACY_POLICY_BOOL.validate_python(
+            extractor.get("manual_trigger", False)
+        )
+    except ValidationError:
+        raise ConfigurationMigrationError(
+            "Invalid obsolete profile_extractor_config.manual_trigger"
+        ) from None
+    result["profile_extractor_config"].pop("manual_trigger", None)
+    if manual:
+        result["profile_stride_size"] = 0
+    return result
 
 
 def retire_storage_queue_policy(storage: dict[str, Any]) -> dict[str, Any]:
@@ -77,95 +106,12 @@ def retire_playbook_consolidation_strategy(data: Any) -> Any:
     }
 
 
-def strip_retired_optimizer_stop_score(data: Any) -> Any:
-    """Validate and retire historical policy only during explicit conversion."""
-    if not isinstance(data, dict) or "early_stop_score" not in data:
-        return data
-    try:
-        _LEGACY_STOP_SCORE.validate_python(data["early_stop_score"])
-        _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
-    except ValidationError:
-        raise ConfigurationMigrationError(
-            "Invalid obsolete optimizer early_stop_score or enabled setting."
-        ) from None
-    return {key: value for key, value in data.items() if key != "early_stop_score"}
-
-
-class OptimizerSchedulingMigrationError(ConfigurationMigrationError):
-    """Invalid saved scheduling policy must not trigger a storage-default fallback."""
-
-
-def retire_optimizer_jitter_policy(data: Any) -> Any:
-    """Retire the timer only at an explicit historical conversion boundary."""
-    if not isinstance(data, dict) or "scheduler_jitter_seconds" not in data:
-        return data
-    try:
-        _LEGACY_OPTIMIZER_JITTER.validate_python(data["scheduler_jitter_seconds"])
-    except ValidationError:
-        raise OptimizerSchedulingMigrationError(
-            "Invalid optimizer scheduling setting: scheduler_jitter_seconds"
-        ) from None
-    # Queue coalescing replaces the mechanism, not its delay with a constant.
-    return {
-        key: value for key, value in data.items() if key != "scheduler_jitter_seconds"
-    }
-
-
-def retire_optimizer_replay_policy(data: Any) -> Any:
-    """Validate historical retry settings before intentional transport retirement.
-
-    This changes failure policy, not an equivalent encoding: integrations own
-    safe replay. Historical publication metadata is outside this config path.
-    """
-    fields = {
-        "webhook_max_retries": TypeAdapter(Annotated[int, Field(ge=0)]),
-        "webhook_backoff_base_seconds": TypeAdapter(Annotated[float, Field(ge=0)]),
-    }
-    if not isinstance(data, dict):
-        return data
-    for name, adapter in fields.items():
-        if name in data:
-            try:
-                adapter.validate_python(data[name])
-            except ValidationError:
-                raise ConfigurationMigrationError(
-                    f"Invalid obsolete optimizer setting: {name}"
-                ) from None
-    return {key: value for key, value in data.items() if key not in fields}
-
-
-def canonicalize_optimizer_work_budget(data: Any) -> Any:
-    """Translate old admission and budget only at an explicit upgrade boundary."""
-    old_fields = {"enabled", "max_metric_calls"}
-    if not isinstance(data, dict) or not old_fields.intersection(data):
-        return data
-    if "metric_call_budget" in data:
-        raise ConfigurationMigrationError(
-            "Conflicting current and historical optimizer work budgets; "
-            "select one policy explicitly before conversion"
-        )
-    try:
-        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
-        # Historical default only. New runtime policy defaults to no work.
-        limit = _LEGACY_METRIC_CALL_LIMIT.validate_python(
-            data.get("max_metric_calls", 20)
-        )
-    except ValidationError:
-        raise ConfigurationMigrationError(
-            "Invalid saved optimizer enabled or max_metric_calls setting"
-        ) from None
-    return {
-        **{key: value for key, value in data.items() if key not in old_fields},
-        "metric_call_budget": limit if enabled else 0,
-    }
-
-
 def canonicalize_retrieval_floor_policy(data: Any) -> Any:
     """Preserve the old effective gate and capacity during explicit conversion."""
     if not isinstance(data, dict) or not {"enabled", "pool_size"}.intersection(data):
         return data
     try:
-        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
+        enabled = _LEGACY_POLICY_BOOL.validate_python(data.get("enabled", False))
         pool_size = _LEGACY_RETRIEVAL_POOL.validate_python(data.get("pool_size", 30))
     except ValidationError:
         raise ConfigurationMigrationError(
@@ -187,7 +133,7 @@ def canonicalize_pending_creation_policy(data: Any, *, historical: bool = False)
     if not isinstance(data, dict) or ("enabled" not in data and not historical):
         return data
     try:
-        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", False))
+        enabled = _LEGACY_POLICY_BOOL.validate_python(data.get("enabled", False))
         # Frozen historical default, never a current runtime lifetime.
         lifetime = _LEGACY_PENDING_LIFETIME.validate_python(
             data.get("pending_ttl_seconds", 86_400)
@@ -213,7 +159,7 @@ def canonicalize_lineage_retention_policy(
     if not isinstance(data, dict) or ("enabled" not in data and not historical):
         return data
     try:
-        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data.get("enabled", True))
+        enabled = _LEGACY_POLICY_BOOL.validate_python(data.get("enabled", True))
         # Frozen historical default, never a replacement for current policy.
         days = _LEGACY_AUDIT_RETENTION_DAYS.validate_python(
             data.get("tombstone_grace_window_days", 90)
@@ -241,7 +187,7 @@ def canonicalize_audit_retention_policy(data: Any) -> Any:
             "explicitly select one policy before conversion"
         )
     try:
-        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(
+        enabled = _LEGACY_POLICY_BOOL.validate_python(
             data.get("audit_events_retention_enabled", False)
         )
         # Historical default only; current runtime defaults to indefinite retention.
@@ -256,89 +202,6 @@ def canonicalize_audit_retention_policy(data: Any) -> Any:
         **{key: value for key, value in data.items() if key not in old_fields},
         "audit_events_max_age_days": days if enabled else 0,
     }
-
-
-def canonicalize_agent_optimizer_policy(data: Any) -> Any:
-    """Convert only the formerly canonical agent gate pair during an upgrade.
-
-    Other unsupported historical fields are deliberately left for strict
-    validation; local startup must not accidentally admit old storage formats.
-    """
-    if not isinstance(data, dict):
-        return data
-    normalized = dict(data)
-    legacy_agent_keys = (
-        "optimize_agent_playbooks",
-        "auto_update_pending_agent_playbooks",
-    )
-    if any(key in data for key in legacy_agent_keys):
-        # The old adoption default was true, unlike the old user target.
-        # Preserve the complete effective opt-in, including an explicit veto.
-        try:
-            optimize = _LEGACY_OPTIMIZER_BOOL.validate_python(
-                data.get(legacy_agent_keys[0], False)
-            )
-            adopt = _LEGACY_OPTIMIZER_BOOL.validate_python(
-                data.get(legacy_agent_keys[1], True)
-            )
-        except ValidationError:
-            raise ConfigurationMigrationError(
-                "Invalid saved agent optimizer switches; correct optimize_agent_playbooks "
-                "and auto_update_pending_agent_playbooks before retrying"
-            ) from None
-        normalized.setdefault("agent_playbooks_enabled", optimize and adopt)
-        for key in legacy_agent_keys:
-            normalized.pop(key, None)
-    return normalized
-
-
-def _normalize_optimizer_policy(data: Any) -> Any:
-    """Canonicalize retired controls without enabling previously disabled work."""
-    if not isinstance(data, dict):
-        return data
-    # These are current canonical policy validation/defaults, not legacy decoders.
-    from reflexio.models.config_schema import (
-        DEFAULT_MAX_MERGE_INVOCATIONS,
-        OptimizerSchedulingPolicy,
-    )
-
-    normalized = dict(
-        retire_optimizer_replay_policy(retire_optimizer_jitter_policy(data))
-    )
-    scheduling = {
-        key: data[key] for key in OptimizerSchedulingPolicy.model_fields if key in data
-    }
-    if scheduling:
-        try:
-            OptimizerSchedulingPolicy.model_validate(scheduling)
-        except ValidationError as error:
-            fields = ", ".join(sorted({str(item["loc"][0]) for item in error.errors()}))
-            raise OptimizerSchedulingMigrationError(
-                f"Invalid optimizer scheduling setting: {fields}"
-            ) from None
-    legacy_user_keys = ("optimize_user_playbooks", "auto_update_user_playbooks")
-    if any(key in data for key in legacy_user_keys):
-        # Validate both: even an inactive policy must not hide malformed input.
-        optimize = _LEGACY_OPTIMIZER_BOOL.validate_python(
-            data.get(legacy_user_keys[0], False)
-        )
-        adopt = _LEGACY_OPTIMIZER_BOOL.validate_python(
-            data.get(legacy_user_keys[1], False)
-        )
-        normalized.setdefault("user_playbooks_enabled", optimize and adopt)
-        for key in legacy_user_keys:
-            normalized.pop(key, None)
-    normalized = canonicalize_agent_optimizer_policy(normalized)
-    if "use_merge" in data:
-        enabled = _LEGACY_OPTIMIZER_BOOL.validate_python(data["use_merge"])
-        limit = _LEGACY_MERGE_LIMIT.validate_python(
-            data.get("max_merge_invocations", DEFAULT_MAX_MERGE_INVOCATIONS)
-        )
-        normalized.pop("use_merge")
-        normalized["max_merge_invocations"] = limit if enabled else 0
-    return canonicalize_optimizer_work_budget(
-        strip_retired_optimizer_stop_score(normalized)
-    )
 
 
 class ExtractionPreset(StrEnum):
@@ -575,10 +438,8 @@ def strip_retired_config_fields(data: dict[str, Any]) -> dict[str, Any]:
                 )
             )
         )
-    if "playbook_optimizer_config" in payload:
-        payload["playbook_optimizer_config"] = _normalize_optimizer_policy(
-            payload["playbook_optimizer_config"]
-        )
+    # The GEPA playbook optimizer was retired; its settings no longer exist.
+    payload.pop("playbook_optimizer_config", None)
     if "retrieval_floor" in payload:
         payload["retrieval_floor"] = canonicalize_retrieval_floor_policy(
             payload["retrieval_floor"]
@@ -656,8 +517,10 @@ def _normalize_storage_backend(data: Any) -> Any:
 def canonicalize_stored_config_fields(data: dict[str, Any]) -> dict[str, Any]:
     """Rewrite legacy policy names without serializing away opaque metadata.
 
-    This is a raw migration, not validation or default materialization. Callers
-    must still use ``validate_stored_config`` before persisting or executing it.
+    This rewrites historical spellings; it does not produce a current Config.
+    Complete-document owners use ``canonicalize_config_document`` for the
+    remaining policy projections before validation/publication. Explicit
+    historical readers retain this raw intermediate and the untouched original.
     Storage identity/credentials retain their separate strict validation path.
     """
     payload = strip_retired_config_fields(normalize_legacy_config_shape(data))
@@ -691,10 +554,35 @@ def canonicalize_config_document(payload: dict[str, Any]) -> dict[str, Any]:
     new backend. Persist the validated backend tag before dropping historical
     HTTP selectors, whose presence otherwise influences untagged storage.
     """
+    from reflexio.extraction_window_migration import (
+        EXTRACTION_WINDOW_FIELDS,
+        convert_canonical_legacy_extraction_windows,
+    )
     from reflexio.models.config_schema import validate_stored_config
 
     try:
         converted = canonicalize_stored_config_fields(payload)
+        if EXTRACTION_WINDOW_FIELDS.intersection(converted):
+            # Storage owners must reject ignored new names in an older physical
+            # generation before reaching this logical canonicalizer. Explicit
+            # current documents retain their sparse current policy.
+            legacy = {"window_size", "stride_size"}.intersection(converted)
+            for field in ("profile_extractor_config", "user_playbook_extractor_config"):
+                extractor = converted.get(field)
+                if isinstance(extractor, dict):
+                    legacy |= {
+                        "window_size_override",
+                        "stride_size_override",
+                    }.intersection(extractor)
+            if legacy:
+                raise ConfigurationMigrationError(
+                    "Conflicting current and historical extraction-window policy."
+                )
+        else:
+            converted = convert_canonical_legacy_extraction_windows(converted)
+        profile = converted.get("profile_extractor_config")
+        if isinstance(profile, dict) and "manual_trigger" in profile:
+            converted = retire_profile_manual_trigger(converted)
         raw_storage = converted.get("storage_config")
         if isinstance(raw_storage, dict):
             storage = dict(raw_storage)

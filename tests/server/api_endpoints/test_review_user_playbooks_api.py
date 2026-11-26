@@ -90,3 +90,35 @@ def test_review_user_playbooks_rejects_invalid_window_and_limit(client) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_apply_review_does_not_acknowledge_started_when_capacity_is_busy(
+    client, mock_reflexio, patched_reflexio, monkeypatch
+) -> None:
+    from reflexio.server.operation_limiter import (
+        reset_operation_limiters_for_tests,
+        try_aggregation_capacity,
+    )
+
+    monkeypatch.setenv("REFLEXIO_AGGREGATION_CONCURRENCY_LIMIT", "1")
+    monkeypatch.setenv("REFLEXIO_AGGREGATION_CONCURRENCY_TIMEOUT_SECONDS", "0")
+    reset_operation_limiters_for_tests()
+    try:
+        with try_aggregation_capacity("test-org") as admitted:
+            assert admitted
+            response = client.post(
+                "/api/review_user_playbooks",
+                json={
+                    "start_time": "2026-07-01T00:00:00Z",
+                    "end_time": "2026-07-02T00:00:00Z",
+                    "top_k": 25,
+                    "report_only": False,
+                },
+                headers={"User-Agent": "test"},
+            )
+
+            mock_reflexio.review_user_playbooks.assert_not_called()
+            assert response.status_code == 503
+            assert response.json()["detail"] == "aggregation concurrency limit reached"
+    finally:
+        reset_operation_limiters_for_tests()

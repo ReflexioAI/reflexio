@@ -1,9 +1,9 @@
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from hashlib import sha256
 from itertools import combinations
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import pytest
 from pydantic import ValidationError
@@ -269,6 +269,39 @@ def test_trajectory_string_reuse_preserves_scalar_types_and_unicode() -> None:
         )
         == '["1","1",true,1,1.0,-0.0,0.0,"é","e\u0301","é"]'.encode()
     )
+
+
+@pytest.mark.parametrize(("scalar", "value"), [(str, "text"), (int, 1), (float, 1.5)])
+def test_scalar_like_mappings_keep_generic_dispatch_and_depth_checks(
+    scalar: type, value: object
+) -> None:
+    class ScalarMapping(Mapping[str, str]):
+        def __iter__(self) -> Iterator[str]:
+            return iter(("key",))
+
+        def __len__(self) -> int:
+            return 1
+
+        def __getitem__(self, key: str) -> str:
+            if key != "key":
+                raise KeyError(key)
+            return "value"
+
+    factory = cast(
+        Callable[[object], object], type("WrappedScalar", (ScalarMapping, scalar), {})
+    )
+    wrapped = factory(value)
+    # Float subclasses keep the earlier float branch; string/int mappings stay objects.
+    expected = b"1.5" if scalar is float else b'{"key":"value"}'
+    assert canonical_trajectory_bytes(wrapped) == expected
+    with pytest.raises(
+        ValueError, match="canonical trajectory JSON exceeds maximum depth"
+    ):
+        session_outcome_identity._canonical_trajectory_json(
+            wrapped,
+            strings={},
+            depth=session_outcome_identity.MAX_CANONICAL_TRAJECTORY_JSON_DEPTH,
+        )
 
 
 def test_trajectory_string_cache_is_bounded_and_excludes_large_or_custom_strings() -> (

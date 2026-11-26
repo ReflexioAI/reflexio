@@ -188,6 +188,7 @@ def test_provider_path_isolates_per_org_failure(tmp_path):
         ctx.org_id = org_id
         if org_id == "org_bad":
             ctx.storage = MagicMock()
+            ctx.storage.profile_lifecycle_due_users.return_value = []
             ctx.storage.expire_active_profiles.side_effect = RuntimeError("boom")
         else:
             ctx.storage = good

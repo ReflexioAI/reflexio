@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from reflexio.cli.app import create_app
 from reflexio.config_document import decode_config_document
+from reflexio.config_file import FILE_FORMAT_VERSION
 from reflexio.config_migration import StoredConfigurationError
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
@@ -31,13 +32,24 @@ def write_source(storage, raw):
 
 @pytest.mark.parametrize(
     "geometry",
-    ['"window_size":23,"stride_size":7', '"batch_size":23,"batch_interval":7'],
+    [
+        '"window_size":23,"stride_size":7',
+        '"batch_size":23,"batch_interval":7',
+        '"profile_window_size":23,"profile_stride_size":7',
+    ],
 )
 def test_existing_read_preserves_sparse_source_and_nested_metadata(
     storage, monkeypatch, geometry
 ):
+    metadata = (
+        f'"_reflexio_config_file":{{"version":{FILE_FORMAT_VERSION}}},'
+        if '"profile_window_size"' in geometry
+        else ""
+    )
     raw = (
-        '{"storage_config":{"type":"sqlite","db_path":"/tmp/source.sqlite"},'
+        "{"
+        + metadata
+        + '"storage_config":{"type":"sqlite","db_path":"/tmp/source.sqlite"},'
         + geometry
         + ',"profile_extractor_config":{"extraction_definition_prompt":"Custom prompt","extension":{"fraction":0.12345678901234567890123456789}},"opaque":{"scaled":1.00,"huge":1e1000}}'
     ).encode()
@@ -48,13 +60,13 @@ def test_existing_read_preserves_sparse_source_and_nested_metadata(
         "_save_config_to_local_dir",
         Mock(side_effect=AssertionError("reading must not publish")),
     )
-    if '"batch_size"' in geometry:
+    if '"profile_window_size"' not in geometry:
         with pytest.raises(StoredConfigurationError):
             storage.load_config()
         assert path.read_bytes() == raw
         return
     loaded = storage.load_config()
-    assert (loaded.window_size, loaded.stride_size) == (23, 7)
+    assert (loaded.profile_window_size, loaded.profile_stride_size) == (23, 7)
     assert (
         loaded.profile_extractor_config.extraction_definition_prompt == "Custom prompt"
     )
@@ -127,7 +139,9 @@ def test_read_io_error_propagates_without_initializing(storage, monkeypatch):
 @pytest.mark.parametrize(
     "winner",
     [
-        b'{"storage_config":null,"window_size":31,"stride_size":7,"agent_context_prompt":"concurrent"}',
+        (
+            f'{{"_reflexio_config_file":{{"version":{FILE_FORMAT_VERSION}}},"storage_config":null,"profile_window_size":31,"profile_stride_size":7,"agent_context_prompt":"concurrent"}}'
+        ).encode(),
         b'{"window_size":0}',
     ],
     ids=["valid-winner", "invalid-winner"],
@@ -149,7 +163,7 @@ def test_initialization_loads_concurrent_winner_without_replacing_it(
             storage.load_config()
     else:
         config = storage.load_config()
-        assert (config.window_size, config.stride_size) == (31, 7)
+        assert (config.profile_window_size, config.profile_stride_size) == (31, 7)
         assert config.agent_context_prompt == "concurrent"
     assert len(calls) == 1
     assert Path(storage.config_file).read_bytes() == winner
@@ -204,7 +218,7 @@ def test_real_offline_upgrade_retains_original_and_canonical_load_is_read_only(
     canonical = target.read_bytes()
     before = target.stat()
     config = storage.load_config()
-    assert (config.window_size, config.stride_size) == (23, 7)
+    assert (config.profile_window_size, config.profile_stride_size) == (23, 7)
     assert source.read_bytes() == original and source.stat().st_mode & 0o777 == 0o640
     assert target.read_bytes() == canonical
     after = target.stat()

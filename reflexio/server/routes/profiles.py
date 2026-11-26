@@ -363,8 +363,8 @@ def manual_profile_generation_endpoint(
     """Manually trigger profile generation with window-sized interactions and CURRENT output.
 
     Runs with auto_run=False, which bypasses the regular stride/should_run
-    gates. Only profile extraction is triggered. Each extractor uses its own
-    window_size_override when present, falling back to the global window_size.
+    gates. Only profile extraction is triggered, using profile_window_size
+    from the current configuration without an automatic stride gate.
     Output is CURRENT profiles only.
 
     Args:

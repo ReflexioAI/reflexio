@@ -116,13 +116,14 @@ def test_custom_gateway_requires_existing_context_and_explicit_output_policy(
     assert input_budget._model_capacity_limits.get() is None
 
 
-@pytest.mark.parametrize("provider", ["claude-code", "openclaw"])
-def test_host_capacity_remains_delegated(capacity, provider):
+@pytest.mark.parametrize("provider", ["local-cli", "openclaw"])
+def test_host_capacity_remains_delegated(capacity, provider, monkeypatch):
     dispatch, counter, _ = capacity
+    model = "local-cli/codex" if provider == "local-cli" else "openclaw/default"
+    if provider == "local-cli":
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", model)
     assert (
-        _expander(max_tokens=None, model=f"{provider}/default")
-        .expand(CONTENT)
-        .expanded_text
+        _expander(max_tokens=None, model=model).expand(CONTENT).expanded_text
         == "tail, synonym"
     )
     assert CONTENT in dispatch.call_args.args[0]["messages"][-1]["content"]

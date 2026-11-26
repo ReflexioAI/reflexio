@@ -43,8 +43,6 @@ CONTRACT_TESTS: dict[str, tuple[str, ...]] = {
         "tests/server/llm/test_failure.py",
         "tests/server/llm/test_litellm_error_mapping_integration.py",
     ),
-    # The GEPA adapter, optimizer loop and winner publication.
-    "gepa": ("tests/server/services/playbook_optimizer",),
 }
 
 

@@ -41,6 +41,7 @@ import pytest
 from fastapi import FastAPI
 
 from reflexio.server.api import create_app
+from reflexio.server.auth import default_get_org_id
 from reflexio.server.route_inventory import api_route_contexts
 
 # ── Golden: create_app() (full, data-plane mounted) ─────────────────────
@@ -64,7 +65,7 @@ FULL_EXC = [
     "<class 'slowapi.errors.RateLimitExceeded'>",
     "<class 'starlette.exceptions.HTTPException'>",
 ]
-FULL_OVERRIDES: list[str] = []
+FULL_OVERRIDES = {default_get_org_id}
 FULL_ROUTES = [
     (
         "/meta/version",
@@ -1028,7 +1029,7 @@ FULL_ROUTES = [
 # ── Golden: create_app(mount_data_plane=False) (control-plane scaffolding only) ──
 NODP_MIDDLEWARE = list(FULL_MIDDLEWARE)
 NODP_EXC = list(FULL_EXC)
-NODP_OVERRIDES: list[str] = []
+NODP_OVERRIDES = {default_get_org_id}
 NODP_ROUTES = [
     (
         "/meta/version",
@@ -1143,7 +1144,7 @@ def test_oss_app_shape_matches_golden(
     assert set(_route_inventory(app)) == {tuple(r) for r in routes}
     assert _middleware_names(app) == middleware
     assert sorted(str(k) for k in app.exception_handlers) == exc
-    assert sorted(str(k) for k in app.dependency_overrides) == overrides
+    assert app.dependency_overrides.keys() == overrides
 
 
 @pytest.mark.parametrize(

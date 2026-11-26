@@ -120,8 +120,7 @@ def prepare_consumer(
         extractor_config=config,
         existing_profiles=[],
         agent_context="",
-        gate_enabled=gate_enabled,
-        gate_model="gpt-4o-mini",
+        gate_model="gpt-4o-mini" if gate_enabled else None,
         dedup_model="gpt-4o-mini",
         prior_context=prior,
         pending_tools_active=pending_config is not None,
@@ -224,7 +223,7 @@ def install_transport(
                     "profiles": [
                         {
                             "content": "Prefers concise answers",
-                            "time_to_live": "infinity",
+                            "explicit_storage_deadline": None,
                             "source_span": "absent quotation"
                             if bad_quote
                             else "I prefer concise answers with details 0",

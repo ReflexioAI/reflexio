@@ -1,9 +1,13 @@
 """Resolve extraction eligibility once, when interactions are accepted."""
 
-from typing import Any
+from typing import Any, Literal
 
 from reflexio.models.api_schema.domain.entities import PublishUserInteractionRequest
-from reflexio.models.config_schema import Config
+from reflexio.models.config_schema import (
+    Config,
+    ProfileExtractorConfig,
+    UserPlaybookExtractorConfig,
+)
 from reflexio.server.services.extraction.agent_run_records import (
     snapshot_extractor_config,
 )
@@ -22,26 +26,26 @@ def extraction_admission(
         "max_batch_wait_seconds": config.extraction_max_batch_wait_seconds,
         "skip_aggregation": request.skip_aggregation,
     }
-    for kind, extractor in (
-        ("profile", config.profile_extractor_config),
-        ("playbook", config.user_playbook_extractor_config),
-    ):
+    extractors: dict[
+        Literal["profile", "playbook"],
+        ProfileExtractorConfig | UserPlaybookExtractorConfig | None,
+    ] = {
+        "profile": config.profile_extractor_config,
+        "playbook": config.user_playbook_extractor_config,
+    }
+    for kind, extractor in extractors.items():
         eligible = extractor is not None and not request.evaluation_only and not stalled
         if extractor is None:
             admission[kind] = {"eligible": False}
             continue
         sources = extractor.request_sources_enabled
+        window = get_extractor_window_params(config, kind)
         eligible = (
-            eligible
-            and not getattr(extractor, "manual_trigger", False)
-            and (not sources or request.source in sources)
+            eligible and window.automatic and (not sources or request.source in sources)
         )
         if not eligible:
             admission[kind] = {"eligible": False}
             continue
-        window = get_extractor_window_params(
-            extractor, config.window_size, config.stride_size
-        )
         window.require_automatic()
         width, stride = window
         admission[kind] = {

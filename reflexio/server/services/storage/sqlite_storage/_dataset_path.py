@@ -21,10 +21,11 @@ bug. See ``docs/superpowers/specs/2026-09-02-oss-dataset-isolation-fix-design.md
 from __future__ import annotations
 
 import logging
-import re
 import sqlite3
 import time
 from pathlib import Path
+
+from reflexio.local_instance import is_valid_local_org_id
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +66,14 @@ _WRITE_BARRIER_TABLE = "subject_write_barriers"
 # that cannot traverse or escape. Rejected, never rewritten: slugifying would map
 # two distinct identities onto one file, which is the defect this module exists to
 # fix.
-_IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 class DatasetIdentityError(RuntimeError):
     """A dataset file cannot be resolved for the requested identity."""
+
+
+class UnclaimedDatasetError(DatasetIdentityError):
+    """No local namespace has been recorded for this SQLite file."""
 
 
 def validate_dataset_identity(org_id: str) -> str:
@@ -84,7 +88,7 @@ def validate_dataset_identity(org_id: str) -> str:
     Raises:
         DatasetIdentityError: If it could traverse, escape, or collide.
     """
-    if not _IDENTITY_RE.fullmatch(org_id or ""):
+    if not is_valid_local_org_id(org_id or ""):
         raise DatasetIdentityError(
             f"dataset identity {org_id!r} cannot be used as a storage filename: "
             "it must match ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$. It is rejected rather "
@@ -210,6 +214,22 @@ def barrier_identity_labels(path: Path) -> set[str]:
     return labels
 
 
+def _claim_or_read_identity_db(conn: sqlite3.Connection, org_id: str) -> str:
+    """Claim within the caller's write transaction; never reserve or commit."""
+    if not conn.in_transaction:
+        raise RuntimeError("Dataset identity claim requires a write transaction")
+    conn.execute(f"CREATE TABLE IF NOT EXISTS {_IDENTITY_CLAIM_DEFINITION}")
+    conn.execute(
+        f"INSERT INTO {IDENTITY_CLAIM_TABLE} (k, org_id, claimed_at)"
+        " VALUES (1, ?, ?) ON CONFLICT(k) DO NOTHING",
+        (org_id, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+    )
+    row = conn.execute(
+        f"SELECT org_id FROM {IDENTITY_CLAIM_TABLE} WHERE k = 1"
+    ).fetchone()
+    return str(row[0]) if row else org_id
+
+
 def claim_or_read_identity(path: Path, org_id: str) -> str:
     """Claim *path* for *org_id*, or return the identity that already holds it.
 
@@ -228,6 +248,9 @@ def claim_or_read_identity(path: Path, org_id: str) -> str:
     Returns:
         str: The identity that owns *path* -- *org_id* if the claim succeeded.
     """
+    from ._learning_policy_authority import reserve_new_sqlite_dataset
+
+    reserve_new_sqlite_dataset(str(path), org_id)
     conn = sqlite3.connect(path)
     try:
         # Only the unchanged app-created schema can bypass claim-time validation.
@@ -243,19 +266,42 @@ def claim_or_read_identity(path: Path, org_id: str) -> str:
             if row is not None:
                 return str(row[0])
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute(f"CREATE TABLE IF NOT EXISTS {_IDENTITY_CLAIM_DEFINITION}")
-        conn.execute(
-            f"INSERT INTO {IDENTITY_CLAIM_TABLE} (k, org_id, claimed_at)"
-            " VALUES (1, ?, ?) ON CONFLICT(k) DO NOTHING",
-            (org_id, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
-        )
-        row = conn.execute(
-            f"SELECT org_id FROM {IDENTITY_CLAIM_TABLE} WHERE k = 1"
-        ).fetchone()
+        owner = _claim_or_read_identity_db(conn, org_id)
         conn.commit()
     finally:
         conn.close()
-    return str(row[0]) if row else org_id
+    return owner
+
+
+def verify_existing_dataset_owner(path: Path, org_id: str) -> None:
+    """Require an established claim without acquiring a write connection."""
+    validate_dataset_identity(org_id)
+    if not path.is_file():
+        raise DatasetIdentityError("The selected SQLite dataset file is missing.")
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            row = (
+                conn.execute(
+                    "SELECT org_id FROM _dataset_identity WHERE k = 1"
+                ).fetchone()
+                if _table_exists(conn, IDENTITY_CLAIM_TABLE)
+                else None
+            )
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise DatasetIdentityError(
+            "Could not verify the SQLite dataset owner."
+        ) from exc
+    if row is None:
+        raise UnclaimedDatasetError(
+            "The SQLite dataset has no owner claim. Verify it with data upgrade-local before binding."
+        )
+    if row[0] != org_id:
+        raise DatasetIdentityError(
+            "The SQLite dataset belongs to a different organization."
+        )
 
 
 def resolve_sqlite_db_path(root: str | Path, org_id: str) -> str:

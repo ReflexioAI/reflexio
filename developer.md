@@ -43,6 +43,97 @@ skill or rule below them is reachable. Clone with `git clone -c core.symlinks=tr
 existing checkout.
 
 
+## Runtime initialization
+
+Importing server control/schema modules does not load operator environment files,
+validate serving-only settings, configure logging or construct provider clients.
+`reflexio.server.initialize_server_runtime()` owns that process startup once.
+The API, standalone inference server, server launcher, Reflexio library facade
+and direct SQLite storage constructor call it before their runtime work.
+Existing server constants initialize through the same owner when first accessed.
+Pure logging helpers remain callable without starting a runtime.
+
+Concurrent callers share one successful initialization. Reentrant startup from a
+logging callback refuses rather than deadlocking; failed startup can retry without
+publishing partial cached values or duplicating managed logging handlers.
+SQLite metadata imports use shared failure types without importing provider
+capacity dispatch. This separation does not grant retained datasets authority or
+make normal storage construction a maintenance upgrade operation.
+
+## Native child invocation context
+
+Native learners keep their explicit CLI/model selection and the process-owned
+`CLAUDE_SMART_INTERNAL=1` recursion marker. Starting a Codex or OpenCode learner
+does not assign a coding integration to the enclosing hook: the actual hook
+entrypoint owns that identity. Native launchers preserve unrelated inherited
+environment values and do not invent or overwrite `CLAUDE_SMART_HOST`.
+
+## Automatic profile admission
+
+`profile_stride_size=0` selects manual-only profile extraction. Positive cadence
+keeps its exact configured value. The separate extractor `manual_trigger` field
+is retired and rejected by current configuration. Manual generation and reruns
+use `auto_run=False`, retain their configured history width, and skip automatic
+cadence; force does not enable new automatic work while cadence is zero.
+
+Local generation17 preparation uses the existing lock, publication admission and
+private originals. Stop old writers before conversion. Historical manual-only
+policy maps to zero after window conversion; invalid dormant cadence refuses.
+Choose a positive cadence explicitly when re-enabling. Frozen snapshots retain
+their authenticated original representation, rather than accepting old fields
+in current runtime configuration. Incompatible image-only rollback is unsafe;
+use the existing unchanged-original recovery fences or forward repair.
+
+## HTTP quota ownership
+
+`reflexio.server.rate_limit` owns configuration and admission; SlowAPI/limits
+still own registration, rule composition, counter algorithms and outage recovery.
+The limiter uses canonical process settings, not a second working-directory
+`.env`. An internal empty package asset disables vendor dotenv discovery.
+
+Async route and middleware checks use Starlette's context-propagating worker
+helper before calling the application. Sync routes retain worker execution.
+A cancelled request can consume quota when its physical counter call already
+started; it must not start the application afterward. The task owning the
+existing AnyIO worker token stays tracked until physical completion, including
+raw task cancellation. Work cancelled before execution is dropped. Dynamic
+rule groups bind each request on a separate copy so concurrent checks cannot
+select another caller's rule. No quota metadata lookup
+runs after a response has been constructed. Rejections keep the existing JSON
+body and add `Retry-After` in seconds from the rejecting rule's whole window.
+This advisory hint does not reserve capacity or guarantee the retry will pass
+other stacked/shared rules. Successful responses omit optional quota metadata.
+
+The six old `RATELIMIT_HEADERS_ENABLED` / `RATELIMIT_HEADER_*` settings are
+retired and rejected whenever assigned, including blank values. Remove those
+assignments and migrate custom
+clients/proxies to the standard rejection contract. This changes clients that
+used successful-response quota metadata; no automatic client retry is added.
+`RATELIMIT_IN_MEMORY_FALLBACK_ENABLED` is also retired: select fallback through
+`RATELIMIT_IN_MEMORY_FALLBACK` alone:
+
+| Value | Outage behavior |
+| --- | --- |
+| Unset/blank | No process-local fallback |
+| `inherit` | Use original route/default rules locally |
+| Rate expression(s) | Use those local fallback rules |
+
+Keep `RATELIMIT_SWALLOW_ERRORS` independent: it selects fail-open behavior when
+counter evaluation cannot complete. Boolean values now mean their stated value;
+`false` no longer accidentally enables false-default policies. Backend, strategy,
+namespace and existing conditional application/default choices remain supported.
+`RATELIMIT_STORAGE_OPTIONS` was already unusable as a nonempty environment
+string; it continues to refuse startup with an explicit name-only diagnostic.
+It is not an additional supported-choice retirement. See `.env.example` for exact defaults and accepted spellings. No quotas or stored
+data are rewritten, and the former image still requires its former settings.
+
+Custom apps using either SlowAPI middleware variant must replace that registration
+with `app.add_middleware(reflexio.server.rate_limit.RateLimitMiddleware)` and
+retain the SDK singleton in `app.state.limiter`. The SDK integration preserves
+upstream default/application composition and exemptions without blocking the
+event loop. Direct vendor middleware is outside that guarantee. Standard SDK
+apps do not install it implicitly; their dormant application settings stay dormant.
+
 ## Services
 
 Two services, started together via `./run_services.sh`:
@@ -60,12 +151,15 @@ uv run reflexio services start --storage sqlite    # local SQLite (default)
 uv run reflexio services start --storage supabase  # Supabase PostgreSQL
 ```
 
-Repeated remote backend selection preserves a saved `storage_config.schema` when
-`DATA_DB_URL` exactly matches the saved primary DSN and no nonblank namespace is
-explicitly supplied. This applies across the PostgreSQL adapters. An explicit
-`REFLEXIO_POSTGRES_SCHEMA` still selects the namespace for native PostgreSQL;
-selecting a different primary uses the new target's namespace/default instead of
-inheriting the former database's schema. Native PostgreSQL also retains its saved
+Repeated remote backend selection preserves the canonical
+`storage_config.schema` when `DATA_DB_URL` exactly matches the saved primary
+DSN, including when switching between the PostgreSQL adapters. Select a custom
+namespace through that typed field using the deployment's validated config
+writer. `REFLEXIO_POSTGRES_SCHEMA` no longer writes it: a nonblank matching
+legacy assignment only warns; a conflict refuses before publication. Selecting
+a different primary does not inherit the former database's schema. Existing
+custom namespaces remain supported, and no environment file is rewritten.
+Native PostgreSQL also retains its saved
 `storage_config.read_db_url` when the primary and effective namespace are unchanged
 and no nonblank replica override is supplied. An explicit namespace retarget does
 not inherit the former namespace's replica. Existing files use the normal locked
@@ -81,6 +175,75 @@ the model download/warmup timed out. Check the preceding `[embedding]` logs for
 the failing stage. This deadline accommodation is platform-independent; a
 Windows-only model initialization failure still needs its own diagnosis.
 
+### Learning policy authority
+
+Learning admission uses one durable dataset policy authority. A project witness
+inherits the root's nonce/generation and retains only scoped grants and derived
+closure metadata; it never chooses a policy floor or independently reopens.
+Runtime source policy must match the root. Sealing and arming preserve intake,
+search, and required execution/accounting evidence writes through their existing
+owners. No control lock spans model work.
+
+New SQLite files initialize through the maintained path/constructor owner:
+exclusive creation of a private same-directory SQLite file retains a random
+SEALED creation witness, checkpoints/closes it, then atomically publishes the
+actual target without overwrite before ordinary migrations. Local closure is
+verified before activation. A
+matching retained witness may resume an interrupted first installation. Opening
+an existing file with no authority does not establish a floor, even if tables
+are empty: learning remains held for an explicit qualified upgrade/recovery.
+Existing durable authority always wins over the opening SDK's source policy.
+The private `:memory:` connection uses SQLite's guaranteed new-database identity.
+Explicit file paths retain their existing meaning and are never redirected.
+
+For the qualified retained SDK70daf32c SQLite schema, first stop affected services
+and coding-host sessions and keep the selected file quiescent. Then run
+`reflexio --json data upgrade-local /absolute/path/to/existing.sqlite`. This
+explicit offline command proves the retained identity, exact supported schema,
+neutral scope and durable execution/financial closure on its existing writer;
+it publishes only the current future-policy authority atomically. It never
+constructs normal storage, loads operator `.env`, migrates business data, clears
+work or changes configuration. Authentic queued, unstarted intake is preserved.
+The supported plugin's explicit-path predecessor schema can lack an identity
+claim. Only for that exact cohort, pass `--org-id YOUR_NAMESPACE` to select the
+future local namespace explicitly. This establishes a claim; it does not recover
+or prove historical ownership. Existing claims cannot be changed, and a supplied
+namespace must match them. Identity and future-policy authority commit together
+after qualification; incomplete work or debt cannot be bypassed by this option.
+An absent claim with any retained authority still refuses. Keep old hosts stopped
+after cutover. Lost acknowledgement can be retried against the same unchanged file;
+file replacement during commit reports uncertainty rather than success.
+Both shared metadata page readers reject NULL key components over the full
+scoped source before applying keyset boundaries. A NULL historical text primary
+key must never be mistaken for an empty page or disappear from closure.
+
+The first supported cohort additionally requires the enumerated independent
+tuner/aggregation/control tables to be empty and learning not to be stalled.
+Unknown schemas, claims, work or debt remain held for their existing recovery
+owner; there is no force option. The inspectable
+`sqlite_storage/_historical_schema_70daf32c.json` contract is bound to actual
+predecessor-produced fixtures. Virtual parents and their auxiliaries are proved
+by exact catalog ownership, not by a name prefix or SQLite's shadow label.
+Successful JSON includes the new provenance descriptor. A retry returns the
+retained authority/origin/digest and explicitly reports the original descriptor
+unavailable; fresh observations never masquerade as original provenance.
+This action establishes policy for future work, not unchanged historical policy.
+An incompatible local configuration publication or storage retarget checks both
+existing SQLite targets for OPEN authority matching the current SDK policy.
+Missing or held authority refuses before the configuration is backed up or
+replaced, preserving the predecessor's settings for recovery. Run the explicit
+maintenance command before retrying preparation; pending work must first finish
+with its existing owner. Configuration preparation never grants authority.
+Native databases, automatic plugin activation, mixed-version operation and
+Windows adoption are separate qualifications.
+
+SQLite authority semantics require compatible writers using the maintained
+owner. Mixed-version safety against an unpatched process is not qualified;
+SQLite does not install a missing-UDF trigger or claim native protocol parity.
+Native deployments separately require their installed global claim floor and
+privileged provisioning/release authority owner. Ordinary native APP admission
+reads the root under a shared transaction advisory fence and cannot mutate it.
+
 ### Embedding policy and upgrades
 
 The selected embedding model owns execution. An explicit cloud model uses its
@@ -88,8 +251,8 @@ provider; a local model uses the separate inference service. The service URL
 owns process attachment: an explicit URL, including loopback, attaches to an
 existing service; an absent URL leaves the launcher responsible for its child.
 Dependency availability advertises capability without loading a model. It never
-authorizes generation or authenticated CLI access. `CLAUDE_SMART_USE_LOCAL_CLI`
-and the OpenClaw CLI opt-in retain their separate credential-access decisions.
+authorizes generation or authenticated CLI access. `REFLEXIO_NATIVE_CLI_MODEL`
+and the OpenClaw CLI opt-in retain separate credential-access decisions.
 
 `CLAUDE_SMART_USE_LOCAL_EMBEDDING` is retired. Normal loading rejects active
 assignments, including empty ones and those alongside a canonical setting.
@@ -204,6 +367,55 @@ DDL, avoiding additive column upgrades during initialization. Existing migration
 helpers still install indexes/triggers and upgrade older or partial database
 files. The fresh-schema regression checks real SQLite authorization events;
 legacy-schema tests continue exercising the upgrade paths.
+
+SQLite schema upgrades run once per database behind `PRAGMA user_version`. The
+ordered, append-only step list is `MIGRATION_STEPS` in
+`reflexio/server/services/storage/sqlite_storage/migrations/__init__.py`; the
+step bodies are in `migrations/_steps.py`. A database at version 0 (every database
+created before the ledger) runs the whole sequence once and is stamped; a later
+open reads the version and returns. To change the schema, append a step; never
+reorder or edit the meaning of a numbered step, because stamped databases skip
+it. A step that derives its target from code (such as the optimizer job `CHECK`
+literals) no longer re-runs when that code changes, so widening that input needs a
+new step. A test that fabricates a legacy schema and reopens it must reset
+`PRAGMA user_version = 0`. `test_schema_ledger.py` upgrades databases built from
+historical DDL through the ledger.
+
+The whole ledger run (every step and its stamp) is serialised across processes by an
+exclusive lock on `<db_path>.migrate.lock` (not taken for `:memory:`). A process
+that waited re-reads the stored version before planning, so it never runs a step
+plan computed before another process finished; otherwise a late process could run
+an older step, such as the `requests` rebuild whose fixed column set predates a
+later step's column, after the database was already stamped current.
+
+The vector sidecar (`*_vec` tables) has two repair paths.
+
+Every vector write runs inside a `commit_scope` (`_vec_upsert` and `_vec_delete` refuse to run outside one, so a new call site that forgets fails loudly instead of losing crash safety); the primary row and its queued vector write commit together. Native processes record every queued sidecar write (table and rowid) in
+`vec_pending` inside the same transaction as the primary rows, and clear that row
+right after the sidecar write succeeds. The write after a commit rebuilds the sidecar row from the current primary row rather than from the in-memory embedding, once per row, so a flush that finishes late can never overwrite or un-mark a newer commit's embedding. A crash between the commit and the flush,
+or a flush that fails part-way, leaves exactly the unfinished rowids pending. Each
+native open reads `vec_pending` (one SELECT when empty) and, per row, deletes the
+sidecar row, re-inserts it from the stored embedding if the primary row still
+exists and the embedding is indexable, and clears the pending row, in one write
+transaction. Cost: one extra insert and one delete per queued sidecar write.
+
+On a fallback connection the sidecar tracker is an authorizer chained in front of any authorizer the caller installs with `set_authorizer`, so callers keep their own policy. The backfill pages over existing primary rowids (keyset, one write transaction per page of `_VEC_BACKFILL_PAGE` rows), so sparse or huge rowids cost nothing extra.
+
+Processes that cannot load sqlite-vec write embeddings without touching
+`vec_pending`; they take the schema stamp back to just before the vec step at open
+and inside any commit that wrote an embedding table (their connection re-arms its
+authorizer after each commit or rollback because the statement cache outlives it).
+The next native open then reruns the vec step, which adds missing sidecar rows and
+drops orphans. Known limits: a fallback process that commits an embedding between
+two batches of a native opener's reconciliation (after that table was scanned,
+before the step is stamped) is missed until the next fallback write lowers the
+stamp again, and an embedding changed in fallback mode keeps its old vector.
+Running native and fallback processes against one file is not a supported steady
+state.
+
+Every deferred op of a commit scope is attempted even if an earlier one
+failed; the scope then raises one `PostCommitStorageError`. Only vector ops are
+replayed after a failure (from `vec_pending`); a failed FTS op is not.
 
 
 ### Why this matters
@@ -322,6 +534,15 @@ cleanup; ordinary upgrades remain image replacement and restart.
 Existing protocol journals and legacy continuations retain their original
 recovery contracts; image and mock execution are unchanged.
 
+Committed pre-upgrade profile outputs use a dedicated reader for their required
+legacy `time_to_live` enum. New model responses remain strictly TTL-free. Replay
+preserves the original receipt fields and scope evidence; the saved completion
+clock (or recorded preparation clock for older rows) fixes the legacy visibility
+bound across retries. Legacy profiles have unknown lifecycle origin and neutral
+attention: their guessed TTL never grants deletion authority. Missing clocks,
+malformed enums, or legacy payloads carrying new storage authority remain held
+for recovery rather than being re-extracted or silently rewritten.
+
 Custom model endpoints must declare their actual context capacity in
 `REFLEXIO_LLM_CONTEXT_LIMITS_JSON` and set the tenant
 `llm_config.generation_max_output_tokens` to a positive integer. Unset preserves
@@ -359,6 +580,20 @@ not model tokens or the required evidence. Native unit/adapter and saved-respons
 qualification must establish parity before release; benchmark results are local,
 not a promise of online speedup.
 
+Reduction admission also accounts for the complete variable request envelope:
+evidence reference lists and source/origin aliases grow with the evidence
+population. Intermediate products reserve that overhead before they can feed a
+parent request. The complete request guard still runs before dispatch. Changed
+compression contracts invalidate old plan/cache identities; never reset a durable
+attempt budget to force an old journal through a new plan.
+
+For open-world tuning, classified transient provider errors (such as a hard
+timeout or HTTP 529) return existing scheduler-retry eligibility. The failed job
+stays terminal with its prepared/completed invocation records retained; the host
+scheduler owns cooldown and attempt ceilings. Permanent request, evidence and
+structured-output failures do not become retryable. No inline retry, charge refund
+or lease bypass is introduced.
+
 ## Supported LLM Providers
 
 | Provider | Env Variable | Model Prefix | Example Usage |
@@ -379,7 +614,51 @@ Query/fragment-bearing v1 endpoints refuse without logging their values;
 explicit non-Azure transport overrides and dated Azure API versions retain
 their existing behavior. The API-version configuration remains supported.
 
-To change which models Reflexio uses, edit [`reflexio/server/site_var/site_var_sources/llm_model_setting.json`](reflexio/server/site_var/site_var_sources/llm_model_setting.json).
+Configure models through the organization's `llm_config`. Before upgrading
+or changing model policy, let in-flight ordinary profile work finish on its
+original runtime. Record each organization's effective models and back up its
+model policy, including on installations using shipped defaults. Keep a copy
+of any customized bundled `llm_model_setting.json`.
+
+If you customized bundled defaults, prepare an updated policy from the effective
+choices. Keep organization settings that already took precedence. Stop every
+old config writer before the first publication of an evaluation model through
+the upgraded writer, including on installations using shipped defaults. Save
+generation and evaluation together when migrating distinct models. With the
+upgraded release, verify every affected role before resuming work.
+
+A local file written before format 16 can contain an evaluator that its writer
+ignored. If startup refuses that file, stop the old writers and run
+`reflexio config upgrade-file INPUT --output OUTPUT` to make a separate copy.
+Check the evaluator in that copy against the effective policy you recorded.
+Install the reviewed copy only after deciding whether to keep the evaluator.
+
+| Former key | Organization field |
+| --- | --- |
+| `default_generation_model_name` | `llm_config.generation_model_name` |
+| `default_evaluate_model_name` | `llm_config.evaluation_model_name` |
+| `pre_retrieval_model_name` | `llm_config.pre_retrieval_model_name` |
+| `should_run_model_name` | `llm_config.should_run_model_name` |
+
+When copying a custom generation default, also set
+`llm_config.evaluation_model_name` to the previously effective evaluation model
+if it was different. This includes a provider-selected evaluation default.
+Otherwise evaluation inherits the configured generation model as before.
+A configuration write whose `llm_config` object omits `evaluation_model_name`,
+such as a round trip through an SDK that predates the field, keeps the saved
+evaluator. Send `"evaluation_model_name": null` to restore inheritance.
+The shipped blank defaults require no migration. Source-package retries keep
+their saved model ladder.
+
+For rollback, first let in-flight ordinary profile work finish on the current
+runtime, even if no settings need to change. Back up the current model policy,
+then reconcile it with the pre-upgrade copy. Restore the relevant bundled values
+for the exact rollback release. Undo migration-only overrides and remove
+`evaluation_model_name` from the live policy if the rollback release cannot
+carry it. Keep a distinct evaluator in the backup for re-upgrade and preserve
+unrelated newer edits. Verify every affected role with the exact rollback
+release while writes and workload dispatch are disabled. If the rollback
+release cannot resolve a required model, keep work paused and repair forward.
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
 Retryable physical-request warnings record only the error type, reason and
@@ -388,6 +667,13 @@ not attest logical completion: a failed primary can still succeed on backup.
 Unrecovered exceptions continue to the existing caller, which owns durable
 waiting, retry exhaustion and terminal failure reporting; this does not add a
 global error for a provider outage.
+
+Truncated structured responses may retain complete, valid list items, but the
+combined result must still satisfy the full schema, including list bounds and
+model validators. Aggregate validation failures enter the existing bounded
+structured-output repair path with field/error-code diagnostics. They do not
+become provider errors or silently discard excess items. Salvage is logged only
+after the whole result validates; exhausted repair remains a typed failure.
 
 Optionally set `MINIMAX_BACKUP_API_KEY` to another subscription's key. On explicit
 MiniMax plan exhaustion (2056), text generation retries the same request/model
@@ -404,7 +690,8 @@ other users. Logs identify the backup slot without logging credentials.
 
 ### Current model compatibility
 
-LiteLLM `>=1.108.4,<2` is required. Releases 1.106.0 through 1.108.3 import the
+LiteLLM `>=1.109.1,<2` is required; 1.109.1 is the release the suite is
+qualified against. Releases 1.106.0 through 1.108.3 import the
 proxy-only `mcp` package for every completion that passes `tools`, so tool calls
 fail on a base install
 ([upstream issue](https://github.com/BerriAI/litellm/issues/46045)); 1.108.4 is
@@ -820,6 +1107,22 @@ the scheduler emits it on pre-claim failures and when skipping existing backoff.
 The provider should retain the scope until that remaining delay expires.
 
 
+### Preference corrections and explicit forgetting
+
+The profile author and deduplicator distinguish a changed fact from an instruction
+about stored memory. "I'm not into this band anymore" updates a preference;
+"forget my preference for this band" authorizes scoped forgetting. An assistant's
+unanswered offer to update/delete, a polite thanks, negated forgetting, and
+uncertainty do not authorize deletion. Preserve useful history and unrelated facts.
+
+The author emits `explicit_forget_quote=null` for corrections. The consolidator
+checks the meaning of original User evidence before selecting deletion; generated
+"Requested removal of" content and a quote appearing in User text do not themselves
+establish intent. Runtime quote validation binds provenance and owner/version/native
+erasure handling; it is not a semantic intent classifier. Prompt examples and
+mechanics tests do not prove model reliability: that requires recorded contrasting
+model/native cases. Earlier frozen prompt identities remain loadable for recovery.
+
 ### Profile search selection
 
 Multilingual E5 unified search uses Profile Fusion V2 for user-scoped hybrid
@@ -830,8 +1133,14 @@ unique non-stop query words of length at least three joined by OR, in source
 order up to 2,000 characters. From a secondary pool larger than five, the first
 two identities outside the native top three precede that protected native prefix.
 Sparse nonempty results instead append unseen identities from one relaxed hybrid
-retrieval. Empty results and unqualified caller/model policies retain their
-existing behavior. No extra query embedding or selection model is created.
+retrieval. Empty results retain their existing behavior except for eligible
+Jev mixed requests selecting exactly PROFILE and USER: when primary retrieval
+succeeded and a native USER anchor remains, one bounded relaxed profile lookup
+may recover profiles for the joint judge to assess. No profile is force-added to
+the final result. PROFILE-only, other arm combinations, empty USER results and
+unqualified policies do not gain an empty-result lookup. This explicitly expands
+recall for that mixed policy and can add one same-scope native query. No extra
+query embedding or selection model is created.
 
 `retrieval.profile_selection` owns this policy; unified search keeps retrieval,
 recency, time/scope filters, session exclusions and accepted-response recording.
@@ -960,182 +1269,14 @@ path. During mutation testing this is `mutants/`, not the original checkout;
 importing original sources hides generated mutants from coverage. The bootstrap
 regression exercises both layouts in isolated processes with distinct packages.
 
-### Qualifying reviewer reason-code precedence (#428)
-
-The follow-up [adoption protocol](tests/test_data/reviewer_adoption_protocol.md)
-defines development/held-out coverage, semantic oracles and activation gates.
-Use `--cases tests/test_data/reviewer_generalization_cases.json --split development`
-or `--split holdout` to select one split. Survival-only controls allow acceptance
-or a grounded revision and have no exact reason-label oracle; `code_expected`
-is their separate label denominator. Inspect saved content as well as scores.
-Synthetic fixture turns may specify `source` alongside `role` and `content`.
-It becomes `Request.source` and reaches the reviewer's own-evidence metadata,
-so a generated/internal `User` turn can retain its producer provenance. Omitted
-`source` defaults to an empty string for existing fixtures; role alone does not
-establish direct user origin.
-Private qualification artifacts require POSIX with `fchmod` support. The CLI
-and evaluations with a checkpoint reject unsupported platforms before provider
-calls or opening/truncating reports. In-memory evaluation without a checkpoint
-does not require that filesystem capability. Unsupported-platform behavior is
-covered by simulated tests; native Windows execution has not been qualified.
-Report updates write an owner-only temporary file in the destination directory
-and atomically replace the destination. They never truncate an existing inode
-or follow a destination symlink, and failed replacements remove the temporary
-file while preserving the previous report.
-The inactive v1.7.0 candidate clarifies unavailable artifact claims versus using
-record omissions as proof of absence. It also keeps internal-status proof of
-value distinct. It failed a workflow preservation control. Inactive v1.8
-clarified preparation-and-delivery atomicity but failed artifact-label stability.
-Inactive v1.9 shortened the procedure but failed a persisted-rationale contract.
-See the [adoption evaluation report](tests/test_data/reviewer_adoption_evaluation_20261010.md)
-for retained failures and remaining gates. Earlier-version results cannot qualify
-a new version.
-Inactive v1.10 keeps revised rationales restricted to the retained supported core;
-review diagnostics belong in the separate reason (retained in review notes),
-not in the persisted guidance fields. The shared persisted
-prose guard rejects turn labels, bracketed candidate labels and reviewer evidence
-labels, while retaining ordinary bare product identifiers such as C1.
-V1.10 failed private semantic checks by retaining unsupported prohibitions and
-adding an escalation fallback. Inactive v1.11 audits each negative clause and
-restricts revision to subtraction and faithful paraphrase of the supported core.
-Two additional development controls cover those failures; the holdout is unchanged.
-V1.11 failed private checks by retaining an unsupported alternative path, leaking
-shorthand evidence citations and rejecting a useful task-specific procedure.
-Inactive v1.12 explicitly audits unsupported original branches and preserves
-bounded task-specific prerequisites. The shared guard also rejects shorthand
-citation lists such as `(E1, E3)`, while allowing bare E-number product identifiers
-and formulas such as `SUM(E1, E3)`. It cannot infer every bare identifier's meaning.
-V1.12 failed by retaining an unsupported generic escalation path. Inactive v1.13
-adds worked subtraction examples in different synthetic domains, but failed private
-checks: saved revisions retained unsupported guidance despite matching decision and
-label oracles. Independent grounding checks and a lower-temperature replacement
-also remain unqualified. See the adoption evaluation report for counts and limits.
-
-Inactive reviewer v1.14.0 tests a different single-call response contract. Trusted
-review policy is a system message; context and source text are user-message data.
-The model supplies bounded supporting excerpts before decisions. Validation checks
-exact substrings against each candidate's final retained evidence, keeping role
-and request-source metadata visible; this establishes provenance, not semantic
-grounding. Excerpts remain transient, outside saved playbooks, public responses
-and ordinary logs. Owner-only evaluation reports retain them for auditing. The
-current v1.3 default uses its existing messages and response schema. Qualification
-still audits complete instructions, triggers and rationales, including healthy
-multi-turn workflows, before holdout, staging and a separate activation change.
-
-Inactive v1.15 keeps the evidence-first contract and explicitly scopes selected
-parameters to their current task. Historical values cannot become standing
-preferences; acknowledgment occurrence proves neither a requirement nor a benefit.
-The evaluation-only `--max-tokens` and `--reasoning-effort` settings apply equally
-to both arms. The current GLM-5.2 experiment uses 8192 output tokens and `high`
-reasoning, sent through `extra_body` because the installed adapter drops the
-standard reasoning argument. A live wire/body and structured-response probe
-verified this path. These options do not configure production services.
-
-`reflexio/test_support/reviewer_metrics.py` supplies both evaluation tools with
-per-call request, repair, token/cost and timing observations. It pins each initial
-and repair request before dispatch and keeps only explicit non-content fields.
-Private reports record `calls` even on errors, and `measurement_errors` when
-request observations are missing/incomplete; both commands fail such measurements.
-Attempt timing includes client/provider slot wait; wall timing covers the complete
-logical review. Token-limit equality alone is not proof of truncation. Reports
-do not retain provider reasoning, raw logs, headers, credentials or conversation
-text in these metric objects. Complete outcome/revision data remains private in
-the existing report fields. Qualification still needs independent semantic audit.
-
-
-Evaluation observation coverage is explicit: `request_lifecycle_complete`,
-`timing_complete`, `usage_complete`, and `estimated_cost_complete`.
-`observation_complete` requires matched request/end counts, per-request timing,
-and token usage; missing observations fail the measurement gate. Missing cost
-remains unknown (never zero) and is reported separately from token coverage.
-Without an explicit token override, the first observed effective limit is frozen
-for every subsequent repair in that logical call.
-
-See the [2026-10-10 qualification report](tests/test_data/reviewer_reason_evaluation_20261010.md)
-for pinned sources, repeated real-model results, observed regressions and activation limits.
-
-Inactive v1.17 additionally clarifies that unsupported claimed benefits precede
-speculative actions. Its private oracle v2 is separately preregistered; the old
-oracle and stopped results are preserved. No default/provider change is made.
-
-Inactive v1.16 additionally limits revised rationales to the retained rule’s
-evidence basis, omitting event narration from both rationale and review reason.
-Reason is saved as survivor notes and is included in semantic qualification. The frozen controls
-and explicit GLM evaluation profile remain unchanged.
-
-The default candidate reviewer remains v1.3.0. The experimental, inactive
-v1.4.0 prompt chooses the decision first, then uses the first applicable
-reason code: ownership, absence, unseen artifact, causality, internal status,
-speculation, other unsupported facts, duplicate, generic, late trigger, compound.
-Accepted candidates use `grounded_useful`; revisions label the defect removed.
-This preserves the measured subject gate and the fatal-code/revision distinction.
-The separate inactive v1.5.0 candidate clarifies the measured disagreements:
-independent future tasks are compound even when stated together, necessary
-steps of one supported procedure stay together, internal-status proof has
-precedence over unsupported causality, and invented future instructions are
-speculative rather than unsupported factual attributes. Grounded preferences
-still require a duplication and scope check before acceptance. v1.3.0 and
-v1.4.0 remain byte-for-byte unchanged. The further inactive v1.6.0 candidate
-clarifies that evidence explicitly joining preparation and delivery of one
-requested result defines a complete workflow; sharing a topic alone does not.
-It also requires preference rationales to cite the stated instruction without
-adding an unstated benefit or timing constraint. v1.5.0 is preserved unchanged
-because it lost supported delivery steps in the focused positive control.
-
-Run the paired evaluation with a real provider key exported in the shell:
-
-```bash
-uv run python scripts/evaluate_review_reason_codes.py \
-  --expected-model minimax/MiniMax-M3 --candidate-version 1.6.0 \
-  --repeats 5 --out /tmp/reason-codes.json
-```
-
-Both arms see the same frozen cases, chronology, model, temperature and empty
-fallback list. The command refuses a patched LiteLLM and returns nonzero on
-call errors; its report keeps expected, processed and error counts separate.
-`--expected-model` checks the generation model resolved from the normal provider
-configuration; it does not select or override that model. A mismatch fails
-before paid calls. Export only the intended provider's key for the documented
-MiniMax run. The candidate-version flag selects the inactive treatment; the
-baseline remains v1.3.0. Reports hash the input cases and both prompt templates,
-and retain revision content and evidence IDs for manual
-inspection of useful-core preservation; correct decision/code labels alone
-cannot establish revision quality.
-The corpus covers every label plus accepted and revisable controls in reporting,
-code-review, translation, troubleshooting and upload contexts. The v1.5/v1.6 evaluation
-is a new matched comparison: two formerly ambiguous inputs were clarified and
-three boundary controls added. Do not aggregate these scores with the original
-14-case measurements. Run repeated paired disagreement cases and positive
-controls first, then repeat the full frozen corpus without editing the prompt. It is synthetic except for a publicly reported
-candidate shape from #428; it is not the original production candidate pool.
-Do not use lexical similarity to group candidates or equate label consistency
-with correct accept/revise/reject decisions.
-
-Before activating either experimental candidate, require matched, error-free processing and improved
-label accuracy without loss of decision accuracy or any positive-control
-survivors. Inspect each mismatch and the model's explanation, rather than
-hiding losses in aggregate totals. Then qualify against the original frozen
-production candidate pools, healthy same-tenant windows, and a different domain
-using the enterprise paired-review harness. That requires the normal
-production-read permissions. The synthetic corpus alone cannot justify a
-production-quality or original-defect-resolution claim. Re-measure after any
-prompt edit, preserving both fatal gates and useful revision cores.
-
 Mutation pytest bootstraps select an empty, owned temporary environment file before loading configuration or importing the server, preventing collection from creating a persistent user `.env`. Ordinary pytest retains its provider credential loading.
 
-Inactive v1.18 requires an identifiable artifact claim with missing supporting evidence before choosing
-that reason; unsupported conversational benefits remain causal defects. Compare
-unchanged development boundary controls plus the separately frozen visible-report/
-unobserved-reception control before the frozen private priority run.
+### Candidate reviewer prompt
 
-Inactive v1.19 writes rationale as the source-backed requirement and reason/notes
-as the review decision, without historical agent-execution narration. Supported
-workflow actions remain in content/trigger. Separately frozen announced/verified
-setup controls precede private replay; no default activation.
-
-Inactive v1.20 keeps review notes about removed claims and retained rules, avoiding
-claims that questions/events were absent. Separately frozen repeated-question
-coverage precedes private replay; original benchmarks remain unchanged.
+The active `playbook_candidate_review` prompt is v1.3.0. Earlier experimental
+versions and their paired reason-code evaluation harness were retired; they remain
+in git history. A new reviewer experiment ships its own comparison harness and
+stays `active: false` until its qualification gate passes.
 
 ### Local docs network binding
 
@@ -1216,6 +1357,16 @@ validation. Missing-file, unreadable JSON/decryption and explicit legacy-disk
 handling are separate existing contracts, not changed by this validation rule.
 
 ### Durable extraction timing
+
+An overflow coordinator shares its original absolute turn deadline with every
+provider call in `provider_scope`, including main-thread consolidation after
+cached agent output. The existing five-second finish margin is reserved once in
+that shared deadline; provider guards do not subtract it again. Nested caller
+deadlines can only tighten the bound. Per-call tenant timeouts, turn budgets,
+slot waits, fallback walks and durable attempt quotas keep their existing limits.
+An expired scope sends no new provider request; ordinary calls outside the
+coordinator retain their existing timeout policy.
+
 
 `reflexio/durable_learning_policy.py` resolves background discovery timing once
 before worker construction. `REFLEXIO_DURABLE_LEARNING_POLL_SECONDS` controls
@@ -1356,16 +1507,7 @@ and content digest. Historical verdict labels remain unchanged and are not
 relabelled as verified template identities. Explicit PromptManager overrides
 remain actual prompt-selection policy.
 
-### Local file upgrades and optimizer consent
-
-The server owns optimizer admission and adoption. `enabled` remains the master
-switch; `agent_playbooks_enabled` and `user_playbooks_enabled` are independent,
-default-off target opt-ins. Agent admission and winner adoption consult the
-same `allows_target` policy. The former agent switches
-`optimize_agent_playbooks` (default false) and
-`auto_update_pending_agent_playbooks` (default true) both gated the same work;
-the upgrade preserves their conjunction. Explicit budgets, assistant backend,
-quality thresholds and user consent remain separate policy.
+### Local file upgrades
 
 `reflexio/config_file.py::LocalConfigFile` owns the local file format, strict
 reads, publication and pre-launch preparation. The logical schema owner may
@@ -1601,6 +1743,14 @@ Enterprise images own their separate versioned auth-row migration; updating
 only the SDK does not authorize a remote configuration upgrade.
 
 
+### Retired offline-tuner reward-label cap
+
+Offline-tuner reward labels were a former enterprise storage target. Current
+SDK backends do not provision those tables. The generic retention sweep no
+longer probes them. Remove `REFLEXIO_ROW_LIMIT_OFFLINE_TUNER_REWARD_LABEL`
+from process and dotenv settings, including blank assignments. The upgrade
+does not change the limits of active targets or delete historical records.
+
 ### Optimizer capacity retention
 
 Optimizer history uses one aggregate physical-row budget across job, candidate,
@@ -1629,20 +1779,6 @@ Unicode-index trigger function; they must not bypass that lock during concurrent
 publish/read requests. Standalone connection helpers leave synchronization to
 their caller. This changes no notification policy, SQL or timeout.
 
-### Optimizer work-budget authority
-
-Local-file generation5 replaces optimizer `enabled` plus `max_metric_calls`
-with the nonnegative `metric_call_budget`. Fresh policy defaults to zero.
-Positive budgets select GEPA’s candidate/window metric-call stopping threshold;
-GEPA can finish a validation batch before checking it. The relevant user/agent
-target permission remains required. The explicit historical
-converter preserves disabled policies as zero and enabled policies with their
-old validated limit; it retains originals and rejects malformed/conflicting
-inputs. Normal runtime readers reject both old names. Old SDKs reject the new
-file generation, so stop old writers before upgrade. Remote saved configuration
-needs its separately qualified enterprise image migration. See the
-[assistant backend guide](docs/playbook_optimizer_assistant_backends.md#work-budget-migration).
-
 ### Source provenance lifetime
 
 Agent-to-user playbook source links determine source-filtered search. They are
@@ -1662,19 +1798,6 @@ migration is needed. Link storage can now grow with valid relationships until
 parent cleanup; independent link truncation is no longer a supported capacity
 backstop. Managed customer-data holds/alert policy must not be bypassed by
 classifying this provenance as disposable metadata.
-
-### Optimizer dispatch upgrade
-
-Local-file generation6 retires `scheduler_jitter_seconds` through the existing
-prelaunch `prepare_local_config` owner. It validates historical jitter and removes
-only that field before atomic publication with original preservation. Ordinary
-reads reject obsolete jitter. Custom abort thresholds, cooldowns, work budgets and
-opaque data survive. The optimizer now uses keyed work in the shared bounded
-callback executor: one active callback plus one queued successor per target,
-immediately eligible instead of delayed by a timer. Queue overflow stays
-best-effort/drop-oldest. Stop old writers before preparation; enterprise remote
-configuration uses its separate canonical-v9 startup migration owner.
-
 
 ### Pending-question lifetime
 
@@ -1709,26 +1832,87 @@ connection lease or introduce a runtime alias.
 
 ### Native provider CLI ownership
 
-The existing `claude-code/` provider can execute OpenCode directly with
-`CLAUDE_SMART_HOST=opencode` and `CLAUDE_SMART_USE_LOCAL_CLI=1`. Set the existing
+The `local-cli/` provider binds one operator-owned native target through
+`REFLEXIO_NATIVE_CLI_MODEL`, such as `local-cli/opencode/provider/model#high`.
+Requests must match that full reference before any native work. See the
+[selection and explicit-upgrade contract](docs/native-cli-model-selection.md).
+Set the existing
 `CLAUDE_SMART_CLI_PATH` to its native executable, or let PATH resolve `opencode`.
 Relative executable paths are anchored before entering the private workdir.
+A bare-name override is looked up on PATH only, never the working directory
+(on Windows too); the one absolute path that results is launched, bound into
+the analyst's native launch identity, and decides whether the override
+supersedes the retired `CLAUDE_SMART_CODEX_PATH`. That identity binds
+credential-file variables by absolute path (OpenCode: the provider variables
+its provider docs name), secrets by nonempty presence only, and ignores the
+parent Codex session ids (`CODEX_THREAD_ID`, ...) and the retired, ignored
+`CLAUDE_SMART_CODEX_PATH`. An empty PATH entry never searches the working
+directory. Native Claude Code, Codex and OpenCode generation calls run from a
+private, empty per-call directory, so the daemon's project settings
+(`.claude/settings.json`, `.codex/config.toml`) never apply and the working
+directory is not part of the identity. Relative account directories
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, XDG dirs), credential-file variables and a
+relative executable path are anchored to the daemon's directory (`~`
+expanded) before launch; the child receives the same absolute paths the
+identity binds.
 Windows native execution requires the actual `.exe`; batch shims continue to
 use the existing plugin bridge. No shell is introduced.
 
-Native OpenCode spends the selected completion timeout on setup and execution.
-Direct handler calls must provide a finite positive numeric timeout. Explicit
+All CLI protocols honor a supplied completion timeout: native Claude, Codex,
+OpenCode and the remaining OpenCode compatibility bridge. Native OpenCode also
+charges private-workdir setup to that allowance. A supplied budget must be a
+finite positive number and is checked in SDK preparation before retries/fallback.
+Direct native OpenCode calls must supply it; existing standalone Claude/Codex
+and bridge calls that omit it retain their legacy provider default. Explicit
 constructor or `CLAUDE_SMART_CLI_TIMEOUT` caps remain supported and tighten that
-budget (constructor wins); no provider duration default is added when absent.
-The existing `CLAUDE_SMART_CLI_MODEL` chooses an explicit native model; unset
-delegates to OpenCode. The opaque `claude-code/` request label never chooses a
-native model or proves which model served the response.
+budget (constructor wins for direct calls); no provider duration default shortens
+a supplied budget. SDK worker admission validates the portable environment cap;
+constructor-only bindings are not carried into spawned workers.
+The explicit native reference carries the physical model selection. A
+host-only reference delegates to that CLI's own default; an explicit suffix
+`/default` remains a literal model ID. The requested reference never proves
+which model physically served the response.
 
-All known explicit Codex/OpenCode plugin bridges retain Claude wire protocol
-and legacy timeouts across coding hosts. This adapter does not switch plugin
-producers or retire any setting. The later producer/optimizer migration must
-preserve their model precedence, explicit paths, permissions and caller budgets
-before bridge files and redundant controls can be removed.
+Native OpenCode accepts successful capability-help declarations from stdout or
+stderr. Its recognized attach/variant contract encodes `provider/model#high`
+as separate `--model=provider/model --variant=high` arguments; the private-server
+contract retains the full reference. Empty explicit variant components are terminal
+selection errors and do not advance an HTTP fallback ladder.
+Values are bound inline so model/variant text cannot become routing options.
+Neither discovery nor this encoding grants a fresh deadline or another route.
+
+Codex spends its selected deadline on setup, native execution and reading its
+final output. Setup cannot grant a fresh allowance, and a result read after
+expiry is a timeout.
+
+Native Codex (`local-cli/codex[/model]`) forwards an explicit model remainder
+as `codex exec --model`; host-only selection leaves model choice to Codex.
+Legacy `claude-code/*` suffixes were opaque role labels and cannot be converted
+into physical models by guessing. Adopt the new native reference explicitly.
+The requested model does not establish observed model/provider provenance.
+
+Released plugin bundles
+remain on their existing pinned SDK until a matching producer migration is
+qualified; this SDK change does not update or migrate installed plugin files.
+Codex uses the canonical `CLAUDE_SMART_CLI_PATH` or PATH; `CLAUDE_SMART_CODEX_PATH`
+no longer selects an executable, and plugin installation roots no longer
+select a bridge. Active obsolete selection refuses when the native route is
+reached, before dispatch, retries or paid fallback. Move the intended executable
+to the canonical path before removing the old assignment, or deliberately
+remove it to adopt Codex from PATH. A valid canonical override or an explicit
+direct SDK adapter constructor path that previously dominated an unused old
+key remains valid. Client-worker admission uses the portable environment
+binding; a manually registered constructor-only binding is not carried into
+spawned workers. Use the canonical environment path for that client route. Explicit HTTP transports and other CLI hosts ignore that unused key.
+
+Historical `codex-claude-compat`, `.cmd` and `.js` paths refuse with migration
+guidance, including missing files, instead of silently changing wire protocol.
+Enabled obsolete native intent stays selected even without an installed binary;
+provider availability does not claim it is usable. The remaining OpenCode
+bridges retain Claude wire protocol across coding hosts and honor supplied
+caller budgets. Budget-omitting direct calls retain their legacy timeout.
+Their later retirement must preserve model/variant precedence, explicit paths,
+permissions and caller budgets.
 
 The native workdir retains the existing supported V1 agent configuration,
 including denied tools and recursion guards; OpenCode documents V1 config
@@ -2064,12 +2248,26 @@ scoped native input admission. No endpoint choice or configuration knob retires.
 
 ### Effective extraction window authority
 
-`reflexio.models.extraction_window` owns resolution of extractor overrides,
-workspace/project window values and schema defaults. Its tuple-compatible value
-has an explicit automatic-admission check, shared by root geometry validation
-and durable admission. Resolution itself does not enroll a manual/window-only
-operation in automatic cadence. In particular, a saved small-width policy remains
-readable even when its unused automatic stride is larger; ordinary automatic
-admission still refuses that geometry. Existing read/write acceptance, defaults,
-public fields, project inheritance and frozen admission witnesses are unchanged.
-This refactor does not retire a setting or convert stored configuration.
+`reflexio.models.extraction_window` selects the current configuration's direct
+`profile_window_size` / `profile_stride_size` or `playbook_window_size` /
+`playbook_stride_size`. Each independent pair defaults to 10/8. Project overlays
+replace individual top-level leaves; extractor objects carry no geometry overrides.
+Only eligible automatic durable admission applies the stride-at-most-width check.
+Config reads, publication and manual/source-filtered work retain positive pairs
+without enrolling those operations in automatic cadence.
+
+The current interface replaces six shared/override selectors with four direct
+fields. Old selectors reject even null; `extraction_window_migration` owns their
+explicit historical projection. File generation 15 retains originals, refuses
+ignored future-field collisions and requires storage admission before preparation
+publishes. Configuration conversion does not grant retained-dataset authority.
+Frozen windows and snapshots retain captured policy, identities and original
+hashes rather than being rewritten as fresh configuration.
+
+Detached C6 invalidated ACK history can retain a finalized parent and saved
+output after input deletion races the effects ACK. Native transition observation
+accepts that predecessor shape only with an idle, unclaimed exact-bound parent,
+valid billing descriptor, and matching immutable legacy publication IDs, alongside
+all ordinary lease, cursor, dependency, preparation, and receipt fences. It is
+inert erased history for stored numeric coverage; it grants no queue/admission
+coverage or new publication credit and does not change profiles or billing.

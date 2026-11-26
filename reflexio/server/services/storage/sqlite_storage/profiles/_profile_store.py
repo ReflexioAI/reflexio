@@ -18,6 +18,11 @@ from reflexio.models.api_schema.service_schemas import (
     Status,
     UserProfile,
 )
+from reflexio.server.services.embedding_text import (
+    embedding_text,
+    profile_semantic_features,
+)
+from reflexio.server.services.profile.lifecycle_deadlines import profile_version
 from reflexio.server.services.storage.lifecycle_filters import (
     GC_ELIGIBLE_STATUSES,
     PROFILE_TOMBSTONE_STATUS_VALUES,
@@ -46,6 +51,7 @@ def _emit_hard_delete_profile(
     entity_id: str,
     request_id: str,
     actor: str = "api",
+    reason: str = "erasure",
 ) -> None:
     """Emit a single hard_delete lineage event for a profile entity."""
     _append_event_stmt(
@@ -58,7 +64,7 @@ def _emit_hard_delete_profile(
         source_ids=[],
         actor=actor,
         request_id=request_id,
-        reason="erasure",
+        reason=reason,
     )
 
 
@@ -86,6 +92,7 @@ class ProfileStoreMixin:
     _assert_subject_writable_locked: Any
     _own_transaction: Any
     commit_scope: Any
+    _deferred_index_ops: list[tuple[str, Any]]
 
     def _subject_ref_from_profile_row(self, row: sqlite3.Row) -> str:
         subject_ref = row["governance_subject_ref"]
@@ -234,11 +241,11 @@ class ProfileStoreMixin:
         and then persist with ``skip_embedding=True``.
         """
         for profile in profiles:
-            embedding_text = "\n".join([profile.content, str(profile.custom_features)])
+            profile_text = embedding_text(profile)
             if self._should_expand_documents():
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     emb_future = executor.submit(
-                        copy_context().run, self._get_embedding, embedding_text
+                        copy_context().run, self._get_embedding, profile_text
                     )
                     exp_future = executor.submit(
                         copy_context().run, self._expand_document, profile.content
@@ -246,7 +253,7 @@ class ProfileStoreMixin:
                     profile.embedding = emb_future.result(timeout=15)
                     profile.expanded_terms = exp_future.result(timeout=15)
             else:
-                profile.embedding = self._get_embedding(embedding_text)
+                profile.embedding = self._get_embedding(profile_text)
 
     @SQLiteStorageBase.handle_exceptions
     def add_user_profile(
@@ -348,26 +355,32 @@ class ProfileStoreMixin:
                             provider=lineage_context.provider,
                         )
 
-        for profile, _lineage_context, _subject_ref in rows:
-            embedding = profile.embedding
-            fts_parts = [profile.content or ""]
-            if profile.custom_features:
-                fts_parts.extend(str(v) for v in profile.custom_features.values() if v)
-            if profile.expanded_terms:
-                fts_parts.append(profile.expanded_terms)
-            self._fts_upsert_profile(profile.profile_id, " ".join(fts_parts))
-            # Sync vec table — look up implicit rowid via primary key
-            row = self._fetchone(
-                "SELECT rowid FROM profiles WHERE profile_id = ?",
-                (profile.profile_id,),
-            )
-            if row and embedding:
-                self._vec_upsert("profiles_vec", row["rowid"], embedding)
+            for profile, _lineage_context, _subject_ref in rows:
+                embedding = profile.embedding
+                fts_parts = [profile.content or ""]
+                fts_parts.extend(
+                    str(v) for v in profile_semantic_features(profile).values() if v
+                )
+                if profile.expanded_terms:
+                    fts_parts.append(profile.expanded_terms)
+                self._fts_upsert_profile(profile.profile_id, " ".join(fts_parts))
+                # Sync vec table — look up implicit rowid via primary key
+                row = self._fetchone(
+                    "SELECT rowid FROM profiles WHERE profile_id = ?",
+                    (profile.profile_id,),
+                )
+                if row and embedding:
+                    self._vec_upsert("profiles_vec", row["rowid"], embedding)
 
     @SQLiteStorageBase.handle_exceptions
     def update_user_profile_by_id(
-        self, user_id: str, profile_id: str, new_profile: UserProfile
-    ) -> None:
+        self,
+        user_id: str,
+        profile_id: str,
+        new_profile: UserProfile,
+        *,
+        expected_version: str | None = None,
+    ) -> bool:
         """Replace a profile's content in-place and emit a revise lineage event.
 
         Each call generates a fresh request_id so every edit is a distinct audit
@@ -376,29 +389,48 @@ class ProfileStoreMixin:
         self._lock is an RLock so the inner _fts_upsert_profile/_vec_upsert calls
         that re-acquire it are safe.
         """
-        current_ts = _epoch_now()
+        select_live = (
+            "SELECT * FROM profiles WHERE user_id = ? AND profile_id = ? "
+            "AND expiration_timestamp >= ?"
+        )
         with self._lock:
             row = self.conn.execute(
-                "SELECT user_id, governance_subject_ref FROM profiles WHERE user_id = ? AND profile_id = ? AND expiration_timestamp >= ?",
-                (user_id, profile_id, current_ts),
+                select_live,
+                (user_id, profile_id, _epoch_now()),
             ).fetchone()
             if not row:
                 logger.warning("User profile not found for user id: %s", user_id)
-                return
+                return False
             self._assert_subject_writable_locked(
                 self._subject_ref_from_profile_row(row)
             )
-        embedding = self._get_embedding(
-            "\n".join([new_profile.content, str(new_profile.custom_features)])
-        )
+            if (
+                expected_version is not None
+                and profile_version(_row_to_profile(row).model_dump(mode="json"))
+                != expected_version
+            ):
+                return False
+        embedding = self._get_embedding(embedding_text(new_profile))
         new_profile.embedding = embedding
-        with self._lock:
+        # One scope either way: the row and its queued index writes commit together.
+        with self.commit_scope():
+            if expected_version is not None:
+                stored = self.conn.execute(
+                    select_live,
+                    (user_id, profile_id, _epoch_now()),
+                ).fetchone()
+                if (
+                    stored is None
+                    or profile_version(_row_to_profile(stored).model_dump(mode="json"))
+                    != expected_version
+                ):
+                    return False
             if (
                 self._assert_profile_writable_locked(profile_id, user_id=user_id)
                 is None
             ):
                 logger.warning("User profile not found for user id: %s", user_id)
-                return
+                return False
             cur = self.conn.execute(
                 """UPDATE profiles SET content=?, last_modified_timestamp=?,
                    generated_from_request_id=?, profile_time_to_live=?,
@@ -439,12 +471,10 @@ class ProfileStoreMixin:
                     request_id=uuid.uuid4().hex,
                     reason="in-place update",
                 )
-            self.conn.commit()
             fts_parts = [new_profile.content or ""]
-            if new_profile.custom_features:
-                fts_parts.extend(
-                    str(v) for v in new_profile.custom_features.values() if v
-                )
+            fts_parts.extend(
+                str(v) for v in profile_semantic_features(new_profile).values() if v
+            )
             if new_profile.expanded_terms:
                 fts_parts.append(new_profile.expanded_terms)
             self._fts_upsert_profile(profile_id, " ".join(fts_parts))
@@ -453,6 +483,7 @@ class ProfileStoreMixin:
             )
             if rowid_row and embedding:
                 self._vec_upsert("profiles_vec", rowid_row["rowid"], embedding)
+        return True
 
     @SQLiteStorageBase.handle_exceptions
     def update_user_profile_tags(
@@ -974,7 +1005,11 @@ class ProfileStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_profiles_by_ids(
-        self, profile_ids: list[str], *, emit_hard_delete: bool = True
+        self,
+        profile_ids: list[str],
+        *,
+        emit_hard_delete: bool = True,
+        reason: str = "erasure",
     ) -> int:
         if not profile_ids:
             return 0
@@ -982,7 +1017,7 @@ class ProfileStoreMixin:
         # prevention (see delete_user_profile comment, #196).
         ph = ",".join("?" for _ in profile_ids)
         batch_request_id = uuid.uuid4().hex
-        with self._lock:
+        with self._lock, self.commit_scope():
             pre_rows = self.conn.execute(
                 f"SELECT rowid, profile_id FROM profiles WHERE profile_id IN ({ph})",
                 profile_ids,
@@ -991,6 +1026,24 @@ class ProfileStoreMixin:
                 return 0
             existing = [r["profile_id"] for r in pre_rows]
             rowids = [r["rowid"] for r in pre_rows]
+            # A due row may have just been inserted in this same publication.
+            # Its queued index upsert must not recreate erased payload after
+            # the outer commit; rowid reuse must not inherit its vector either.
+            self._deferred_index_ops = [
+                (kind, args)
+                for kind, args in self._deferred_index_ops
+                if not (
+                    (
+                        kind in {"fts_upsert_profile", "fts_delete_profile"}
+                        and args[0] in existing
+                    )
+                    or (
+                        kind in {"vec_upsert", "vec_delete"}
+                        and args[0] == "profiles_vec"
+                        and args[1] in rowids
+                    )
+                )
+            ]
             self._delete_in_chunks("profiles_fts", "profile_id", existing)
             if self._has_sqlite_vec and rowids:
                 self._delete_in_chunks("profiles_vec", "rowid", rowids)
@@ -1006,6 +1059,6 @@ class ProfileStoreMixin:
                         entity_id=str(pid),
                         request_id=batch_request_id,
                         actor="system",
+                        reason=reason,
                     )
-            self.conn.commit()
         return cur.rowcount

@@ -14,6 +14,8 @@ from contextvars import ContextVar
 from functools import wraps
 from typing import Any
 
+from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+
 CompletionIO = Callable[[dict[str, Any], float, Callable[[], Any]], Any]
 _completion_io: ContextVar[CompletionIO | None] = ContextVar(
     "completion_io", default=None
@@ -40,8 +42,17 @@ def intercept_completion_io[Client](
         callback = _completion_io.get()
         if callback is None:
             return method(self, params, hard_timeout)
+        if params.get("reflexio_private_provider_io"):
+            require_no_completion_io_hook()
         return callback(
             params, hard_timeout, lambda: method(self, params, hard_timeout)
         )
 
     return completion
+
+
+def require_no_completion_io_hook() -> None:
+    if _completion_io.get() is not None:
+        raise ProviderRequestGuardError(
+            "Private provider I/O cannot run with a completion recorder or replay"
+        )

@@ -160,14 +160,13 @@ class TestGetQueryReformulator:
         # Only called once due to caching
         mock_reformulator_cls.assert_called_once()
 
-    @patch("reflexio.lib._base.SiteVarManager")
+    @patch("reflexio.server.site_var.site_var_manager.SiteVarManager")
     @patch("reflexio.server.services.pre_retrieval.QueryReformulator")
     def test_handles_no_config(self, mock_reformulator_cls, mock_svm_cls):
         """Handles None config gracefully — auto-detects model from available API keys."""
         base = _make_base()
         as_mock(base.request_context.configurator.get_config).return_value = None
-        # Site var also returns nothing for pre_retrieval_model_name
-        mock_svm_cls.return_value.get_site_var.return_value = {}
+        mock_svm_cls.side_effect = AssertionError("Reformulation read site variables")
 
         reformulator = base._get_query_reformulator()
 
@@ -175,7 +174,7 @@ class TestGetQueryReformulator:
         call_kwargs = mock_reformulator_cls.call_args[1]
         assert call_kwargs["llm_client"] is base.llm_client
         assert call_kwargs["prompt_manager"] is base.request_context.prompt_manager
-        # Auto-detects model from available API keys (no config, no site var)
+        # Auto-detects a model from available API keys.
         assert call_kwargs["model_name"] is not None
 
 
@@ -278,10 +277,9 @@ class TestRequireStorageDecorator:
 
 
 class TestReflexioBaseInit:
-    @patch("reflexio.lib._base.SiteVarManager")
     @patch("reflexio.lib._base.LiteLLMClient")
     @patch("reflexio.lib._base.RequestContext")
-    def test_init_basic(self, mock_ctx_cls, mock_llm_cls, mock_svm_cls):
+    def test_init_basic(self, mock_ctx_cls, mock_llm_cls):
         """Basic initialization with org_id and storage_base_dir."""
         mock_ctx = MagicMock()
         mock_config = MagicMock()
@@ -289,12 +287,6 @@ class TestReflexioBaseInit:
         mock_config.llm_config = None
         mock_ctx.configurator.get_config.return_value = mock_config
         mock_ctx_cls.return_value = mock_ctx
-
-        mock_svm = MagicMock()
-        mock_svm.get_site_var.return_value = {
-            "default_generation_model_name": "gpt-5.4-mini"
-        }
-        mock_svm_cls.return_value = mock_svm
 
         base = ReflexioBase(org_id="org1", storage_base_dir="/var/data/test")
 
@@ -305,12 +297,9 @@ class TestReflexioBaseInit:
         )
         mock_llm_cls.assert_called_once()
 
-    @patch("reflexio.lib._base.SiteVarManager")
     @patch("reflexio.lib._base.LiteLLMClient")
     @patch("reflexio.lib._base.RequestContext")
-    def test_init_with_llm_config_override(
-        self, mock_ctx_cls, mock_llm_cls, mock_svm_cls
-    ):
+    def test_init_with_llm_config_override(self, mock_ctx_cls, mock_llm_cls):
         """Initialization uses LLM config override when available."""
         mock_ctx = MagicMock()
         mock_config = MagicMock()
@@ -321,10 +310,6 @@ class TestReflexioBaseInit:
         mock_ctx.configurator.get_config.return_value = mock_config
         mock_ctx_cls.return_value = mock_ctx
 
-        mock_svm = MagicMock()
-        mock_svm.get_site_var.return_value = {}
-        mock_svm_cls.return_value = mock_svm
-
         ReflexioBase(org_id="org1")
 
         # Verify LiteLLMConfig was created with the custom model
@@ -332,32 +317,24 @@ class TestReflexioBaseInit:
         assert llm_config_arg.model == "custom-model"
 
     @patch("reflexio.lib._base.resolve_model_name", return_value="gpt-4.1-mini")
-    @patch("reflexio.lib._base.SiteVarManager")
     @patch("reflexio.lib._base.LiteLLMClient")
     @patch("reflexio.lib._base.RequestContext")
-    def test_init_with_no_config(
-        self, mock_ctx_cls, mock_llm_cls, mock_svm_cls, mock_resolve
-    ):
+    def test_init_with_no_config(self, mock_ctx_cls, mock_llm_cls, mock_resolve):
         """Initialization handles None config gracefully."""
         mock_ctx = MagicMock()
         mock_ctx.configurator.get_config.return_value = None
         mock_ctx_cls.return_value = mock_ctx
 
-        mock_svm = MagicMock()
-        mock_svm.get_site_var.return_value = "not_a_dict"
-        mock_svm_cls.return_value = mock_svm
-
         base = ReflexioBase(org_id="org1")
 
-        # Falls back to auto-detected model name when site var is not a dict
+        # Falls back to the provider model.
         llm_config_arg = mock_llm_cls.call_args[0][0]
         assert llm_config_arg.model == "gpt-4.1-mini"
         assert base.org_id == "org1"
 
-    @patch("reflexio.lib._base.SiteVarManager")
     @patch("reflexio.lib._base.LiteLLMClient")
     @patch("reflexio.lib._base.RequestContext")
-    def test_init_with_configurator(self, mock_ctx_cls, mock_llm_cls, mock_svm_cls):
+    def test_init_with_configurator(self, mock_ctx_cls, mock_llm_cls):
         """Initialization passes configurator to RequestContext."""
         mock_configurator = MagicMock()
         mock_ctx = MagicMock()
@@ -366,10 +343,6 @@ class TestReflexioBaseInit:
         mock_config.llm_config = None
         mock_ctx.configurator.get_config.return_value = mock_config
         mock_ctx_cls.return_value = mock_ctx
-
-        mock_svm = MagicMock()
-        mock_svm.get_site_var.return_value = {}
-        mock_svm_cls.return_value = mock_svm
 
         ReflexioBase(org_id="org1", configurator=mock_configurator)
 
@@ -384,18 +357,14 @@ class TestReflexioBaseInit:
 
 
 def _generation_client_with(llm_config: LLMConfig | None) -> LiteLLMClient:
-    """Build the generation client with a stubbed configurator + site var."""
+    """Build the generation client with a stubbed configurator."""
     context = MagicMock()
     config = MagicMock()
     config.api_key_config = None
     config.llm_config = llm_config
     context.configurator.get_config.return_value = config
 
-    with (
-        patch("reflexio.lib._base.SiteVarManager") as site_var_manager,
-        patch("reflexio.lib._base.resolve_model_name", return_value="test-model"),
-    ):
-        site_var_manager.return_value.get_site_var.return_value = {}
+    with patch("reflexio.lib._base.resolve_model_name", return_value="test-model"):
         return create_generation_litellm_client(context)
 
 
@@ -441,16 +410,10 @@ def test_generation_factories_preserve_explicit_output_policy(cap):
     context = MagicMock()
     context.configurator.get_config.return_value.api_key_config = None
     context.configurator.get_config.return_value.llm_config = policy
-    with (
-        patch(
-            "reflexio.server.services.extraction.resume_worker.SiteVarManager"
-        ) as manager,
-        patch(
-            "reflexio.server.services.extraction.resume_worker.resolve_model_name",
-            return_value="test-model",
-        ),
+    with patch(
+        "reflexio.server.services.extraction.resume_worker.resolve_model_name",
+        return_value="test-model",
     ):
-        manager.return_value.get_site_var.return_value = {}
         resumed = _create_llm_client(context)
     assert resumed.config.max_tokens == cap
     assert resumed.config.timeout == 120

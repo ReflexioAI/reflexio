@@ -196,9 +196,9 @@ def test_launcher_selects_old_policy_before_prepare_even_without_backend(
     path = stored(base, current=False)
     original = path.read_bytes()
     monkeypatch.setenv("REFLEXIO_LOG_DIR", str(tmp_path))
-    monkeypatch.setenv("REFLEXIO_DEFAULT_ORG_ID", ORG)
+    monkeypatch.setattr("reflexio.local_instance.DEFAULT_ORG_ID", ORG)
     monkeypatch.setenv("REFLEXIO_POSTGRES_POOL_SIZE", "5")
-    monkeypatch.setattr(launcher, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(launcher, "load_local_launch_env", lambda: None)
     monkeypatch.setattr(launcher, "should_start_local_embedding_service", lambda: False)
     monkeypatch.setattr(launcher, "DOCS_DIR", tmp_path / "absent-docs")
     monkeypatch.setattr(launcher, "run_services", lambda *_args: None)
@@ -309,7 +309,8 @@ def test_different_primary_does_not_inherit_old_namespace(tmp_path, selected_bac
     assert selected["schema"] is None
 
 
-def test_explicit_namespace_still_selects_new_target_on_same_primary(
+@pytest.mark.unit
+def test_legacy_namespace_cannot_replace_the_selected_same_primary_target(
     tmp_path, monkeypatch
 ):
     path = stored(tmp_path)
@@ -318,9 +319,12 @@ def test_explicit_namespace_still_selects_new_target_on_same_primary(
         db_url="postgresql://selected.invalid/new", schema="former_namespace"
     )
     path.write_text(json.dumps(document))
+    original = path.read_bytes()
     monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", "selected_namespace")
-    _, selected = select(tmp_path)
-    assert selected["storage_config"]["schema"] == "selected_namespace"
+    with pytest.raises(ValueError, match="storage_config.schema"):
+        select(tmp_path)
+    assert path.read_bytes() == original
+    assert not (path.parent / ".config-migrations").exists()
 
 
 @pytest.mark.parametrize("same_primary", [True, False])
@@ -349,7 +353,8 @@ def test_native_selection_keeps_replica_only_with_its_saved_primary(
     "new_namespace,expected_reader",
     [("former_namespace", "postgresql://replica.invalid/old"), ("new_namespace", None)],
 )
-def test_namespace_retarget_does_not_inherit_unrelated_replica(
+@pytest.mark.unit
+def test_canonical_namespace_retarget_owns_its_reader_route(
     tmp_path, monkeypatch, new_namespace, expected_reader
 ):
     path = stored(tmp_path)
@@ -358,11 +363,33 @@ def test_namespace_retarget_does_not_inherit_unrelated_replica(
         schema="former_namespace", read_db_url="postgresql://replica.invalid/old"
     )
     path.write_text(json.dumps(document))
+    from reflexio.models.config_schema import StorageConfigPostgres
+    from reflexio.server.services.configurator.local_file_config_storage import (
+        LocalFileConfigStorage,
+    )
+
     monkeypatch.setenv("DATA_DB_URL", "postgresql://former.invalid/old")
-    monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", new_namespace)
+    # Choose the complete typed target through the canonical writer, explicitly
+    # clearing an unrelated reader instead of importing an ambient namespace.
+    replacement = StorageConfigPostgres.model_validate(
+        {
+            **document["storage_config"],
+            "schema": new_namespace,
+            "read_db_url": expected_reader,
+        }
+    )
+
+    def select_target(current, _generation):
+        assert current["storage_config"] == document["storage_config"]
+        current["storage_config"] = replacement.model_dump(mode="json")
+
+    store = LocalFileConfigStorage(ORG, base_dir=str(tmp_path))
+    store.prepare_for_startup(edit=select_target)
     _, selected = select(tmp_path)
     assert selected["storage_config"]["schema"] == new_namespace
     assert selected["storage_config"]["read_db_url"] == expected_reader
+    assert {name: selected["storage_config"][name] for name in POLICY} == POLICY
+    assert selected["opaque"] == {"keep": True}
 
 
 @pytest.mark.parametrize("same_primary", [True, False])

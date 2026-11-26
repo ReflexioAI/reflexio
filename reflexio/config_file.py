@@ -25,7 +25,11 @@ SINGLE_OWNER_EXECUTION_VERSION = 11
 LINEAGE_RETENTION_VERSION = 12
 PENDING_CREATION_VERSION = 13
 STORAGE_QUEUE_BUDGET_VERSION = 14
-FILE_FORMAT_VERSION = STORAGE_QUEUE_BUDGET_VERSION
+EXTRACTION_WINDOW_POLICY_VERSION = 15
+# Generation 15 was written both before and after evaluator support.
+EVALUATION_MODEL_POLICY_VERSION = 16
+PROFILE_EXECUTION_POLICY_VERSION = 17
+FILE_FORMAT_VERSION = PROFILE_EXECUTION_POLICY_VERSION
 _METADATA_KEY = "_reflexio_config_file"
 
 
@@ -85,8 +89,63 @@ def _reject_ambiguous_output_policy(data: dict[str, Any], version: int) -> None:
         )
 
 
+def _reject_ignored_extraction_windows(data: dict[str, Any], version: int) -> None:
+    from reflexio.extraction_window_migration import EXTRACTION_WINDOW_FIELDS
+
+    if (
+        version < EXTRACTION_WINDOW_POLICY_VERSION
+        and EXTRACTION_WINDOW_FIELDS.intersection(data)
+    ):
+        raise StoredConfigurationError(
+            "Older configuration contains ignored per-kind extraction-window "
+            "fields. Publish explicit current policy after stopping old writers; "
+            "file preparation cannot infer that intent."
+        )
+
+
+def _require_prepared_extraction_windows(data: dict[str, Any], version: int) -> None:
+    if version < EXTRACTION_WINDOW_POLICY_VERSION:
+        raise StoredConfigurationError(
+            "Saved extraction-window policy requires file generation15 preparation "
+            "with old writers stopped before runtime reads."
+        )
+    if {"window_size", "stride_size"}.intersection(data) or any(
+        isinstance(data.get(field), dict)
+        and {"window_size_override", "stride_size_override"}.intersection(data[field])
+        for field in ("profile_extractor_config", "user_playbook_extractor_config")
+    ):
+        raise StoredConfigurationError(
+            "Current extraction-window files cannot contain historical selectors."
+        )
+
+
+def _require_prepared_profile_execution(version: int) -> None:
+    if version < PROFILE_EXECUTION_POLICY_VERSION:
+        raise StoredConfigurationError(
+            "Saved automatic-profile policy requires file generation17 preparation "
+            "with old writers stopped before runtime reads."
+        )
+
+
+def _reject_ambiguous_evaluation_model(data: dict[str, Any], version: int) -> None:
+    llm = data.get("llm_config")
+    if (
+        version < EVALUATION_MODEL_POLICY_VERSION
+        and isinstance(llm, dict)
+        and llm.get("evaluation_model_name") not in (None, "")
+    ):
+        raise StoredConfigurationError(
+            "Older configuration contains evaluation_model_name without a known "
+            "evaluation-aware file generation. Stop old writers and review the "
+            "effective evaluator. Use config upgrade-file to publish an explicit "
+            "policy in a separate file."
+        )
+
+
 def _reject_ambiguous_policy(data: dict[str, Any], version: int) -> None:
+    _reject_ignored_extraction_windows(data, version)
     _reject_ambiguous_output_policy(data, version)
+    _reject_ambiguous_evaluation_model(data, version)
     retention = data.get("governance_retention")
     if (
         version < 3
@@ -97,27 +156,6 @@ def _reject_ambiguous_policy(data: dict[str, Any], version: int) -> None:
             "Older configuration contains audit_events_max_age_days, which was "
             "ignored by its schema. Stop old writers and use config upgrade-file "
             "to explicitly select canonical policy."
-        )
-    optimizer = data.get("playbook_optimizer_config")
-    if (
-        version < 5
-        and isinstance(optimizer, dict)
-        and "metric_call_budget" in optimizer
-    ):
-        raise StoredConfigurationError(
-            "Older configuration contains metric_call_budget, which was ignored "
-            "by its schema. Stop old writers and use config upgrade-file to "
-            "explicitly select canonical policy."
-        )
-    if (
-        version == 0
-        and isinstance(optimizer, dict)
-        and "agent_playbooks_enabled" in optimizer
-    ):
-        raise StoredConfigurationError(
-            "Unmarked configuration contains agent_playbooks_enabled, which "
-            "was ignored by the previous schema. Stop old writers and use "
-            "config upgrade-file to explicitly select canonical policy."
         )
     floor = data.get("retrieval_floor")
     if version < 2 and isinstance(floor, dict) and "candidate_pool_size" in floor:
@@ -213,27 +251,26 @@ def _prepare_pending_creation(data: dict[str, Any], version: int) -> dict[str, A
 def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
     """Transform only generations older than this artifact, without publishing."""
     from reflexio.config_migration import (
-        canonicalize_agent_optimizer_policy,
         canonicalize_audit_retention_policy,
         canonicalize_custom_endpoint_policy,
         canonicalize_lineage_retention_policy,
-        canonicalize_optimizer_work_budget,
         canonicalize_retrieval_floor_policy,
-        retire_optimizer_jitter_policy,
-        retire_optimizer_replay_policy,
         retire_playbook_consolidation_strategy,
+        retire_profile_manual_trigger,
     )
 
     if version == FILE_FORMAT_VERSION:
-        return deepcopy(data)
+        current = deepcopy(data)
+        current.pop("playbook_optimizer_config", None)
+        return current
     _reject_ambiguous_policy(data, version)
+    if version >= EXTRACTION_WINDOW_POLICY_VERSION:
+        _require_prepared_extraction_windows(data, version)
     # Apply only changes introduced after this file's generation.
     # Never replay the broad historical alias converter at startup.
     canonical = deepcopy(data)
-    if version == 0 and "playbook_optimizer_config" in canonical:
-        canonical["playbook_optimizer_config"] = canonicalize_agent_optimizer_policy(
-            canonical["playbook_optimizer_config"]
-        )
+    # The retired playbook optimizer block is dropped from every generation.
+    canonical.pop("playbook_optimizer_config", None)
     if version < 2 and "retrieval_floor" in canonical:
         canonical["retrieval_floor"] = canonicalize_retrieval_floor_policy(
             canonical["retrieval_floor"]
@@ -243,18 +280,6 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
             canonical["governance_retention"]
         )
     canonical = canonicalize_custom_endpoint_policy(canonical)
-    if version < 5 and "playbook_optimizer_config" in canonical:
-        canonical["playbook_optimizer_config"] = canonicalize_optimizer_work_budget(
-            canonical["playbook_optimizer_config"]
-        )
-    if version < 6 and "playbook_optimizer_config" in canonical:
-        canonical["playbook_optimizer_config"] = retire_optimizer_jitter_policy(
-            canonical["playbook_optimizer_config"]
-        )
-    if version < 7 and "playbook_optimizer_config" in canonical:
-        canonical["playbook_optimizer_config"] = retire_optimizer_replay_policy(
-            canonical["playbook_optimizer_config"]
-        )
     if version < 8 and "user_playbook_extractor_config" in canonical:
         canonical["user_playbook_extractor_config"] = (
             retire_playbook_consolidation_strategy(
@@ -280,7 +305,16 @@ def _prepare_document(data: dict[str, Any], version: int) -> dict[str, Any]:
             from reflexio.config_migration import retire_storage_queue_policy
 
             canonical["storage_config"] = retire_storage_queue_policy(storage)
-    return _prepare_pending_creation(canonical, version)
+    canonical = _prepare_pending_creation(canonical, version)
+    if version < EXTRACTION_WINDOW_POLICY_VERSION:
+        from reflexio.extraction_window_migration import (
+            convert_canonical_legacy_extraction_windows,
+        )
+
+        canonical = convert_canonical_legacy_extraction_windows(canonical)
+    if version < PROFILE_EXECUTION_POLICY_VERSION:
+        canonical = retire_profile_manual_trigger(canonical)
+    return canonical
 
 
 def _admit_storage_transition(
@@ -323,6 +357,7 @@ class LocalConfigFile:
         # Physical file invariants belong to this owner even when a caller
         # supplies a different logical schema validator.
         _require_prepared_storage_queue(data)
+        _require_prepared_extraction_windows(data, FILE_FORMAT_VERSION)
         self._schema_validator(data)
 
     def _target(self) -> Path:
@@ -345,6 +380,9 @@ class LocalConfigFile:
         _require_prepared_pending_creation(document, metadata.get("version", 0))
         _require_prepared_storage_queue(document)
         _reject_ambiguous_output_policy(document, metadata.get("version", 0))
+        _reject_ambiguous_evaluation_model(document, metadata.get("version", 0))
+        _require_prepared_extraction_windows(document, metadata.get("version", 0))
+        _require_prepared_profile_execution(metadata.get("version", 0))
         return document
 
     def read_document_for_conversion(self) -> dict[str, Any]:
@@ -355,6 +393,19 @@ class LocalConfigFile:
         historical lifetime fields resolve before their generation is discarded.
         """
         document, metadata = self._read_snapshot()
+        version = metadata.get("version", 0)
+        _reject_ignored_extraction_windows(document, version)
+        if version >= EXTRACTION_WINDOW_POLICY_VERSION:
+            _require_prepared_extraction_windows(document, version)
+        if version == FILE_FORMAT_VERSION:
+            self._validate(document)
+        if version < PROFILE_EXECUTION_POLICY_VERSION:
+            from reflexio.config_migration import retire_profile_manual_trigger
+
+            # Validate dormant historical cadence before losing the physical
+            # generation. Logical conversion resolves old geometry before it
+            # projects the actual mode; do not install zero before that step.
+            retire_profile_manual_trigger(document)
         # A lifetime existed before consent became lifetime-owned. Preserve
         # its historical opt-out while physical generation is still available;
         # the subsequent logical canonicalizer cannot recover that evidence.
@@ -373,6 +424,15 @@ class LocalConfigFile:
         # An envelope declaring an old physical generation cannot relabel it.
         _require_prepared_pending_creation(
             data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
+        )
+        _require_prepared_extraction_windows(
+            data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
+        )
+        _reject_ambiguous_evaluation_model(
+            data, supplied_metadata.get("version", FILE_FORMAT_VERSION)
+        )
+        _require_prepared_profile_execution(
+            supplied_metadata.get("version", FILE_FORMAT_VERSION)
         )
         self._validate(data)
         target = self._target()
@@ -393,13 +453,21 @@ class LocalConfigFile:
                 source_version = metadata.get("version", 0)
                 metadata = {**metadata, "version": FILE_FORMAT_VERSION}
             if admit is not None:
+                if (
+                    previous is not None
+                    and source_version < EVALUATION_MODEL_POLICY_VERSION
+                    and isinstance(previous_llm := previous.get("llm_config"), dict)
+                ):
+                    # Storage admission needs the old dataset, not an
+                    # ambiguous role value from the replaced document.
+                    previous_llm.pop("evaluation_model_name", None)
                 _admit_storage_transition(
                     admit,
                     _prepare_document(previous, source_version)
                     if previous is not None
                     else None,
                     data,
-                    incompatible=source_version < SINGLE_OWNER_EXECUTION_VERSION,
+                    incompatible=source_version < PROFILE_EXECUTION_POLICY_VERSION,
                 )
             if (
                 self._target() != target
@@ -425,6 +493,8 @@ class LocalConfigFile:
             data, metadata = _decode(original)
             _require_prepared_pending_creation(data, metadata.get("version", 0))
             _reject_ambiguous_policy(data, metadata.get("version", 0))
+            _require_prepared_extraction_windows(data, metadata.get("version", 0))
+            _require_prepared_profile_execution(metadata.get("version", 0))
             self._validate(data)
             edit(data)
             self._validate(data)
@@ -490,9 +560,17 @@ class LocalConfigFile:
                 admit,
                 source if original is not None else None,
                 canonical,
-                incompatible=version < SINGLE_OWNER_EXECUTION_VERSION,
+                # This new file generation must admit the retained dataset
+                # before publishing, including already-prepared generation14.
+                incompatible=version < PROFILE_EXECUTION_POLICY_VERSION,
             )
-            if version == FILE_FORMAT_VERSION or original is None:
+            # A current-generation file that still carries the retired optimizer
+            # block is rewritten through the backup path, so its saved policy
+            # stays recoverable for rollback to the previous SDK.
+            retired_block = "playbook_optimizer_config" in data
+            if (version == FILE_FORMAT_VERSION and not retired_block) or (
+                original is None
+            ):
                 if (
                     self._target() != target
                     or (target.read_bytes() if target.exists() else None) != original

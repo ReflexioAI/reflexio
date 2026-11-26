@@ -30,7 +30,6 @@ class MockExtractorConfig:
 
     extractor_name: str
     request_sources_enabled: list[str] | None = None
-    manual_trigger: bool = False
 
 
 @dataclass
@@ -39,7 +38,6 @@ class MockPlaybookConfig:
 
     extractor_name: str
     request_sources_enabled: list[str] | None = None
-    manual_trigger: bool = False
 
 
 @dataclass
@@ -90,69 +88,29 @@ class TestFilterExtractorConfigs:
         assert "extractor3" in extractor_names
         assert "extractor2" not in extractor_names
 
-    def test_filter_by_manual_trigger(self):
-        """Test filtering extractors by manual_trigger flag."""
-        configs = [
-            MockExtractorConfig(extractor_name="extractor1", manual_trigger=True),
-            MockExtractorConfig(extractor_name="extractor2", manual_trigger=False),
-            MockExtractorConfig(extractor_name="extractor3"),  # Default False
-        ]
-
-        # allow_manual_trigger=False - manual_trigger=True extractors should be skipped
-        result = filter_extractor_configs(configs, allow_manual_trigger=False)
-
-        assert len(result) == 2
-        extractor_names = [c.extractor_name for c in result]
-        assert "extractor2" in extractor_names
-        assert "extractor3" in extractor_names
-        assert "extractor1" not in extractor_names
-
-    def test_manual_trigger_allowed_when_allow_manual_trigger_true(self):
-        """Test that manual_trigger extractors are allowed when allow_manual_trigger=True."""
-        configs = [
-            MockExtractorConfig(extractor_name="extractor1", manual_trigger=True),
-            MockExtractorConfig(extractor_name="extractor2", manual_trigger=False),
-        ]
-
-        result = filter_extractor_configs(configs, allow_manual_trigger=True)
-
-        assert len(result) == 2
-        extractor_names = [c.extractor_name for c in result]
-        assert "extractor1" in extractor_names
-        assert "extractor2" in extractor_names
-
     def test_combined_filtering(self):
         """Test that all filter conditions are applied together."""
         configs = [
             MockExtractorConfig(
                 extractor_name="extractor1",
                 request_sources_enabled=["api"],
-                manual_trigger=False,
             ),
             MockExtractorConfig(
                 extractor_name="extractor2",
                 request_sources_enabled=["mobile"],
-                manual_trigger=False,
             ),
             MockExtractorConfig(
                 extractor_name="extractor3",
                 request_sources_enabled=["api"],
-                manual_trigger=True,
             ),
         ]
 
-        # Source=api and allow_manual_trigger=False both apply.
         result = filter_extractor_configs(
             configs,
             source="api",
-            allow_manual_trigger=False,
         )
 
-        # Only extractor1 passes active filters:
-        # - extractor2: wrong source
-        # - extractor3: manual_trigger=True but allow_manual_trigger=False
-        assert len(result) == 1
-        assert result[0].extractor_name == "extractor1"
+        assert [c.extractor_name for c in result] == ["extractor1", "extractor3"]
 
     def test_empty_configs_list(self):
         """Test filtering with empty configs list."""

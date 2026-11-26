@@ -976,17 +976,18 @@ class TestEnsureUserEnvForSetup:
 
 class TestWriteEmbeddingModelToOrgConfig:
     """The embedding-choice writer must target the same org the running no-auth
-    server resolves (``REFLEXIO_DEFAULT_ORG_ID``-aware), not a hardcoded
-    ``self-host-org`` — otherwise the storage backend and the embedding model
-    land in different ``config_<org>.json`` files."""
+    server resolves, including a saved binding for another organization. The
+    storage backend and embedding model must land in the same ``config_<org>.json`` files."""
 
     _STORAGE_PATCH = (
         "reflexio.server.services.configurator."
         "local_file_config_storage.LocalFileConfigStorage"
     )
 
-    def test_writes_to_env_resolved_org(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("REFLEXIO_DEFAULT_ORG_ID", "claude-smart")
+    def test_writes_to_resolved_org(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "reflexio.cli.bootstrap_config.default_org_id", lambda: "claude-smart"
+        )
         with patch(self._STORAGE_PATCH) as mock_storage:
             _write_embedding_model_to_org_config("local/minilm-l6-v2")
         mock_storage.assert_called_once_with("claude-smart")

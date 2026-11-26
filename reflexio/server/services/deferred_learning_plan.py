@@ -89,6 +89,18 @@ class ExtractorBookmarkPosition:
         )
 
 
+@dataclass(frozen=True)
+class ProfilePayloadErasure:
+    """Source-authorized exact CURRENT payload version, never generic lineage."""
+
+    profile_id: str
+    user_id: str
+    request_id: str
+    expected_version: str
+    source_profile_id: str
+    source_quote: str
+
+
 @dataclass
 class ProfileWritePlan:
     """Resolved profile write-plan for the compute/persist split (gate b).
@@ -108,8 +120,13 @@ class ProfileWritePlan:
             supersedes with a non-empty request_id.
         new_profiles: New profile rows with ``source``/``status`` set and
             ``.embedding`` precomputed in compute.
-        superseded_ids: Existing profile ids to soft-supersede on the dedup
-            path.
+        superseded_ids: Exact seen existing profile ids replaced on the dedup path.
+            Those without a source-authorized erasure instruction soft-supersede.
+        erasure_instructions: Source-authorized exact CURRENT payload versions;
+            not permission inferred from generic supersession or attention ancestry.
+        lifecycle_epoch: Profile-domain preparation epoch, preserved in durable
+            recovery. New lifecycle authority requires it; actual deadline
+            eligibility uses the observed writer execution clock.
     """
 
     user_id: str
@@ -117,6 +134,8 @@ class ProfileWritePlan:
     new_profiles: list[UserProfile]
     superseded_ids: list[str]
     lineage_contexts: list[LineageContext] = field(default_factory=list)
+    erasure_instructions: list[ProfilePayloadErasure] = field(default_factory=list)
+    lifecycle_epoch: int | None = None
 
 
 @dataclass
@@ -132,8 +151,7 @@ class PlaybookWritePlan:
     ids) then ``_apply_consolidation_lineage`` (which MUST see those ids, so it
     runs AFTER the save).
 
-    The off-thread schedulers (``_enqueue_user_playbook_optimization`` +
-    ``_trigger_playbook_aggregation``) are NOT part of persist — they fire
+    The off-thread scheduler (``_trigger_playbook_aggregation``) is NOT part of persist — they fire
     post-commit in ``emit_generation_side_effects`` (durable / ``.run()`` path)
     or right after persist in the permanent ``_finalize_extracted_items``
     wrapper (synchronous resume/manual path). ``output_pending_status`` /

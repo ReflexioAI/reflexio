@@ -126,11 +126,9 @@ class FakeStorage:
 
 def _reflexio(storage: FakeStorage) -> SimpleNamespace:
     config = SimpleNamespace(
-        window_size=2,
-        stride_size=1,
+        profile_window_size=2,
+        profile_stride_size=1,
         profile_extractor_config=SimpleNamespace(
-            window_size_override=None,
-            stride_size_override=None,
             request_sources_enabled=None,
         ),
     )

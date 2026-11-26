@@ -35,9 +35,7 @@ def _payload():
         ],
         "playbook_optimizer_config": {
             "optimize_user_playbooks": True,
-            "auto_update_user_playbooks": False,
-            "use_merge": False,
-            "max_merge_invocations": 9,
+            "metric_call_budget": 9,
         },
         "governance_retention": {
             "audit_events_retention_enabled": False,
@@ -56,11 +54,9 @@ def test_document_conversion_preserves_policy_identity_and_opaque_metadata():
     assert payload == before
     assert canonicalize_config_document(result) == result
     typed = validate_stored_config(result)
-    assert (typed.window_size, typed.stride_size) == (23, 13)
+    assert (typed.profile_window_size, typed.profile_stride_size) == (23, 13)
     assert typed.user_playbook_extractor_config is not None
     assert typed.user_playbook_extractor_config.aggregation_config.min_cluster_size == 9
-    assert typed.playbook_optimizer_config.max_merge_invocations == 0
-    assert typed.playbook_optimizer_config.user_playbooks_enabled is False
     assert typed.governance_retention.audit_events_max_age_days == 0
     assert typed.governance_retention.audit_events_delete_batch_limit == 2
     assert result["governance_retention"]["extension"] == {"keep": True}
@@ -73,8 +69,7 @@ def test_document_conversion_preserves_policy_identity_and_opaque_metadata():
     assert result["user_playbook_extractor_config"]["extension"] == {
         "batch_size": "opaque"
     }
-    assert result["playbook_optimizer_config"]["user_playbooks_enabled"] is False
-    assert result["playbook_optimizer_config"]["max_merge_invocations"] == 0
+    assert "playbook_optimizer_config" not in result
 
 
 @pytest.mark.parametrize(
@@ -263,7 +258,13 @@ def test_conversion_keeps_storage_policy_without_materializing_defaults(
     storage, expected
 ):
     result = canonicalize_config_document({"storage_config": storage})
-    assert result == {"storage_config": expected}
+    assert result == {
+        "storage_config": expected,
+        "profile_window_size": 10,
+        "profile_stride_size": 8,
+        "playbook_window_size": 10,
+        "playbook_stride_size": 8,
+    }
     loaded = validate_stored_config(result)
     if expected is not None:
         assert loaded.storage_config is not None
@@ -372,7 +373,7 @@ runpy.run_module("reflexio.cli.__main__", run_name="__main__")
     assert proc.returncode == 0, proc.stderr
     if "--json" in global_args:
         assert json.loads(proc.stdout) == {"ok": True, "data": {"output": str(output)}}
-    assert json.loads(output.read_text())["window_size"] == 23
+    assert json.loads(output.read_text())["profile_window_size"] == 23
     assert json.loads(source.read_text()) == _payload()
     assert (
         dotenv.read_text()
@@ -399,6 +400,24 @@ def test_offline_probe_preserves_online_route_arguments(args):
     original = list(args)
     assert dispatch_offline(args) is False
     assert args == original
+
+
+@pytest.mark.parametrize(
+    ("group", "command"),
+    [
+        ("setup", "init"),
+        ("setup", "openclaw"),
+        ("config", "upgrade-file"),
+        ("data", "upgrade-local"),
+    ],
+)
+def test_bootstrap_command_path_honors_group_option_separator(group, command):
+    from reflexio.cli.offline import cli_command_path
+
+    assert cli_command_path(["--server-url", group, group, "--", command]) == (
+        group,
+        command,
+    )
 
 
 def test_real_cli_preserves_precise_opaque_numbers_and_source(tmp_path, monkeypatch):
@@ -473,22 +492,19 @@ def test_real_cli_sanitizes_parser_limits_without_writes(tmp_path, raw):
     assert output.read_bytes() == b"existing-output"
 
 
-def test_upgrade_file_explicitly_adopts_quality_owned_optimizer_stopping(tmp_path):
+def test_upgrade_file_drops_the_retired_optimizer_block(tmp_path):
     source, output = tmp_path / "active-old.json", tmp_path / "adopted.json"
     payload = {
         "storage_config": None,
         "playbook_optimizer_config": {
             "enabled": True,
-            "early_stop_score": 0.9,
             "max_metric_calls": 37,
-            "min_commit_likert": 5,
+            "assistant_script_path": "/opt/assistant",
         },
         "extension": {"keep": True},
     }
     encoded = json.dumps(payload).encode()
     source.write_bytes(encoded)
-    with pytest.raises(ValueError):
-        validate_stored_config(payload)
     with patch(
         "reflexio.cli.commands.config_cmd.get_client",
         side_effect=AssertionError("offline only"),
@@ -501,7 +517,5 @@ def test_upgrade_file_explicitly_adopts_quality_owned_optimizer_stopping(tmp_pat
     converted = json.loads(output.read_text())
     assert source.read_bytes() == encoded
     assert converted["extension"] == {"keep": True}
-    config = validate_stored_config(converted).playbook_optimizer_config
-    assert config.metric_call_budget > 0
-    assert config.metric_call_budget == 37 and config.min_commit_likert == 5
-    assert "early_stop_score" not in converted["playbook_optimizer_config"]
+    assert "playbook_optimizer_config" not in converted
+    assert not hasattr(validate_stored_config(converted), "playbook_optimizer_config")

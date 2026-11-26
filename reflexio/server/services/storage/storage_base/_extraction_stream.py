@@ -30,6 +30,8 @@ from reflexio.server.work_scope import current_project_id
 
 Kind = Literal["profile", "playbook"]
 KINDS: tuple[Kind, ...] = ("profile", "playbook")
+USER_WORK_CLAIM_PROTOCOL_SETTING = "reflexio.learning_work_protocol"
+USER_WORK_CLAIM_PROTOCOL = "v1"
 
 # SQL transport page, not a supported source-count ceiling or timing policy.
 # Fits SQLite's historical 999-variable floor with the two scope parameters.
@@ -95,6 +97,8 @@ class StreamSQL(Protocol):
     """Parameterised queries; identifiers are resolved by the backend."""
 
     def query(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]: ...
+    def user_work_claim_protocol(self) -> AbstractContextManager[None]: ...
+    def learning_transition_write_protocol(self) -> AbstractContextManager[None]: ...
     def table(self, name: str) -> str: ...
     def publication_order(self) -> str: ...
     def resume_json_predicates(self) -> tuple[str, str]: ...
@@ -105,6 +109,35 @@ class StreamSQL(Protocol):
     def eligible(self, kind: Kind) -> str: ...
     def project_filter(self, alias: Literal["r", "i", "q"] = "r") -> str: ...
     def publication_binding_columns(self) -> str: ...
+    def transition_run_witness_columns(self) -> str: ...
+    def transition_admission_clock_missing(self) -> str: ...
+    def transition_admission_clock_numeric(self) -> str: ...
+    def transition_admission_input_stats(self) -> str: ...
+    def transition_coverage_batch_limit(self) -> int: ...
+    def transition_inventory_snapshot(self) -> tuple[object, ...] | None: ...
+
+    def transition_window_history_format(self) -> tuple[str, str]: ...
+    def transition_window_history_request_match(self, request_sql: str) -> str: ...
+    def transition_window_history_no_billing(self) -> str: ...
+    def transition_window_billing_descriptor_valid(self) -> str: ...
+    def transition_window_history_publication_receipt(self) -> str: ...
+    def transition_window_history_parent_idle(self) -> str: ...
+    def transition_project_scope(self, source: str) -> tuple[str, str]: ...
+    def transition_unbound_project(self) -> str: ...
+    def lock_learning_policy_authority(self, *, exclusive: bool) -> None: ...
+    def read_learning_policy_authority(self) -> dict[str, Any] | None: ...
+    def write_learning_policy_authority(
+        self, payload: str, *, missing: bool
+    ) -> None: ...
+    def learning_transition_project(self, project_id: str | None = None) -> str: ...
+    def extraction_project_scope(
+        self, project_id: str
+    ) -> AbstractContextManager[None]: ...
+    def lock_learning_transition(self, key: str) -> None: ...
+    def insert_learning_transition(
+        self, key: str, project: str, payload: str
+    ) -> None: ...
+    def transition_json_scalar(self, field: str) -> str: ...
     def erasure_run_columns(self) -> str: ...
     def expiry_question_columns(self) -> str: ...
     def input_lock(self) -> str: ...
@@ -318,6 +351,38 @@ def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
     return manifest
 
 
+def _require_learning_claim_db(db: StreamSQL, *, org_id: str, user_id: str) -> None:
+    """Scheduling admission on the candidate's existing W -> root writer.
+
+    This creates no execution permission. Selected work still proves its exact
+    grant/original native witness after the actual user lease is acquired.
+    """
+    from reflexio.profile_authoring_protocol import (
+        PROFILE_AUTHORING_POLICY,
+    )
+    from reflexio.server.services.durable_learning.selected_learning import (
+        selected_claim_matches_authority,
+    )
+
+    from .learning_transition import LearningTransitionBlockedError, _read_authority
+
+    db.lock_learning_policy_authority(exclusive=False)
+    authority = _read_authority(db)
+    if authority is None or authority.active_policy != PROFILE_AUTHORING_POLICY:
+        raise LearningTransitionBlockedError(
+            "Learning claim requires current dataset source authority"
+        )
+    if authority.phase == "open":
+        return
+    if authority.phase == "sealed" and selected_claim_matches_authority(
+        authority, org_id=org_id, user_id=user_id
+    ):
+        return
+    raise LearningTransitionBlockedError(
+        "Dataset policy transition holds new learning claims"
+    )
+
+
 def lock_user_work_row(db: StreamSQL, org_id: str, user_id: str) -> None:
     """Join the caller's writer; serialize even a previously absent user row."""
     work = db.table("learning_work")
@@ -440,12 +505,16 @@ class ExtractionStreamStore:
             )
             if not rows:
                 return None
-            user_id, token = rows[0]["user_id"], uuid.uuid4().hex
-            db.query(
-                f"UPDATE {work} SET lease_token=?,lease_owner=?,lease_until=?,last_turn=? "
-                "WHERE org_id=? AND user_id=?",
-                (token, owner, now + lease_seconds, now, self.org_id, user_id),
-            )
+            user_id = rows[0]["user_id"]
+            _require_learning_claim_db(db, org_id=self.org_id, user_id=user_id)
+            # Root admission may have waited; start the lease on a fresh clock.
+            now, token = db.now(), uuid.uuid4().hex
+            with db.user_work_claim_protocol():
+                db.query(
+                    f"UPDATE {work} SET lease_token=?,lease_owner=?,lease_until=?,last_turn=? "
+                    "WHERE org_id=? AND user_id=?",
+                    (token, owner, now + lease_seconds, now, self.org_id, user_id),
+                )
             return user_id, token
 
     def _live_user_work_clock(
@@ -467,6 +536,11 @@ class ExtractionStreamStore:
             now = self._live_user_work_clock(db, user_id, token)
             if now is None:
                 return False
+            origin_guard = getattr(
+                db, "require_learning_operation_renewal_origin", None
+            )
+            if origin_guard is not None:
+                origin_guard()
             return bool(
                 db.query(
                     f"UPDATE {db.table('learning_work')} SET lease_until=? "
@@ -925,6 +999,8 @@ class ExtractionStreamStore:
         return window, 0
 
     def prepare_extraction(self, user_id: str, token: str) -> Window | None:
+        from .learning_transition import fence_learning_transition_db
+
         with self._stream_sql(discovery=True) as db:
             self._fence(db, user_id, token)
             now = db.now()
@@ -947,46 +1023,50 @@ class ExtractionStreamStore:
                     next_due = min(next_due, cursor["retry_at"])
                     waiting_on_failure = True
                     continue
-                if cursor["window_id"]:
-                    rows = db.query(
-                        f"SELECT * FROM {db.table('extraction_windows')} WHERE window_id=?",
-                        (cursor["window_id"],),
+                with db.extraction_project_scope(cursor["project_id"] or ""):
+                    fence_learning_transition_db(
+                        db, org_id=self.org_id, project_id=cursor["project_id"] or ""
                     )
-                    return replace(
-                        Window.from_row(rows[0]),
-                        attempts=int(cursor["attempts"] or 0),
+                    if cursor["window_id"]:
+                        rows = db.query(
+                            f"SELECT * FROM {db.table('extraction_windows')} WHERE window_id=?",
+                            (cursor["window_id"],),
+                        )
+                        return replace(
+                            Window.from_row(rows[0]),
+                            attempts=int(cursor["attempts"] or 0),
+                        )
+                    deadlines: list[float] = []
+                    window, _ = self._select(
+                        db, user_id, cursor["kind"], cursor, deadlines=deadlines
                     )
-                deadlines: list[float] = []
-                window, _ = self._select(
-                    db, user_id, cursor["kind"], cursor, deadlines=deadlines
-                )
-                if deadlines:
-                    next_due = min(next_due, *deadlines)
-                if window is None:
-                    continue
-                db.query(
-                    f"INSERT INTO {db.table('extraction_windows')} "
-                    "(window_id,user_id,kind,predecessor,end_seq,manifest,policy,force,skip_aggregation,project_id,org_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        window.window_id,
-                        user_id,
-                        window.kind,
-                        window.predecessor,
-                        window.end_seq,
-                        json.dumps(window.manifest),
-                        json.dumps(window.policy),
-                        int(window.force),
-                        int(window.skip_aggregation),
-                        window.project_id,
-                        self.org_id,
-                    ),
-                )
-                db.query(
-                    f"UPDATE {db.table('extraction_cursors')} SET window_id=? WHERE user_id=? AND kind=? AND project_id=?",
-                    (window.window_id, user_id, window.kind, window.project_id),
-                )
-                return replace(window, attempts=int(cursor["attempts"] or 0))
+                    if deadlines:
+                        next_due = min(next_due, *deadlines)
+                    if window is None:
+                        continue
+                    db.query(
+                        f"INSERT INTO {db.table('extraction_windows')} "
+                        "(window_id,user_id,kind,predecessor,end_seq,manifest,policy,force,skip_aggregation,project_id,org_id) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            window.window_id,
+                            user_id,
+                            window.kind,
+                            window.predecessor,
+                            window.end_seq,
+                            json.dumps(window.manifest),
+                            json.dumps(window.policy),
+                            int(window.force),
+                            int(window.skip_aggregation),
+                            window.project_id,
+                            self.org_id,
+                        ),
+                    )
+                    db.query(
+                        f"UPDATE {db.table('extraction_cursors')} SET window_id=? WHERE user_id=? AND kind=? AND project_id=?",
+                        (window.window_id, user_id, window.kind, window.project_id),
+                    )
+                    return replace(window, attempts=int(cursor["attempts"] or 0))
             # Same row lock as ingestion: publication either precedes this
             # inspection or follows this update and sets due_at=0 again.
             #
@@ -1944,29 +2024,68 @@ class ExtractionStreamStore:
             raise
 
     def ack_extraction_effects(
-        self, window_id: str, *, user_id: str | None = None, token: str | None = None
+        self,
+        window_id: str,
+        *,
+        user_id: str | None = None,
+        token: str | None = None,
+        delivered_billing: dict[str, Any] | None = None,
     ) -> None:
+        fenced = token is not None and user_id is not None
         with self._stream_sql() as db:
             if token is not None and user_id is not None:
                 self._fence_extraction_effects(db, window_id, user_id, token)
             rows = db.query(
-                f"SELECT effects FROM {db.table('extraction_windows')} WHERE window_id=?",
+                f"SELECT effects, effects_done, completed, invalidated, derived_claimed, "
+                "org_id, user_id, project_id, kind "
+                f"FROM {db.table('extraction_windows')} WHERE window_id=?" + db.lock(),
                 (window_id,),
             )
-            if not rows and token is not None and user_id is not None:
-                raise WindowEffectsDeletedError("Extraction effects were erased")
-            if rows:
-                effects = decoded(rows[0]["effects"]) or {}
-                summary = {
-                    "version": 1,
-                    "skipped": True,
-                    "billing": effects.get("billing"),
-                    "request_ids": effects.get("request_ids", []),
-                }
-                db.query(
-                    f"UPDATE {db.table('extraction_windows')} SET effects_done=1,outcome=NULL,effects=?,manifest='[]' WHERE window_id=?",
-                    (json.dumps(summary), window_id),
+            if not rows:
+                if fenced:
+                    raise WindowEffectsDeletedError("Extraction effects were erased")
+                return
+            row = rows[0]
+            if row["effects_done"]:
+                return
+            effects = decoded(row["effects"]) or {}
+            retained_billing = effects.get("billing")
+            summary = {
+                "version": 1,
+                "skipped": True,
+                "billing": retained_billing,
+                "request_ids": effects.get("request_ids", []),
+            }
+            run_id = f"window:{window_id}"
+            if (
+                fenced
+                and row["org_id"] == self.org_id
+                and row["user_id"] == user_id
+                and row["project_id"] == (current_project_id() or "")
+                and row["completed"]
+                and not row["invalidated"]
+                and row["derived_claimed"]
+                and effects.get("extraction_run_ids") == [run_id]
+                and isinstance(delivered_billing, dict)
+                and isinstance(retained_billing, dict)
+                and delivered_billing == retained_billing
+            ):
+                from reflexio.server.services.extraction.publication_receipts import (
+                    window_delivery_facts,
                 )
+
+                try:
+                    window_delivery_facts(row["kind"], delivered_billing)
+                    window_delivery_facts(row["kind"], retained_billing)
+                except ValueError:
+                    # Compact the ACK as before, but do not prove closure.
+                    pass
+                else:
+                    summary["acknowledged_window_run_id"] = run_id
+            db.query(
+                f"UPDATE {db.table('extraction_windows')} SET effects_done=1,outcome=NULL,effects=?,manifest='[]' WHERE window_id=?",
+                (json.dumps(summary), window_id),
+            )
 
     def invalidate_extraction(self, window: Window, token: str) -> None:
         """Explicit erasure invalidates compute; surviving inputs are selected anew."""
@@ -2206,13 +2325,15 @@ class ExtractionStreamStore:
         # Keep the stream lock, clock and token assignment on one transaction.
         with self.commit_scope(), self._stream_sql() as db:
             self.lock_extraction_stream(user_id)
+            _require_learning_claim_db(db, org_id=self.org_id, user_id=user_id)
             token = uuid.uuid4().hex
             now = db.now()
-            rows = db.query(
-                f"UPDATE {db.table('learning_work')} SET lease_token=?,lease_owner=?,lease_until=? "
-                "WHERE org_id=? AND user_id=? AND lease_until<=? RETURNING user_id",
-                (token, owner, now + seconds, self.org_id, user_id, now),
-            )
+            with db.user_work_claim_protocol():
+                rows = db.query(
+                    f"UPDATE {db.table('learning_work')} SET lease_token=?,lease_owner=?,lease_until=? "
+                    "WHERE org_id=? AND user_id=? AND lease_until<=? RETURNING user_id",
+                    (token, owner, now + seconds, self.org_id, user_id, now),
+                )
             return token if rows else None
 
     def release_user_extraction(self, user_id: str, token: str) -> None:
@@ -2654,7 +2775,7 @@ class ExtractionStreamStore:
         """Lock the actual positive historical inputs, never a whole search result."""
         from reflexio.server.llm.input_budget import (
             ComputationEvidenceChangedError,
-            InputBudgetConfigurationError,
+            ExtractionInputIntegrityError,
         )
         from reflexio.server.services.extraction.profile_package_state import (
             PROFILE_WITNESS_FIELDS,
@@ -2727,7 +2848,7 @@ class ExtractionStreamStore:
                                 expires if deadline is None else min(deadline, expires)
                             )
             except (KeyError, TypeError, ValueError):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     f"Historical {kind} is malformed"
                 ) from None
             if observed != witnesses:
@@ -2735,7 +2856,7 @@ class ExtractionStreamStore:
                     raise ComputationEvidenceChangedError(
                         "Historical playbook changed after computation"
                     )
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Historical profile changed after computation"
                 )
         return deadline
@@ -2748,7 +2869,7 @@ class ExtractionStreamStore:
         Returns the earliest locked profile lifetime for the publisher's final
         clock check, including after its own supersession writes change old rows.
         """
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
         from reflexio.server.services.durable_learning.user_lease import (
             owned_agent_run_write,
         )
@@ -2758,7 +2879,7 @@ class ExtractionStreamStore:
         if (
             output is not None and not isinstance(output, dict)
         ) or not run.binding.user_id:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Historical execution binding unavailable"
             )
         with (
@@ -2778,12 +2899,12 @@ class ExtractionStreamStore:
         self, window: Window, witnesses: dict[str, str]
     ) -> None:
         """Preserve the protected window's scope/cap and changed-evidence outcome."""
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 
         if not witnesses:
             return
         if len(witnesses) > 128 or window.project_id != (current_project_id() or ""):
-            raise InputBudgetConfigurationError("Historical playbook scope changed")
+            raise ExtractionInputIntegrityError("Historical playbook scope changed")
         with self._stream_sql() as db:
             self._lock_historical_rows(
                 db,
@@ -2797,12 +2918,12 @@ class ExtractionStreamStore:
         self, window: Window, witnesses: dict[str, str]
     ) -> None:
         """Preserve protected profile scope while sharing the exact row proof."""
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 
         if window.kind != "profile" or window.project_id != (
             current_project_id() or ""
         ):
-            raise InputBudgetConfigurationError("Historical profile scope changed")
+            raise ExtractionInputIntegrityError("Historical profile scope changed")
         if not witnesses:
             return
         with self._stream_sql() as db:
@@ -2818,10 +2939,10 @@ class ExtractionStreamStore:
         self, window: Window, token: str, resolved: dict[str, str]
     ) -> dict[str, Any]:
         """Consume only this child's locked dependencies in its checkpoint commit."""
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
 
         if not resolved or len(resolved) > 128:
-            raise InputBudgetConfigurationError("Extraction dependency limit changed")
+            raise ExtractionInputIntegrityError("Extraction dependency limit changed")
         with self._stream_sql() as db:
             self._fence(db, window.user_id, token)
             return self._consume_answer_dependencies(
@@ -2835,7 +2956,7 @@ class ExtractionStreamStore:
         self, db: StreamSQL, *, run_id: str, project_id: str, resolved: dict[str, str]
     ) -> dict[str, Any]:
         """Apply an exact, already answer-locked input page in the caller's writer."""
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
         from reflexio.server.services.extraction.overflow_answers import (
             dependency_witness,
         )
@@ -2867,7 +2988,7 @@ class ExtractionStreamStore:
             or witness["resolved_at"] != resolved[call_id]
             for call_id, witness in observed.items()
         ):
-            raise InputBudgetConfigurationError("Extraction answer dependency changed")
+            raise ExtractionInputIntegrityError("Extraction answer dependency changed")
         consumed_at = datetime.fromtimestamp(db.now(), UTC).isoformat()
         rows = db.query(
             f"UPDATE {table} SET consumed_at=? WHERE run_id=? "
@@ -2876,7 +2997,7 @@ class ExtractionStreamStore:
             (consumed_at, run_id, *sorted(resolved)),
         )
         if len(rows) != len(resolved):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction answer consumption lost ownership"
             )
         return {row["pending_tool_call_id"]: dependency_witness(row) for row in rows}
@@ -2884,7 +3005,7 @@ class ExtractionStreamStore:
     def validate_extraction_answer_dependencies(
         self, window: Window, witnesses: dict[str, Any]
     ) -> None:
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
         from reflexio.server.services.extraction.overflow_answers import (
             dependency_witness,
         )
@@ -2892,7 +3013,7 @@ class ExtractionStreamStore:
         if not witnesses:
             return
         if len(witnesses) > 128:
-            raise InputBudgetConfigurationError("Extraction dependency limit changed")
+            raise ExtractionInputIntegrityError("Extraction dependency limit changed")
         with self._stream_sql() as db:
             placeholders = ",".join("?" for _ in witnesses)
             rows = db.query(
@@ -2911,13 +3032,13 @@ class ExtractionStreamStore:
             if {
                 row["pending_tool_call_id"]: dependency_witness(row) for row in rows
             } != witnesses:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Extraction answer dependency changed"
                 )
 
     def validate_extraction_answers(self, witnesses: dict[str, Any]) -> None:
         """Lock precisely the answers used, in the final learning transaction."""
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
         from reflexio.server.services.extraction.overflow_answers import (
             require_current_answer,
         )
@@ -2925,13 +3046,13 @@ class ExtractionStreamStore:
         if not witnesses:
             return
         if len(witnesses) > 128:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Extraction answer witness limit exceeded"
             )
         with self._stream_sql() as db:
             observed = self._lock_extraction_answers(db, sorted(witnesses))
             if observed != witnesses:
-                raise InputBudgetConfigurationError("Extraction human answer changed")
+                raise ExtractionInputIntegrityError("Extraction human answer changed")
             now = datetime.fromtimestamp(db.now(), UTC)
             for witness in observed.values():
                 require_current_answer(witness, self.org_id, now)
@@ -3012,7 +3133,7 @@ class ExtractionStreamStore:
         receipt nor terminalizes the run; the shared publisher owns those writes.
         Historical outputs without captured input evidence cannot use this seam.
         """
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
         from reflexio.server.services.durable_learning.user_lease import (
             owned_agent_run_write,
         )
@@ -3035,7 +3156,7 @@ class ExtractionStreamStore:
             AgentRunStatus.AGENT_COMPLETED,
             AgentRunStatus.FINALIZING,
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Committed output publication inputs unavailable"
             )
         inputs, answers = require_publication_answer_inputs(output)
@@ -3052,7 +3173,7 @@ class ExtractionStreamStore:
             if {
                 key: build_scope_hash(value) for key, value in observed.items()
             } != answers:
-                raise InputBudgetConfigurationError("Extraction human answer changed")
+                raise ExtractionInputIntegrityError("Extraction human answer changed")
             identifiers = sorted(inputs)
             for offset in range(0, len(identifiers), _OWNER_PROOF_PAGE_SIZE):
                 page = identifiers[offset : offset + _OWNER_PROOF_PAGE_SIZE]
@@ -3123,19 +3244,19 @@ class ExtractionStreamStore:
         self, db: StreamSQL, run: AgentRunRecord, output: dict[str, Any] | None
     ) -> None:
         """Lock and compare source evidence; caller owns the actual run writer."""
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
         from reflexio.server.services.extraction.source_inputs import (
             fallback_source_request,
             require_source_inputs,
         )
 
         if not isinstance(output, dict):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Committed output source proof unavailable"
             )
         publication = output.get("publication")
         if not isinstance(publication, dict):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Committed output source proof unavailable"
             )
         sources = require_source_inputs(publication.get("source_inputs"), run)
@@ -3195,7 +3316,7 @@ class ExtractionStreamStore:
             anchor = sources[str(identifier)]["fallback_first_interaction_id"]
             first = fallback_rows.get(anchor)
             if first is None or first["request_id"] != row["request_id"]:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Extraction fallback source changed"
                 )
             request = fallback_source_request(run, db.source_interaction(first))
@@ -3203,7 +3324,7 @@ class ExtractionStreamStore:
                 db.source_witness_bytes(row, request_override=request)
             ).hexdigest()
         if observed != {key: value["digest"] for key, value in sources.items()}:
-            raise InputBudgetConfigurationError("Extraction source content changed")
+            raise ExtractionInputIntegrityError("Extraction source content changed")
 
     @contextmanager
     def agent_completion_input_scope(
@@ -3214,7 +3335,7 @@ class ExtractionStreamStore:
         playbooks: dict[str, str],
     ) -> Iterator[dict[str, Any]]:
         """Guard primary and prepared completion until their writer finishes."""
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
         from reflexio.server.services.durable_learning.user_lease import (
             owned_agent_run_write,
         )
@@ -3235,7 +3356,7 @@ class ExtractionStreamStore:
         )
 
         if not run.binding.user_id:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Preparation requires its established user"
             )
         storage = cast(BaseStorage, self)
@@ -3243,7 +3364,7 @@ class ExtractionStreamStore:
             self._require_current_agent_output(db, run, run.committed_output)
             candidate = deepcopy(output)
             if not isinstance(candidate, dict):
-                raise InputBudgetConfigurationError("Completion output is unavailable")
+                raise ExtractionInputIntegrityError("Completion output is unavailable")
             history = merge_historical_inputs(
                 history_from_output(candidate), HistoricalInputs(profiles, playbooks)
             )
@@ -3254,7 +3375,7 @@ class ExtractionStreamStore:
             if {
                 key: build_scope_hash(value) for key, value in observed.items()
             } != inputs:
-                raise InputBudgetConfigurationError("Extraction human answer changed")
+                raise ExtractionInputIntegrityError("Extraction human answer changed")
             now = datetime.fromtimestamp(db.now(), UTC)
             for witness in observed.values():
                 require_current_answer(witness, self.org_id, now)
@@ -3277,7 +3398,7 @@ class ExtractionStreamStore:
             deadline = min(deadlines) if deadlines else None
             yield candidate
             if deadline is not None and db.now() >= deadline:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Completion input expired before durable retention"
                 )
 
@@ -3312,7 +3433,7 @@ class ExtractionStreamStore:
         Probe nonwaiting pages, then wait on unavailable rows one transaction at
         a time. All exact source/answer/history checks run again before saving.
         """
-        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+        from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
         from reflexio.server.services.durable_learning.user_lease import (
             _require_user_work_owner,
             owned_agent_run_write,
@@ -3327,7 +3448,7 @@ class ExtractionStreamStore:
 
         storage = cast(BaseStorage, self)
         if storage.in_commit_scope:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Input waiting requires an independent scope"
             )
         owner = _require_user_work_owner(storage)

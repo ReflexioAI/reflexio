@@ -425,3 +425,84 @@ class TestContainerSafety:
             return_value=None,
         ):
             assert resolve_storage(None) == "sqlite"
+
+
+@pytest.mark.unit
+class TestCanonicalPostgresNamespace:
+    """A retired environment assignment must not rewrite the selected schema."""
+
+    @pytest.fixture
+    def saved_namespace(self, tmp_path, monkeypatch, native_policy_adapter):
+        from reflexio.models.config_schema import Config, StorageConfigPostgres
+        from reflexio.server.services.configurator.local_file_config_storage import (
+            LocalFileConfigStorage,
+        )
+
+        monkeypatch.setenv("DATA_DB_URL", "postgresql://localhost/test")
+        monkeypatch.delenv("REFLEXIO_POSTGRES_SCHEMA", raising=False)
+        store = LocalFileConfigStorage("test-org", base_dir=str(tmp_path))
+        store.save_config(
+            Config(
+                storage_config=StorageConfigPostgres(
+                    db_url="postgresql://localhost/test", schema="customer_schema"
+                )
+            )
+        )
+        return store
+
+    @pytest.mark.parametrize("legacy_schema", ["other_schema", "public"])
+    def test_conflicting_legacy_namespace_cannot_rewrite_saved_target(
+        self,
+        tmp_path,
+        monkeypatch,
+        saved_namespace,
+        native_policy_adapter,
+        legacy_schema,
+    ):
+        admitted = list(native_policy_adapter)
+        original = Path(saved_namespace.config_file).read_bytes()
+        originals = set(tmp_path.rglob("*"))
+        monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", legacy_schema)
+        with pytest.raises(ValueError, match="REFLEXIO_POSTGRES_SCHEMA"):
+            save_storage_to_config(
+                "postgres", org_id="test-org", base_dir=str(tmp_path)
+            )
+        assert Path(saved_namespace.config_file).read_bytes() == original
+        assert set(tmp_path.rglob("*")) == originals
+        assert native_policy_adapter == admitted
+
+    @pytest.mark.parametrize("legacy_schema", [None, "", "customer_schema"])
+    def test_existing_canonical_namespace_survives_reselection(
+        self, tmp_path, monkeypatch, saved_namespace, caplog, legacy_schema
+    ):
+        if legacy_schema is not None:
+            monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", legacy_schema)
+        save_storage_to_config("postgres", org_id="test-org", base_dir=str(tmp_path))
+        selected = saved_namespace.load_config().storage_config
+        assert selected is not None
+        assert selected.schema_name == "customer_schema"
+        assert selected.db_url == "postgresql://localhost/test"
+        if legacy_schema:
+            assert "no longer selects" in caplog.text
+
+    def test_legacy_namespace_cannot_select_a_fresh_target(
+        self, tmp_path, monkeypatch, native_policy_adapter
+    ):
+        monkeypatch.setenv("DATA_DB_URL", "postgresql://localhost/test")
+        monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", "customer_schema")
+        with pytest.raises(ValueError, match="storage_config.schema"):
+            save_storage_to_config(
+                "postgres", org_id="test-org", base_dir=str(tmp_path)
+            )
+        assert not (tmp_path / "configs" / "config_test-org.json").exists()
+        assert native_policy_adapter == []
+
+    def test_namespace_assignment_does_not_become_a_supabase_selector(
+        self, tmp_path, monkeypatch, saved_namespace
+    ):
+        monkeypatch.setenv("REFLEXIO_POSTGRES_SCHEMA", "other_schema")
+        save_storage_to_config("supabase", org_id="test-org", base_dir=str(tmp_path))
+        selected = saved_namespace.load_config().storage_config
+        assert selected is not None
+        assert selected.schema_name == "customer_schema"
+        assert selected.db_url == "postgresql://localhost/test"

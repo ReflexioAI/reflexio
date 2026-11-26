@@ -14,7 +14,6 @@ def endpoints(monkeypatch):
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://shared")
     monkeypatch.setenv("REFLEXIO_QUERY_EMBEDDING_SERVICE_URL", "http://reserved")
-    monkeypatch.setenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL", "http://reserved")
     monkeypatch.setattr(provider, "_configured_model_cache", {})
     monkeypatch.setattr(provider, "_query_contract_cache", {})
     calls = []
@@ -69,7 +68,6 @@ def test_shared_worker_distinguishes_search_from_other_interactive_reranks(
     endpoints, monkeypatch
 ):
     calls, settings = endpoints
-    monkeypatch.delenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL")
     monkeypatch.delenv("REFLEXIO_QUERY_EMBEDDING_SERVICE_URL")
     assert reranker.score_search_pairs("q", ["a", "b"]) == [4.0, -2.0]
     assert reranker.score_pairs("q", ["a", "b"]) == [4.0, -2.0]
@@ -87,7 +85,7 @@ def test_only_search_reranking_uses_reserved_capacity(endpoints):
 
 
 @pytest.mark.parametrize(
-    "change", [{"workload": "query"}, {"ready": False}, {"model": "other"}]
+    "change", [{"workload": "shared"}, {"ready": False}, {"model": "other"}]
 )
 def test_search_route_rejects_incompatible_or_unready_worker(endpoints, change):
     calls, settings = endpoints
@@ -105,9 +103,9 @@ def test_reserved_rerank_failure_does_not_send_work_to_shared(endpoints):
     assert calls == ["http://reserved/v1/rerank"]
 
 
-def test_unconfigured_search_reranking_retains_shared_route(endpoints, monkeypatch):
-    calls, _ = endpoints
-    monkeypatch.delenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL")
+def test_legacy_query_only_contract_retains_shared_route(endpoints):
+    calls, settings = endpoints
+    settings["workload"] = "query"
     assert reranker.score_search_pairs_with_model("q", ["a", "b"]) == (
         "paired-reranker",
         [4.0, -2.0],
@@ -157,7 +155,7 @@ def test_search_worker_counter_proves_successful_nonempty_reserved_scoring(
 ):
     calls, settings = endpoints
     if route == "shared_search":
-        monkeypatch.delenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL")
+        settings["workload"] = "query"
     if route == "reserved_failure":
         settings["status"] = 503
     score = (
@@ -181,3 +179,44 @@ def test_search_worker_counter_proves_successful_nonempty_reserved_scoring(
         )
     finally:
         search_runtime._scope.reset(token)
+
+
+def test_ready_refresh_cannot_switch_reserved_reranking_to_shared(endpoints):
+    calls, _ = endpoints
+    reranker.score_search_pairs("q", ["a", "b"])
+    with pytest.raises(provider.EmbeddingUnavailableError, match="workload changed"):
+        provider.validate_search_reranker_service(
+            advertised={
+                "workload": "query",
+                "configured_model": "local/pinned",
+                "configured_reranker_model": "paired-reranker",
+                "reranker_enabled": True,
+                "reranker_ready": True,
+            },
+        )
+    reranker.score_search_pairs("q", ["a", "b"])
+    assert calls == ["http://reserved/v1/rerank"] * 2
+
+
+@pytest.mark.parametrize("value", ["", "https://hidden.invalid"])
+def test_obsolete_reranker_url_refuses_before_network_use(
+    endpoints, monkeypatch, value
+):
+    calls, _ = endpoints
+    monkeypatch.setenv("REFLEXIO_SEARCH_RERANK_SERVICE_URL", value)
+    with pytest.raises(ValueError, match="remove the duplicate assignment") as caught:
+        provider.validate_search_reranker_service()
+    assert "hidden.invalid" not in str(caught.value)
+    assert not calls
+
+
+@pytest.mark.parametrize("invalid", [[], {}, None, "unexpected", "shared"])
+def test_invalid_query_worker_health_does_not_poison_discovery(endpoints, invalid):
+    calls, settings = endpoints
+    settings["workload"] = invalid
+    with pytest.raises(reranker.CrossEncoderUnavailableError, match="invalid workload"):
+        reranker.score_search_pairs("q", ["a", "b"])
+    assert calls == []
+    settings["workload"] = "search"
+    assert reranker.score_search_pairs("q", ["a", "b"]) == [4.0, -2.0]
+    assert calls == ["http://reserved/v1/rerank"]

@@ -127,6 +127,24 @@ def test_public_request_guard_runs_before_replay(physical_completion):
     dispatch.assert_not_called()
 
 
+def test_private_request_refuses_recording_and_replay(physical_completion):
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+
+    client, dispatch = physical_completion
+    replay = Mock()
+    with completion_io_scope(replay):
+        with pytest.raises(ProviderRequestGuardError, match="recorder or replay"):
+            client._make_request(
+                [], redact_provider_errors=True, parse_structured_output=False
+            )
+        with pytest.raises(ProviderRequestGuardError, match="recorder or replay"):
+            client._completion_with_hard_timeout(
+                {"reflexio_private_provider_io": True}, 10
+            )
+    replay.assert_not_called()
+    dispatch.assert_not_called()
+
+
 def test_public_replay_still_parses_and_accounts_response(physical_completion):
     import litellm
 

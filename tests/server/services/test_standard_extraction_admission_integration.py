@@ -82,13 +82,15 @@ def test_new_text_uses_saved_protocol_regardless_of_obsolete_rollout_assignment(
 
 
 @pytest.mark.parametrize("kind", ["profile", "playbook"])
-@pytest.mark.parametrize("model", ["claude-code/default", "openclaw/default"])
+@pytest.mark.parametrize("model", ["local-cli/codex", "openclaw/default"])
 def test_opaque_cli_provider_retains_its_existing_extraction_adapter(
     pipeline, monkeypatch, kind, model
 ):
     from reflexio.lib._base import create_generation_litellm_client
     from reflexio.models.config_schema import LLMConfig
 
+    if model.startswith("local-cli/"):
+        monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", model)
     engine, _, http = pipeline
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
@@ -146,7 +148,7 @@ def test_opaque_cli_provider_retains_its_existing_extraction_adapter(
 @pytest.mark.parametrize(
     "provider,model",
     [
-        ("xai", "xai/grok-3-mini"),
+        ("xai", "xai/grok-4.3"),
         ("moonshot", "moonshot/moonshot-v1-8k"),
         ("zai", "zai/glm-5.2"),
     ],
@@ -170,11 +172,24 @@ def test_native_only_provider_keeps_existing_adapter_without_agent_role(
                     {provider: {"api_key": "synthetic-native-provider-key"}}
                 ),
                 "llm_config": LLMConfig(
-                    generation_model_name=model, should_run_model_name=model
+                    generation_model_name=model,
+                    should_run_model_name=model,
+                    generation_max_output_tokens=256,
                 ),
             }
         )
     )
+    # This synthetic adapter-selection test does not qualify a provider's live
+    # model catalog. Supply the selected fixture model's capacity while keeping
+    # the real reservation and input-budget checks in the execution path.
+    real_model_info = litellm.get_model_info
+
+    def fixture_model_info(name, *args, **kwargs):
+        if name == model:
+            return {"max_input_tokens": 16384, "max_output_tokens": 256}
+        return real_model_info(name, *args, **kwargs)
+
+    monkeypatch.setattr(litellm, "get_model_info", fixture_model_info)
     calls = []
 
     def respond(_client, params, _timeout):
@@ -202,6 +217,7 @@ def test_native_only_provider_keeps_existing_adapter_without_agent_role(
         engine.request_context, create_generation_litellm_client(engine.request_context)
     ).execute(window, token)
     assert len(calls) == 1 and calls[0]["model"] == model
+    assert calls[0]["max_tokens"] == 256
     parent = storage.get_agent_run(f"window:{window.window_id}")
     assert parent is None or "overflow" not in parent.generation_request_snapshot
     assert storage.extraction_status("u", "native-only-gate") == {

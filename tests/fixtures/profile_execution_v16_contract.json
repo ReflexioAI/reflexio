@@ -1,0 +1,75 @@
+{
+  "source_commit": "d6b0091d27332d81d3edbeeaf7a314fb235edb81",
+  "file_generation": 16,
+  "source_sha256": {
+    "reflexio/models/config_schema.py": "827d1139f00529da88898097b9d14468448b0f05c64de38fe45f1f560f695f0d",
+    "reflexio/server/services/extraction/agent_run_records.py": "0a8f851fcc78afa993e1a8c313d6926422caf161067f85c18dd21b68c68f43de",
+    "reflexio/config_file.py": "038b436b35de476436956e1a6a76c269f7fe2d6ee0de5f736af4a96c670cb529"
+  },
+  "cases": [
+    {
+      "id": "False-False",
+      "snapshot": {
+        "extraction_definition_prompt": "Source-qualified profile policy",
+        "context_prompt": null,
+        "tagging_definition_prompt": null,
+        "should_extract_profile_prompt_override": null,
+        "request_sources_enabled": null,
+        "manual_trigger": false,
+        "window_size_override": null,
+        "stride_size_override": null
+      },
+      "original_sha256": "28af37573f715a11d087fa48b53e71ddfefdfcbb020ccbbec650067b499b2372",
+      "prior_answer_identity": "extraction_definition_prompt='Source-qualified profile policy' context_prompt=None tagging_definition_prompt=None should_extract_profile_prompt_override=None request_sources_enabled=None manual_trigger=False window_size_override=None stride_size_override=None"
+    },
+    {
+      "id": "False-True",
+      "snapshot": {
+        "extraction_definition_prompt": "Source-qualified profile policy",
+        "context_prompt": "A customer's context\nwith a second line",
+        "tagging_definition_prompt": null,
+        "should_extract_profile_prompt_override": null,
+        "request_sources_enabled": [
+          "synthetic-source"
+        ],
+        "manual_trigger": false,
+        "window_size_override": 16,
+        "stride_size_override": 3
+      },
+      "original_sha256": "587fc37a339c0d53a24cf3bfd56700ab1ce70f0b8227e1934a2272a716941b1e",
+      "prior_answer_identity": "extraction_definition_prompt='Source-qualified profile policy' context_prompt=\"A customer's context\\nwith a second line\" tagging_definition_prompt=None should_extract_profile_prompt_override=None request_sources_enabled=['synthetic-source'] manual_trigger=False window_size_override=16 stride_size_override=3"
+    },
+    {
+      "id": "True-False",
+      "snapshot": {
+        "extraction_definition_prompt": "Source-qualified profile policy",
+        "context_prompt": null,
+        "tagging_definition_prompt": null,
+        "should_extract_profile_prompt_override": null,
+        "request_sources_enabled": null,
+        "manual_trigger": true,
+        "window_size_override": null,
+        "stride_size_override": null
+      },
+      "original_sha256": "b4ff00daef99d1b0613d6bd0151b4c7832267c65e2c25e484b67a439ae135b32",
+      "prior_answer_identity": "extraction_definition_prompt='Source-qualified profile policy' context_prompt=None tagging_definition_prompt=None should_extract_profile_prompt_override=None request_sources_enabled=None manual_trigger=True window_size_override=None stride_size_override=None"
+    },
+    {
+      "id": "True-True",
+      "snapshot": {
+        "extraction_definition_prompt": "Source-qualified profile policy",
+        "context_prompt": "A customer's context\nwith a second line",
+        "tagging_definition_prompt": null,
+        "should_extract_profile_prompt_override": null,
+        "request_sources_enabled": [
+          "synthetic-source"
+        ],
+        "manual_trigger": true,
+        "window_size_override": 16,
+        "stride_size_override": 3
+      },
+      "original_sha256": "e7f89079142fcb354532193078a5eaef4fe62d7e471ed4f4a3af2c323c039c0d",
+      "prior_answer_identity": "extraction_definition_prompt='Source-qualified profile policy' context_prompt=\"A customer's context\\nwith a second line\" tagging_definition_prompt=None should_extract_profile_prompt_override=None request_sources_enabled=['synthetic-source'] manual_trigger=True window_size_override=16 stride_size_override=3"
+    }
+  ]
+}

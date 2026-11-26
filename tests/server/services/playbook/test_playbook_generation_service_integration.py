@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
+import litellm
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -25,12 +26,16 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
 )
 from reflexio.models.config_schema import (
+    Config,
+    LLMConfig,
     PendingToolCallConfig,
     PlaybookAggregatorConfig,
     PlaybookConfig,
+    StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.playbook.components.reviewer import (
     CandidateReviewDecision,
     PlaybookCandidateReviewOutput,
@@ -114,14 +119,20 @@ def mock_request_context(tmp_path, monkeypatch):
     context.storage.get_last_k_interactions_grouped.return_value = ([], [])
     context.configurator = MagicMock()
     context.configurator.get_agent_context.return_value = "Synthetic agent context"
-    context.configurator.get_config.return_value.user_playbook_extractor_config = (
-        PlaybookConfig(
+    context.configurator.get_config.return_value = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "runs.db")),
+        profile_extractor_config=None,
+        user_playbook_extractor_config=PlaybookConfig(
             extraction_definition_prompt="Test playbook definition",
             aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
-        )
+        ),
+        llm_config=LLMConfig(generation_model_name="gpt-4o-mini"),
+        pending_tool_call_config=PendingToolCallConfig(),
+        playbook_window_size=100,
     )
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-no-provider")
     # Mock window_size for extractor
-    context.configurator.get_config.return_value.window_size = 100
+    context.configurator.get_config.return_value.playbook_window_size = 100
     # Pin the pending-tool-call config to the real default (disabled). Without
     # this, the auto-generated MagicMock makes the resumable-agent path think
     # pending tools are enabled and feeds a MagicMock similarity_threshold into
@@ -151,7 +162,7 @@ def mock_request_context(tmp_path, monkeypatch):
 @pytest.fixture
 def playbook_generation_service(mock_request_context):
     """Create a PlaybookGenerationService instance with mocked dependencies."""
-    mock_client = MagicMock()
+    mock_client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini", fallback_models=[]))
     service = PlaybookGenerationService(
         llm_client=mock_client, request_context=mock_request_context
     )
@@ -303,8 +314,205 @@ def _setup_mock_chat_completion(
     )
 
 
-@skip_in_precommit
+def _setup_procedural_wire(service, *, noop=False):
+    """Script the current source/compiler/full-result model return contracts."""
+    calls = []
+
+    def wire(params, _timeout):
+        calls.append(params)
+        body = json.loads(params["messages"][1]["content"])
+        names = {tool["function"]["name"] for tool in params["tools"]}
+        if "record_observation" in names:
+            if noop:
+                name, value = (
+                    "finish_batch",
+                    {"status": "complete", "reason": "No reusable change selected."},
+                )
+            else:
+                evidence = body["sources"][-1]["segments"][0]["excerpts"][0]["id"]
+                name, value = (
+                    "record_observation",
+                    {
+                        "topic": "Account support",
+                        "evidence": evidence,
+                        "observation": "The user accepted the assistance.",
+                    },
+                )
+        elif "create_procedure" in names:
+            name, value = (
+                "create_procedure",
+                {
+                    "group": "support",
+                    "name": "account-support",
+                    "trigger": "interacting with users",
+                    "entry": "Use accurate information when assisting with account issues.",
+                    "evidence": body["source_observations"][0]["evidence"],
+                },
+            )
+        elif "review_result" in names:
+            name, value = (
+                "review_result",
+                {
+                    "unit": "U0",
+                    "decision": "accept",
+                    "result_support": "pass",
+                    "scope_conditions": "pass",
+                    "useful_nonduplicate": "pass",
+                    "preservation_and_correction": "pass",
+                    "resource_consistency": "pass",
+                    "reason": "The complete output is supported.",
+                },
+            )
+        else:
+            raise AssertionError(f"Unexpected retired semantic call: {names}")
+        return litellm.ModelResponse(
+            model=params["model"],
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": f"return-{len(calls)}",
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": json.dumps(value),
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+
+    service.client._completion_with_hard_timeout = MagicMock(side_effect=wire)
+    return calls
+
+
+def _ordinary_source(context, interactions):
+    # Keep textual action metadata; only the independent visual input is absent.
+    rows = [row.model_copy(update={"interacted_image_url": ""}) for row in interactions]
+    context.storage._execute(
+        "UPDATE interactions SET interacted_image_url='' WHERE user_id=?",
+        ("test_user_123",),
+    )
+    group = create_request_interaction_data_model(
+        "test_user_123", "test_request_1", rows
+    )
+    context.storage.get_last_k_interactions_grouped.return_value = ([group], rows)
+    context.storage.get_interactions_by_ids.side_effect = lambda ids: [
+        row for row in rows if row.interaction_id in ids
+    ]
+    context.storage.get_request.return_value = group.request
+    return group
+
+
 def test_playbook_generation_with_storage(
+    playbook_generation_service,
+    mock_request_context,
+    test_interactions,
+    disable_mock_llm_response,
+):
+    from reflexio.server.services.playbook.procedural import codec
+
+    _ordinary_source(mock_request_context, test_interactions)
+    calls = _setup_procedural_wire(playbook_generation_service)
+    playbook_generation_service.run(
+        PlaybookGenerationRequest(
+            request_id="test_request_1",
+            agent_version="test_agent_1",
+            user_id="test_user_123",
+            auto_run=False,
+        )
+    )
+    mock_request_context.storage.save_user_playbooks.assert_called_once()
+    row = mock_request_context.storage.save_user_playbooks.call_args[0][0][0]
+    assert isinstance(row, UserPlaybook)
+    assert row.agent_version == "test_agent_1" and row.request_id == "test_request_1"
+    assert row.user_id == "test_user_123"
+    assert row.trigger == "interacting with users"
+    document = codec.decode(row.content)
+    assert document is not None
+    assert (
+        document.pages[0].content
+        == "Use accurate information when assisting with account issues."
+    )
+    assert row.source_interaction_ids == [2] and row.source_span
+    assert len(calls) == 3
+
+
+def test_playbook_generation_with_should_not_generate(
+    playbook_generation_service,
+    mock_request_context,
+    test_interactions,
+    disable_mock_llm_response,
+):
+    _ordinary_source(mock_request_context, test_interactions)
+    mock_request_context.configurator.get_config.return_value.playbook_stride_size = 1
+    calls = _setup_procedural_wire(playbook_generation_service, noop=True)
+    playbook_generation_service.run(
+        PlaybookGenerationRequest(
+            request_id="test_request_1",
+            agent_version="test_agent_1",
+            user_id="test_user_123",
+            auto_run=True,
+        )
+    )
+    assert len(calls) == 1
+    assert "record_observation" in {
+        tool["function"]["name"] for tool in calls[0]["tools"]
+    }
+    mock_request_context.storage.save_user_playbooks.assert_not_called()
+
+
+def test_playbook_message_construction_with_interactions(
+    playbook_generation_service,
+    mock_request_context,
+    test_interactions,
+    disable_mock_llm_response,
+):
+    _ordinary_source(mock_request_context, test_interactions)
+    calls = _setup_procedural_wire(playbook_generation_service)
+    playbook_generation_service.run(
+        PlaybookGenerationRequest(
+            request_id="test_request_1",
+            agent_version="test_agent_1",
+            user_id="test_user_123",
+            auto_run=False,
+        )
+    )
+    assert len(calls) == 3
+    source = json.loads(calls[0]["messages"][1]["content"])
+    assert source["owner"] == "test_user_123"
+    assert "source_field_context" in source
+    assert {row["interaction_id"] for row in source["sources"]} == {1, 2}
+    text_by_id = {
+        row["interaction_id"]: "\n\n".join(
+            excerpt["text"]
+            for segment in row["segments"]
+            for excerpt in segment["excerpts"]
+        )
+        for row in source["sources"]
+    }
+    assert "I need help with my account" in text_by_id[1]
+    assert "Thank you for your help!" in text_by_id[2]
+    assert any(
+        segment.get("field") == "native_user_action_display"
+        for row in source["sources"]
+        for segment in row["segments"]
+    )
+    assert all(
+        row["request_id"] == "test_request_1" and row["owner"] == "test_user_123"
+        for row in source["sources"]
+    )
+
+
+@skip_in_precommit
+def test_multimodal_playbook_generation_with_storage(
     playbook_generation_service,
     mock_request_context,
     test_interactions,
@@ -425,7 +633,7 @@ def test_playbook_generation_with_no_playbook_config(
 
 
 @skip_in_precommit
-def test_playbook_generation_with_should_not_generate(
+def test_multimodal_playbook_generation_with_should_not_generate(
     playbook_generation_service,
     mock_request_context,
     test_interactions,
@@ -437,7 +645,7 @@ def test_playbook_generation_with_should_not_generate(
     # Exercise the automatic judge; manual runs deliberately bypass it.
     root_config = mock_request_context.configurator.get_config.return_value
     root_config.skip_should_run_check = False
-    root_config.stride_size = 1
+    root_config.playbook_stride_size = 1
 
     # Create request interaction data model
     request_interaction_data_model = create_request_interaction_data_model(
@@ -470,7 +678,7 @@ def test_playbook_generation_with_should_not_generate(
     mock_request_context.storage.save_user_playbooks.assert_not_called()
 
 
-def test_playbook_message_construction_with_interactions(
+def test_multimodal_playbook_message_construction_with_interactions(
     mock_request_context,
     disable_mock_llm_response,
 ):

@@ -13,6 +13,7 @@ import {
 import {
 	type AgentSuccessConfig,
 	type APIKeyConfig,
+	applyExtractionPreset,
 	defaultAgentSuccess,
 	defaultPlaybookExtractor,
 	defaultProfileExtractor,
@@ -135,14 +136,13 @@ export function WindowingSection({
 			<FieldRow
 				label="Apply extraction preset"
 				htmlFor="extraction-preset"
-				hint="Presets fill window size and stride. Both values remain editable."
+				hint="Presets fill both window pairs and preserve manual-only profiles. All values remain editable."
 			>
 				<Select
 					value=""
 					onValueChange={(v) => {
 						if (v === null || !(v in PRESET_VALUES)) return;
-						const [window_size, stride_size] = PRESET_VALUES[v as ExtractionPreset];
-						setConfig((prev) => ({ ...prev, window_size, stride_size }));
+						setConfig((prev) => applyExtractionPreset(prev, v as ExtractionPreset));
 					}}
 				>
 					<SelectTrigger className="h-8 text-xs w-full">
@@ -159,22 +159,38 @@ export function WindowingSection({
 			</FieldRow>
 
 			<div className="grid grid-cols-2 gap-3">
-				<FieldRow label="Window size" htmlFor="window-size" hint="Messages per extraction run.">
-					<NumberField
-						id="window-size"
-						value={config.window_size}
-						onChange={(v) => setConfig((prev) => ({ ...prev, window_size: v ?? 1 }))}
-						min={1}
-					/>
-				</FieldRow>
-				<FieldRow label="Stride" htmlFor="stride-size" hint="Must be ≤ window size.">
-					<NumberField
-						id="stride-size"
-						value={config.stride_size}
-						onChange={(v) => setConfig((prev) => ({ ...prev, stride_size: v ?? 1 }))}
-						min={1}
-					/>
-				</FieldRow>
+				{(
+					[
+						[
+							"profile_window_size",
+							"Profile window",
+							1,
+							"History used by automatic and manual extraction.",
+						],
+						[
+							"profile_stride_size",
+							"Profile cadence",
+							0,
+							"0 means manual-only. Choose a positive cadence to enable automatic profiles.",
+						],
+						["playbook_window_size", "Playbook window", 1, "History used by playbook extraction."],
+						[
+							"playbook_stride_size",
+							"Playbook cadence",
+							1,
+							"New interactions between automatic playbook runs.",
+						],
+					] as const
+				).map(([key, label, min, hint]) => (
+					<FieldRow key={key} label={label} htmlFor={key} hint={hint}>
+						<NumberField
+							id={key}
+							value={config[key]}
+							min={min}
+							onChange={(value) => setConfig((prev) => ({ ...prev, [key]: value ?? min }))}
+						/>
+					</FieldRow>
+				))}
 			</div>
 
 			<SwitchField
@@ -354,7 +370,12 @@ const LLM_FIELDS: {
 	{
 		key: "generation_model_name",
 		label: "Generation model",
-		hint: "Used for extraction, evaluation, and generation tasks.",
+		hint: "Used for extraction and generation tasks.",
+	},
+	{
+		key: "evaluation_model_name",
+		label: "Evaluation model",
+		hint: "Optional model for evaluations. Defaults to the configured generation model or provider default.",
 	},
 	{
 		key: "embedding_model_name",
@@ -372,6 +393,7 @@ function emptyLlm(): LLMConfig {
 	return {
 		should_run_model_name: null,
 		generation_model_name: null,
+		evaluation_model_name: null,
 		embedding_model_name: null,
 		pre_retrieval_model_name: null,
 		// Deliberately absent from LLM_FIELDS: those render text inputs and hand
@@ -394,14 +416,14 @@ export function LLMModelsSection({
 	return (
 		<Section
 			title="LLM model overrides"
-			description="A custom gateway requires a generation model; omitted text roles inherit it. Other providers use site-variable defaults when a role is blank."
+			description="A custom gateway requires a generation model. Unset text roles inherit it. Otherwise, unset roles use provider defaults unless evaluation inherits a configured generation model."
 			defaultOpen={false}
 		>
 			{LLM_FIELDS.map((f) => (
 				<FieldRow key={f.key} label={f.label} htmlFor={`llm-${f.key}`} hint={f.hint}>
 					<TextField
 						id={`llm-${f.key}`}
-						value={llm[f.key]}
+						value={llm[f.key] ?? null}
 						onChange={(v) =>
 							setConfig((prev) => ({
 								...prev,
@@ -490,12 +512,6 @@ export function ProfileExtractorsSection({
 			/>
 			{enabled && (
 				<div className="space-y-4">
-					<FieldRow label="Name">
-						<TextField
-							value={current.extractor_name}
-							onChange={(v) => update({ extractor_name: v ?? "" })}
-						/>
-					</FieldRow>
 					<FieldRow label="Extraction definition prompt">
 						<TextAreaField
 							value={current.extraction_definition_prompt}
@@ -510,32 +526,6 @@ export function ProfileExtractorsSection({
 							rows={2}
 						/>
 					</FieldRow>
-					<SwitchField
-						label="Manual trigger only"
-						hint="Skip automatic extraction — only run when triggered manually."
-						checked={current.manual_trigger}
-						onCheckedChange={(c) => update({ manual_trigger: c })}
-					/>
-					<div className="grid grid-cols-2 gap-3">
-						<FieldRow label="Window size override">
-							<NumberField
-								value={current.window_size_override}
-								onChange={(v) => update({ window_size_override: v })}
-								min={1}
-								allowNull
-								placeholder="(inherit)"
-							/>
-						</FieldRow>
-						<FieldRow label="Stride override">
-							<NumberField
-								value={current.stride_size_override}
-								onChange={(v) => update({ stride_size_override: v })}
-								min={1}
-								allowNull
-								placeholder="(inherit)"
-							/>
-						</FieldRow>
-					</div>
 				</div>
 			)}
 		</Section>
@@ -583,12 +573,6 @@ export function PlaybookExtractorsSection({
 			/>
 			{enabled && (
 				<div className="space-y-4">
-					<FieldRow label="Name">
-						<TextField
-							value={current.extractor_name}
-							onChange={(v) => update({ extractor_name: v ?? "" })}
-						/>
-					</FieldRow>
 					<FieldRow label="Extraction definition prompt">
 						<TextAreaField
 							value={current.extraction_definition_prompt}
@@ -645,12 +629,6 @@ export function AgentSuccessSection({
 			/>
 			{enabled && (
 				<div className="space-y-4">
-					<FieldRow label="Evaluation name">
-						<TextField
-							value={current.evaluation_name}
-							onChange={(v) => update({ evaluation_name: v ?? "" })}
-						/>
-					</FieldRow>
 					<FieldRow label="Success definition prompt">
 						<TextAreaField
 							value={current.success_definition_prompt}

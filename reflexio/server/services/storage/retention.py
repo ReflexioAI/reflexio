@@ -125,12 +125,6 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         ("user_id", "session_id"),
         order_column_epoch=True,
     ),
-    RetentionTarget(
-        "offline_tuner_reward_label",
-        "offline_tuner_reward_label",
-        "label_created_at",
-        ("reward_label_id",),
-    ),
     RetentionTarget("share_links", "share_links", "created_at", ("id",)),
     # Source links determine source-filtered search and remain valid while both
     # parents survive. Their existing parent cascades own deletion; independent
@@ -292,9 +286,6 @@ RETENTION_CASCADES: dict[str, tuple[CascadeRef, ...]] = {
     "playbook_retrieval_logs": (
         CascadeRef("playbook_retrieval_log_items", "retrieval_log_id"),
     ),
-    "offline_tuner_reward_label": (
-        CascadeRef("offline_tuner_reward_label_target", "reward_label_id"),
-    ),
 }
 
 
@@ -327,6 +318,7 @@ def get_row_retention_limits(*, env: Mapping[str, str] | None = None) -> dict[st
     Customer controls and fixed caps stay independent.
     """
     env = os.environ if env is None else env
+    reject_removed_env(env, {"REFLEXIO_ROW_LIMIT_OFFLINE_TUNER_REWARD_LABEL": ""})
     operational_limit = _operational_row_limit(
         "REFLEXIO_OPERATIONAL_ROW_LIMIT", DEFAULT_ROW_RETENTION_LIMIT, env
     )

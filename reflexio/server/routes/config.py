@@ -1,10 +1,7 @@
 """Config route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -41,6 +38,11 @@ router = APIRouter()
 _RETRIEVAL_EXPERIMENT_FIELDS = frozenset(
     {"retrieval_experiment_config", "retrieval_experiment_history"}
 )
+
+
+def _drop_retired_optimizer_block(payload: dict[str, Any]) -> dict[str, Any]:
+    """Accept older clients that still echo the retired optimizer settings."""
+    return {k: v for k, v in payload.items() if k != "playbook_optimizer_config"}
 
 
 def _reject_direct_experiment_mutation(
@@ -123,8 +125,11 @@ def set_config(
     # Create Reflexio instance to access the configurator through request_context
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     configurator = reflexio.request_context.configurator
+    existing = configurator.get_org_config()
     config = _reject_direct_experiment_mutation(
-        config, configurator.get_org_config(), preserve_missing=True
+        _drop_retired_optimizer_block(config),
+        existing,
+        preserve_missing=True,
     )
     try:
         normalized_config = configurator.normalize_config_payload(config)
@@ -202,7 +207,9 @@ def update_config(
     configurator = reflexio.request_context.configurator
     existing_config = configurator.get_org_config()
     partial = _reject_direct_experiment_mutation(
-        partial, existing_config, preserve_missing=False
+        _drop_retired_optimizer_block(partial),
+        existing_config,
+        preserve_missing=False,
     )
     existing = existing_config.model_dump(mode="python")
     # Convert ValidationError into 422 so callers passing a partial that

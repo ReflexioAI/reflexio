@@ -214,16 +214,15 @@ def test_oss_composer_measures_real_publish_dependency_rejection(caplog):
     assert not records(caplog, "publish_timing")
 
 
-def test_default_org_is_known_before_request_validation(monkeypatch, caplog):
+def test_default_org_is_known_before_request_validation(caplog):
     from fastapi.testclient import TestClient
 
     from reflexio.server.api import create_app
 
-    monkeypatch.setenv("REFLEXIO_DEFAULT_ORG_ID", "local-org")
     response = TestClient(create_app()).post("/api/publish_interaction", json={})
     assert response.status_code == 422
     (http,) = records(caplog, "publish_http_timing")
-    assert http["org_id"] == "local-org" and http["handler_completed"] == "0"
+    assert http["org_id"] == "self-host-org" and http["handler_completed"] == "0"
 
 
 def test_known_org_dependency_rejections_have_separate_throttles(monkeypatch, caplog):

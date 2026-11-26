@@ -48,6 +48,7 @@ export interface APIKeyConfig {
 export interface LLMConfig {
 	should_run_model_name: string | null;
 	generation_model_name: string | null;
+	evaluation_model_name?: string | null;
 	embedding_model_name: string | null;
 	pre_retrieval_model_name: string | null;
 	// Must stay listed in cleanLlm below: /api/set_config is a full replacement,
@@ -57,13 +58,9 @@ export interface LLMConfig {
 }
 
 export interface ProfileExtractorConfig {
-	extractor_name: string;
 	extraction_definition_prompt: string;
 	context_prompt: string | null;
 	tagging_definition_prompt: string | null;
-	manual_trigger: boolean;
-	window_size_override: number | null;
-	stride_size_override: number | null;
 }
 
 export interface PlaybookAggregatorConfig {
@@ -79,18 +76,14 @@ export interface DeduplicationConfig {
 }
 
 export interface UserPlaybookExtractorConfig {
-	extractor_name: string;
 	extraction_definition_prompt: string;
 	context_prompt: string | null;
 	tagging_definition_prompt: string | null;
 	aggregation_config: PlaybookAggregatorConfig;
 	deduplication_config: DeduplicationConfig | null;
-	window_size_override: number | null;
-	stride_size_override: number | null;
 }
 
 export interface AgentSuccessConfig {
-	evaluation_name: string;
 	success_definition_prompt: string;
 	tagging_definition_prompt: string | null;
 	sampling_rate: number;
@@ -108,8 +101,10 @@ export interface ReflexioConfig {
 	profile_extractor_config: ProfileExtractorConfig | null;
 	user_playbook_extractor_config: UserPlaybookExtractorConfig | null;
 	agent_success_config: AgentSuccessConfig | null;
-	window_size: number;
-	stride_size: number;
+	profile_window_size: number;
+	profile_stride_size: number;
+	playbook_window_size: number;
+	playbook_stride_size: number;
 	api_key_config: APIKeyConfig | null;
 	llm_config: LLMConfig | null;
 	enable_document_expansion: boolean;
@@ -123,6 +118,20 @@ export const PRESET_VALUES: Record<ExtractionPreset, [number, number]> = {
 	long_form: [25, 10],
 	high_volume: [15, 8],
 };
+
+export function applyExtractionPreset(
+	config: ReflexioConfig,
+	preset: ExtractionPreset,
+): ReflexioConfig {
+	const [width, stride] = PRESET_VALUES[preset];
+	return {
+		...config,
+		profile_window_size: width,
+		profile_stride_size: config.profile_stride_size === 0 ? 0 : stride,
+		playbook_window_size: width,
+		playbook_stride_size: stride,
+	};
+}
 
 export const EXTRACTION_PRESET_LABELS: Record<ExtractionPreset, string> = {
 	quick_chat: "Quick chat (support bots, quick Q&A)",
@@ -139,8 +148,10 @@ export function defaultConfig(): ReflexioConfig {
 		profile_extractor_config: defaultProfileExtractor(),
 		user_playbook_extractor_config: defaultPlaybookExtractor(),
 		agent_success_config: null,
-		window_size: 10,
-		stride_size: 5,
+		profile_window_size: 10,
+		profile_stride_size: 8,
+		playbook_window_size: 10,
+		playbook_stride_size: 8,
 		api_key_config: null,
 		llm_config: null,
 		enable_document_expansion: false,
@@ -149,19 +160,14 @@ export function defaultConfig(): ReflexioConfig {
 
 export function defaultProfileExtractor(): ProfileExtractorConfig {
 	return {
-		extractor_name: "new_profile_extractor",
 		extraction_definition_prompt: "",
 		context_prompt: null,
 		tagging_definition_prompt: null,
-		manual_trigger: false,
-		window_size_override: null,
-		stride_size_override: null,
 	};
 }
 
 export function defaultPlaybookExtractor(): UserPlaybookExtractorConfig {
 	return {
-		extractor_name: "new_playbook_extractor",
 		extraction_definition_prompt: "",
 		context_prompt: null,
 		tagging_definition_prompt: null,
@@ -172,14 +178,11 @@ export function defaultPlaybookExtractor(): UserPlaybookExtractorConfig {
 			direction_overlap_threshold: 0.6,
 		},
 		deduplication_config: null,
-		window_size_override: null,
-		stride_size_override: null,
 	};
 }
 
 export function defaultAgentSuccess(): AgentSuccessConfig {
 	return {
-		evaluation_name: "new_evaluation",
 		success_definition_prompt: "",
 		tagging_definition_prompt: null,
 		sampling_rate: 1.0,
@@ -196,6 +199,24 @@ export function hydrateConfig(raw: unknown): ReflexioConfig {
 	const base = defaultConfig();
 	if (!raw || typeof raw !== "object") return base;
 	const incoming = raw as Partial<ReflexioConfig>;
+	const rawConfig = raw as Record<string, unknown>;
+	if (
+		["window_size", "stride_size"].some((key) => Object.hasOwn(rawConfig, key)) ||
+		["profile_extractor_config", "user_playbook_extractor_config"].some((key) => {
+			const extractor = rawConfig[key];
+			return (
+				extractor !== null &&
+				typeof extractor === "object" &&
+				["manual_trigger", "window_size_override", "stride_size_override"].some((field) =>
+					Object.hasOwn(extractor, field),
+				)
+			);
+		})
+	) {
+		throw new Error(
+			"This server uses retired extraction settings. Upgrade its saved configuration and reload before editing.",
+		);
+	}
 	const gateway = incoming.api_key_config?.custom_endpoint;
 	if (gateway && Object.hasOwn(gateway, "model")) {
 		throw new Error(
@@ -265,8 +286,11 @@ export function serializeConfig(config: ReflexioConfig) {
 
 	const cleanLlm = (llm: LLMConfig | null): LLMConfig | null => {
 		if (!llm) return null;
+		const { evaluation_model_name, ...otherModels } = llm;
+		const evaluationModel = clean(evaluation_model_name);
 		const out: LLMConfig = {
-			...llm,
+			...otherModels,
+			...(evaluationModel != null ? { evaluation_model_name: evaluationModel } : {}),
 			should_run_model_name: clean(llm.should_run_model_name),
 			generation_model_name: clean(llm.generation_model_name),
 			embedding_model_name: clean(llm.embedding_model_name),
@@ -335,8 +359,10 @@ export function serializeConfig(config: ReflexioConfig) {
 		profile_extractor_config: cleanExtractor(config.profile_extractor_config),
 		user_playbook_extractor_config: cleanExtractor(config.user_playbook_extractor_config),
 		agent_success_config: cleanAgentSuccess(config.agent_success_config),
-		window_size: config.window_size,
-		stride_size: config.stride_size,
+		profile_window_size: config.profile_window_size,
+		profile_stride_size: config.profile_stride_size,
+		playbook_window_size: config.playbook_window_size,
+		playbook_stride_size: config.playbook_stride_size,
 		api_key_config: cleanApiKeys(config.api_key_config),
 		llm_config: cleanLlm(config.llm_config),
 		enable_document_expansion: config.enable_document_expansion,

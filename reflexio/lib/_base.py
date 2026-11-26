@@ -17,8 +17,10 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.llm_utils import positive_int_env
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.configurator.base_configurator import BaseConfigurator
-from reflexio.server.services.storage.storage_base import BaseStorage
-from reflexio.server.site_var.site_var_manager import SiteVarManager
+from reflexio.server.services.storage.storage_base import (
+    BaseStorage,
+    storage_backend_name,
+)
 from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
@@ -58,14 +60,11 @@ def create_generation_litellm_client(
     request_context: RequestContext,
 ) -> LiteLLMClient:
     """Build the tenant client used by normal generation and aggregation."""
-    model_setting = SiteVarManager().get_site_var("llm_model_setting")
-    site_var = model_setting if isinstance(model_setting, dict) else {}
     config = request_context.configurator.get_config()
     api_key_config = config.api_key_config if config else None
     config_llm_config = config.llm_config if config else None
     generation_model_name = resolve_model_name(
         ModelRole.GENERATION,
-        site_var_value=site_var.get("default_generation_model_name"),
         llm_config=config_llm_config,
         api_key_config=api_key_config,
     )
@@ -120,15 +119,6 @@ def _require_storage[T: BaseModel](
         return wrapper
 
     return decorator
-
-
-def _storage_backend_name(storage: BaseStorage) -> str:
-    class_name = storage.__class__.__name__.lower()
-    if "postgres" in class_name:
-        return "postgres"
-    if "supabase" in class_name:
-        return "supabase"
-    return class_name
 
 
 class ReflexioBase:
@@ -204,18 +194,11 @@ class ReflexioBase:
         if not hasattr(self, "_query_reformulator"):
             from reflexio.server.services.pre_retrieval import QueryReformulator
 
-            # Resolve pre_retrieval_model_name: config override → site var → auto-detect
-            model_setting = SiteVarManager().get_site_var("llm_model_setting")
-            site_var = model_setting if isinstance(model_setting, dict) else {}
             config = self.request_context.configurator.get_config()
-            config_llm_config = config.llm_config if config else None
-            api_key_config = config.api_key_config if config else None
-
             pre_retrieval_model_name = resolve_model_name(
                 ModelRole.PRE_RETRIEVAL,
-                site_var_value=site_var.get("pre_retrieval_model_name"),
-                llm_config=config_llm_config,
-                api_key_config=api_key_config,
+                llm_config=config.llm_config if config else None,
+                api_key_config=config.api_key_config if config else None,
             )
 
             self._query_reformulator = QueryReformulator(
@@ -244,7 +227,7 @@ class ReflexioBase:
             return None
         with profile_step(
             "search.embedding",
-            backend=_storage_backend_name(storage),
+            backend=storage_backend_name(storage),
             search_mode=search_mode,
             purpose="query",
         ) as span:

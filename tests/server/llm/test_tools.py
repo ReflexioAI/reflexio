@@ -359,7 +359,8 @@ def test_run_tool_loop_returns_structured_terminus_provenance(monkeypatch):
         ),
         provenance,
     )
-    client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
+    client = LiteLLMClient(LiteLLMConfig(model="local-cli/claude-code"))
     generate = MagicMock(return_value=response)
     monkeypatch.setattr(client, "generate_chat_response_with_provenance", generate)
 
@@ -1150,3 +1151,80 @@ def test_structured_finish_preserves_pending_tool_ids(monkeypatch, wrapped):
         message.get("role") == "tool" and "request_pending" in message["content"]
         for message in result.messages
     )
+
+
+@pytest.fixture
+def clean_circuit():
+    from reflexio.server.llm.provider_circuit import provider_circuit
+
+    provider_circuit.reset()
+    yield
+    provider_circuit.reset()
+
+
+def _tool_loop_error_levels(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    error: Exception,
+) -> list[int]:
+    """Run a loop whose LLM call raises ``error``; return the error log levels."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    def _emit_handler(args: BaseModel, c: LoopCtx) -> dict:
+        return {"ok": True}
+
+    reg = ToolRegistry([Tool(name="emit", args_model=EmitArgs, handler=_emit_handler)])
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+
+    def boom(**_kwargs):
+        raise error
+
+    monkeypatch.setattr(client, "generate_chat_response_with_provenance", boom)
+    with caplog.at_level(logging.DEBUG, logger="reflexio.server.llm.tools"):
+        result = run_tool_loop(
+            client=client,
+            messages=[{"role": "user", "content": "go"}],
+            registry=reg,
+            model_role=ModelRole.EXTRACTION_AGENT,
+            max_steps=5,
+            ctx=LoopCtx(),
+            finish_tool_name="finish",
+        )
+    assert result.finished_reason == "error"
+    return [
+        r.levelno
+        for r in caplog.records
+        if r.name == "reflexio.server.llm.tools"
+        and "event=tool_loop_llm_error" in r.getMessage()
+    ]
+
+
+def test_tool_loop_logs_provider_circuit_refusal_at_info(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    clean_circuit: None,
+) -> None:
+    """A breaker refusal is the outage the breaker already reported: INFO."""
+    from reflexio.server.llm.provider_circuit import (
+        ProviderCircuitOpenError,
+        circuit_route,
+    )
+
+    refused = ProviderCircuitOpenError("provider circuit open")
+    refused.circuit_route = circuit_route(  # type: ignore[attr-defined]
+        {"model": "claude-sonnet-4-6"}
+    )
+
+    assert _tool_loop_error_levels(monkeypatch, caplog, refused) == [logging.INFO]
+
+
+def test_tool_loop_logs_non_outage_llm_error_at_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    clean_circuit: None,
+) -> None:
+    """A failure that is not an already-reported outage stays a WARNING."""
+    error = LiteLLMClientError("API call failed: bad request")
+
+    assert _tool_loop_error_levels(monkeypatch, caplog, error) == [logging.WARNING]

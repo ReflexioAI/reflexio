@@ -1088,13 +1088,14 @@ class RuleEvidenceAttemptRunner:
             TimeoutError,
         ) as exc:
             reason: AttemptTerminalFailureReason = "infrastructure_failure"
-            # Retry-eligible, not day-spending: the analyst's budget ran out on
-            # a rate limit, or the provider is down for every caller (the
-            # durable-extraction classification). A refusal from an open
-            # breaker, e.g. during compaction, never reached the provider.
+            # Recoverable availability failures use the existing bounded sweep
+            # retry path even when this route's breaker remains closed. This
+            # still terminalizes THIS job and retains its consumed/reserved
+            # invocations: it neither refunds a sent call nor retries inline.
+            # The scheduler owns cooldown and the per-playbook daily ceiling.
             rate_limited = isinstance(
                 exc, OpenWorldProviderRateLimitedError
-            ) or isinstance(classify_llm_failure(exc), OutageWait)
+            ) or isinstance(classify_llm_failure(exc), (OutageWait, Transient))
             if isinstance(exc, OpenWorldRefusalError):
                 reason = cast(
                     AttemptTerminalFailureReason, terminal_reason_for(exc.refusal)

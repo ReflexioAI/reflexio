@@ -8,17 +8,18 @@ from unittest.mock import patch
 
 import pytest
 
-from reflexio.server.llm.providers import claude_code_provider as ccp
-from reflexio.server.llm.providers.claude_code_provider import (
+from reflexio.server.llm.providers import native_cli_provider as ccp
+from reflexio.server.llm.providers.native_cli_provider import (
     ClaudeCodeCLIError,
-    ClaudeCodeLLM,
+    NativeCLILLM,
 )
 
 
 @pytest.fixture
-def llm(storage):
-    """ClaudeCodeLLM bound to the test storage with a resolvable fake CLI path."""
-    return ClaudeCodeLLM(cli_path="/usr/local/bin/claude", storage=storage)
+def llm(storage, monkeypatch):
+    """NativeCLILLM bound to the test storage with a resolvable fake CLI path."""
+    monkeypatch.setenv("REFLEXIO_NATIVE_CLI_MODEL", "local-cli/claude-code")
+    return NativeCLILLM(cli_path="/usr/local/bin/claude", storage=storage)
 
 
 def _mock_run(returncode: int, stdout: str, stderr: str = ""):
@@ -32,7 +33,7 @@ def test_clean_run_clears_stall(llm, storage):
     stream = '{"type":"result","result":"ok","session_id":"s"}\n'
     with patch.object(ccp.subprocess, "run", return_value=_mock_run(0, stream)):
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "hi"}],
         )
     assert storage.get_stall_state().stalled is False
@@ -52,7 +53,7 @@ def test_billing_failure_writes_stall(llm, storage):
         pytest.raises(ClaudeCodeCLIError),
     ):
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "hi"}],
         )
     state = storage.get_stall_state()
@@ -71,7 +72,7 @@ def test_transient_failure_does_not_stall(llm, storage):
         pytest.raises(ClaudeCodeCLIError),
     ):
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "hi"}],
         )
     assert storage.get_stall_state().stalled is False
@@ -92,7 +93,7 @@ def test_prior_stall_cleared_after_successful_run(llm, storage):
     stream = '{"type":"result","result":"recovered","session_id":"s"}\n'
     with patch.object(ccp.subprocess, "run", return_value=_mock_run(0, stream)):
         llm.completion(
-            model="claude-code/default",
+            model="local-cli/claude-code",
             messages=[{"role": "user", "content": "hi"}],
         )
     assert storage.get_stall_state().stalled is False

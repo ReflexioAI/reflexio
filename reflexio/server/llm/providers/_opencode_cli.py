@@ -5,18 +5,22 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
-import tempfile
-import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from reflexio.opencode_executable import OpenCodeCLIError, resolve_executable
 from reflexio.server.llm._litellm_types import LLMHardTimeoutError
 from reflexio.server.llm._native_cli import (
-    native_cli_directory,
-    request_timeout_seconds,
+    make_private_cli_directory,
+    release_private_cli_directory,
+    remaining_native_time,
     run_native_cli,
+)
+from reflexio.server.llm._native_model_ref import (
+    OPENCODE_CHILD_ENV,
+    native_child_path_environment,
+    reject_native_selection,
 )
 from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
@@ -27,8 +31,57 @@ from reflexio.server.llm.providers.claude_code_stream_parser import (
 _AGENT = "claude-smart-extractor"
 
 
-class OpenCodeCLIError(RuntimeError):
-    """Metadata-only transport failure; never includes captured model/error text."""
+def _declared_run_options(help_text: str) -> set[str]:
+    """Recognize declared CLI capabilities, never mentions in diagnostic prose."""
+    return set(
+        re.findall(
+            r"(?m)^\s*(?:-[A-Za-z0-9],\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=[,\s=]|$)",
+            help_text,
+        )
+    )
+
+
+def _run_options(help_text: str) -> set[str]:
+    options = _declared_run_options(help_text)
+    if not {"--model", "--agent", "--format", "--title"} <= options:
+        raise OpenCodeCLIError("OpenCode CLI capabilities are unsupported")
+    if "--standalone" in options or {"--attach", "--variant"} <= options:
+        return options
+    raise OpenCodeCLIError("OpenCode CLI capabilities are unsupported")
+
+
+def _wire_argument(option: str, value: str, *, legacy_wire: bool) -> list[str]:
+    # Older wrappers consume separate tokens. Bind a flag-shaped value inline
+    # so it can never become another option on either command line.
+    if legacy_wire and not value.startswith("-"):
+        return [option, value]
+    return [f"{option}={value}"]
+
+
+def _model_arguments(
+    model: str | None,
+    options: set[str],
+    *,
+    wire: Literal["native", "plugin", "optimizer"],
+) -> list[str]:
+    if not model:
+        return []
+    legacy_wire = wire != "native"
+    selected, separator, variant = model.partition("#")
+    if separator and ("--standalone" not in options or not selected):
+        if "--variant" not in options:
+            reject_native_selection(
+                "Selected OpenCode CLI does not support a variant without a model"
+            )
+        flags = (
+            _wire_argument("--model", selected, legacy_wire=legacy_wire)
+            if selected
+            else []
+        )
+        return flags + _wire_argument(
+            "--variant", variant, legacy_wire=wire == "optimizer"
+        )
+    return _wire_argument("--model", model, legacy_wire=legacy_wire)
 
 
 def _error_message(error: Any) -> str:
@@ -114,26 +167,23 @@ def run_opencode(
     system_prompt: str,
     dialogue: str,
     model: str | None,
-    timeout_seconds: float,
+    deadline: float,
+    wire: Literal["native", "plugin", "optimizer"] = "native",
 ) -> ParseResult:
     """Launch the actual native executable; retain delegated scratch with its owner."""
-    deadline = time.monotonic() + request_timeout_seconds(timeout_seconds)
-    owner = native_cli_directory()
+    legacy_wire = wire != "native"
+    selected, separator, variant = (model or "").partition("#")
+    if separator and ((selected and not selected.strip()) or not variant.strip()):
+        reject_native_selection("OpenCode model variant reference is invalid")
     directory: Path | None = None
     try:
-        selected = Path(cli_path)
-        if not selected.is_file():
-            found = shutil.which(cli_path)
-            if not found:
-                raise OpenCodeCLIError("OpenCode native executable not found")
-            selected = Path(found)
-        executable = selected.absolute()
+        executable = resolve_executable(cli_path)
         if os.name == "nt" and executable.suffix.lower() != ".exe":
             raise OpenCodeCLIError(
                 "Native OpenCode requires an .exe; select it with CLAUDE_SMART_CLI_PATH. "
-                "Batch shims require the existing compatibility bridge."
+                "Use an npm package with a native .exe or keep the compatibility bridge for older and custom launchers."
             )
-        directory = Path(tempfile.mkdtemp(prefix="opencode-", dir=owner)).resolve()
+        directory = make_private_cli_directory("opencode-")
         config_dir = directory / ".opencode"
         config_dir.mkdir()
         (config_dir / "opencode.json").write_text(
@@ -153,35 +203,58 @@ def run_opencode(
             ),
             encoding="utf-8",
         )
-        argv = [str(executable), "run", "--format", "json", "--agent", _AGENT]
-        if model:
-            argv += ["--model", model]
         env = {
             **os.environ,
+            # Path variables reach the child anchored here, not in its cwd.
+            **native_child_path_environment(),
             "PWD": str(directory),
-            "OPENCODE_PURE": "1",
-            "CLAUDE_SMART_HOST": "opencode",
+            **OPENCODE_CHILD_ENV,
             "CLAUDE_SMART_INTERNAL": "1",
             "CLAUDE_CODE_ENTRYPOINT": "optimizer",
         }
         prompt = (
             f"{system_prompt}\n\n## Task\n{dialogue}" if system_prompt else dialogue
         )
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise OpenCodeCLIError("OpenCode request deadline expired before launch")
+        capture = {
+            "cwd": str(directory),
+            "env": env,
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace" if os.name == "nt" else "strict",
+            "check": False,
+        }
         try:
+            options: set[str] = set()
+            # The plugin bridge only needed discovery for variant references.
+            # In particular, a CLI wrapper may implement generation without help.
+            if not legacy_wire or separator:
+                discovery = run_native_cli(
+                    [str(executable), "run", "--help"],
+                    input="",
+                    timeout=remaining_native_time(deadline),
+                    **capture,
+                )
+                if discovery.returncode != 0:
+                    raise OpenCodeCLIError("OpenCode CLI capability discovery failed")
+                help_text = discovery.stdout + "\n" + discovery.stderr
+                options = (
+                    _declared_run_options(help_text)
+                    if legacy_wire
+                    else _run_options(help_text)
+                )
+            standalone = "--standalone" in options
+            argv = [str(executable), "run", "--format", "json", "--agent", _AGENT]
+            if not legacy_wire:
+                argv.extend(["--title", _AGENT])
+                if standalone:
+                    argv.append("--standalone")
+            argv.extend(_model_arguments(model, options, wire=wire))
             result = run_native_cli(
                 argv,
                 input=prompt,
-                cwd=str(directory),
-                env=env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace" if os.name == "nt" else "strict",
-                timeout=remaining,
-                check=False,
+                timeout=remaining_native_time(deadline),
+                **capture,
             )
         except subprocess.TimeoutExpired:
             raise OpenCodeCLIError("OpenCode request timed out") from None
@@ -195,17 +268,17 @@ def run_opencode(
             raise OpenCodeCLIError(
                 "OpenCode native executable could not start"
             ) from None
-        return parse_output(result.stdout, result.returncode, result.stderr)
+        parsed = parse_output(result.stdout, result.returncode, result.stderr)
+        remaining_native_time(deadline)
+        return parsed
     except LLMHardTimeoutError:
         raise
     except OSError:
         raise OpenCodeCLIError("OpenCode private workdir setup failed") from None
     finally:
-        # Worker death cannot delete a running delegated CLI's cwd. The parent
-        # owns the whole directory until its native retirement receipt.
-        if owner is None and directory is not None:
+        if directory is not None:
             try:
-                shutil.rmtree(directory)
+                release_private_cli_directory(directory)
             except OSError:
                 raise OpenCodeCLIError(
                     "OpenCode private workdir cleanup failed"

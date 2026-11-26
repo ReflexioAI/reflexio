@@ -272,7 +272,7 @@ See [`client_ts/`](client_ts/README.md) for the full TypeScript client guide.
 
 - Extracts stable facts about users and their environments with one configurable profile extractor
 - Supports versioning (current → pending → archived) with upgrade/downgrade workflows
-- Supports global extraction windows and strides with profile-specific overrides
+- Supports independent profile and playbook extraction windows and strides
 
 [Read more about user profiles →](https://www.reflexio.ai/docs/concepts/user-profiles)
 
@@ -342,6 +342,7 @@ cost improvements; measure those separately.
 
 - OpenAI and Azure OpenAI, Anthropic, OpenRouter, Google Gemini, MiniMax, DeepSeek, DashScope/Qwen, Zhipu AI/GLM, Moonshot/Kimi, xAI/Grok, and custom OpenAI-compatible endpoints
 - Powered by LiteLLM — configure your preferred provider via API keys or custom endpoints
+- [Native CLI model selection and explicit upgrades](docs/native-cli-model-selection.md)
 - [OpenAI-compatible gateway configuration and verified limits](developer.md#openai-compatible-gateways-including-orcarouter-492)
 
 DashScope's optional `api_key_config.dashscope.api_base` uses the same HTTP URL
@@ -404,14 +405,32 @@ playbooks = client.get_agent_playbooks(agent_version="v1")
 # Apply a targeted configuration change without resending the full Config.
 client.update_config(
     {
-        "window_size": 20,
-        "stride_size": 10,
+        "profile_window_size": 20,
+        "profile_stride_size": 10,
+        "playbook_window_size": 20,
+        "playbook_stride_size": 10,
     }
 )
 ```
 
 Use `set_config()` only when replacing the complete configuration, including
 its required `storage_config`.
+
+Profiles and playbooks each own a window size (history per extraction) and a
+stride (new interactions before the next extraction). Both pairs default to
+10/8 and can be adjusted independently. Automatic extraction requires a positive
+stride no greater than its window at admission, after source/manual eligibility
+is resolved. Configuration reads and manual operations retain positive pairs
+without imposing automatic cadence on those operations.
+
+This replaces the shared `window_size` / `stride_size` and each extractor's
+`window_size_override` / `stride_size_override`. Fresh configuration rejects
+those names, including null values. Stop older writers before preparing a saved
+local file with the current launcher. File generation 15 converts each old
+pair to its effective per-kind values and requires the storage upgrade owner's
+admission before startup can publish the prepared file. An offline copy can be
+created with `reflexio config upgrade-file SOURCE --output DESTINATION`; keep the
+original. File conversion does not authorize a retained database upgrade.
 
 ## Integrations
 
@@ -655,7 +674,7 @@ new input can close. It returns as soon as every eligible cursor is either cover
 or waiting for input, reporting `learning_status="deferred"` with
 `learning_reason="waiting_for_window"`. Poll `GET /api/learning_status` with the
 returned `request_id` to see coverage complete later. Note the practical
-consequence of the default `window_size` of 10: a brand-new user's first window
+consequence of the default per-kind window size of 10: a brand-new user's first window
 normally needs ten eligible interactions, so an incomplete first publish returns
 uncovered until more input, an optional completion hint, or its idle deadline.
 Reserve `force_extraction` for an explicit manual bypass of the judge.
@@ -737,14 +756,21 @@ supplied; overlapping health probes never run overlapping warmups, including
 when a slow prediction continues after its health request times out. The worker
 remains unready until a real prediction succeeds.
 
-Set `REFLEXIO_SEARCH_RERANK_SERVICE_URL` to the same endpoint as
-`REFLEXIO_QUERY_EMBEDDING_SERVICE_URL` to route retrieval relevance scoring there.
-The client verifies matching immutable vector contracts, the same configured
-reranker as the shared worker, and a ready search workload. Generic
-`score_pairs`/`score_pairs_with_model` calls keep shared routing; retrieval uses
-the explicit `score_search_pairs` helpers. Unset search routing preserves the
-existing path. Failed isolated calls do not retry against the shared worker;
-retrieval retains its existing unavailable-reranker behavior and deadlines.
+Point `REFLEXIO_QUERY_EMBEDDING_SERVICE_URL` at the worker for reserved search.
+The client binds the workload advertised by `/health` and the immutable vector
+contract in `/health/model`. It verifies that the
+reserved worker has the same configured reranker as the shared worker. Generic
+reranks use the shared service. A query-only worker leaves search reranking
+on the shared service too. A supervised API can bind the role of its own
+query-only child at startup, so a later outage does not affect shared
+reranking. Attached workers are qualified by their advertised workload. Failed reserved reranks
+retain the existing unavailable-reranker behavior and deadlines.
+
+Remove the retired `REFLEXIO_SEARCH_RERANK_SERVICE_URL` assignment, including
+any blank assignment. Deploy the worker with the query workload if you
+previously used a search worker for query embeddings alone. Custom query
+workers must expose a query or search workload in `/health`. Restart clients
+when changing worker roles.
 
 Local inference uses one CPU numerical-library budget, `REFLEXIO_NATIVE_COMPUTE_THREADS`
 (positive integer, default **2**). The owner in `reflexio/native_compute.py`

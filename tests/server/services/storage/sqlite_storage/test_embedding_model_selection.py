@@ -15,14 +15,17 @@ from reflexio.server.site_var.site_var_manager import SiteVarManager
 def test_embedding_selection_ignores_legacy_sitevar_and_honors_config(
     tmp_path: Path, legacy_model: str | None, override: str | None
 ) -> None:
-    settings = {"default_generation_model_name": "openai/gpt-4o-mini"}
+    settings = {}
     if legacy_model is not None:
         settings["embedding_model_name"] = legacy_model
     with patch.object(SiteVarManager, "get_site_var", return_value=settings):
         storage = SQLiteStorage(
             org_id="model-selection",
             db_path=str(tmp_path / "storage.db"),
-            llm_config=LLMConfig(embedding_model_name=override),
+            llm_config=LLMConfig(
+                embedding_model_name=override,
+                generation_model_name="openai/gpt-4o-mini",
+            ),
         )
     try:
         assert storage.embedding_model_name == (override or "local/minilm-l6-v2")

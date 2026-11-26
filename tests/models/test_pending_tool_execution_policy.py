@@ -125,7 +125,14 @@ def test_file_and_cli_propagate_new_migration_error_families(tmp_path):
     storage = LocalFileConfigStorage("future-policy", base_dir=str(tmp_path))
     path = Path(storage.config_file)
     path.parent.mkdir(parents=True)
-    before = json.dumps({"storage_config": {"type": "sqlite"}})
+    from reflexio.config_file import FILE_FORMAT_VERSION
+
+    before = json.dumps(
+        {
+            "_reflexio_config_file": {"version": FILE_FORMAT_VERSION},
+            "storage_config": {"type": "sqlite"},
+        }
+    )
     path.write_text(before)
     with patch(
         "reflexio.server.services.configurator.local_file_config_storage.validate_stored_config",
@@ -172,7 +179,11 @@ def test_oss_startup_ignores_obsolete_value_with_diagnostic(tmp_path, name):
     home = tmp_path / "home"
     home.mkdir()
     result = subprocess.run(  # noqa: S603 -- Fixed interpreter/script, isolated HOME/env.
-        [sys.executable, "-c", "import reflexio.server; print('startup-ready')"],
+        [
+            sys.executable,
+            "-c",
+            "from reflexio.server import initialize_server_runtime; initialize_server_runtime(); print('startup-ready')",
+        ],
         env={
             "PATH": os.environ["PATH"],
             "HOME": str(home),

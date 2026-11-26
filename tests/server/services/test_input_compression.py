@@ -592,6 +592,115 @@ def test_priced_wire_overhead_of_many_distinct_short_origins_fits_all_parents():
     assert result.output_tokens <= 10000
 
 
+@pytest.mark.parametrize(
+    ("input_tokens", "section_tokens", "source_count", "long_ids", "shared_origin"),
+    [
+        (32768, 10000, 650, False, False),
+        (131072, 45000, 2400, False, False),
+        (32768, 10000, 650, True, False),
+        (32768, 6000, 650, False, True),
+    ],
+)
+def test_native_reductions_price_allowed_refs_and_globally_renumbered_aliases(
+    input_tokens, section_tokens, source_count, long_ids, shared_origin
+):
+    import math
+
+    from reflexio.server.services.input_compression import packet_tokens
+    from reflexio.server.services.input_compression_llm import _ReferenceSelection
+
+    # Short, distinct origins make metadata/selector overhead significant.
+    # Source IDs remain host-owned; their length cannot be a wire-size shortcut.
+    sources = [
+        source(i, "x").model_copy(
+            update={
+                "source_id": f"source-{i:064d}" if long_ids else str(i),
+                "request_id": f"request-{i:064d}" if long_ids else str(i),
+                "speaker": "agent",
+                **(
+                    {
+                        "interaction_id": 1,
+                        "source_order": 1,
+                        "request_id": "shared-request",
+                        "start": i,
+                    }
+                    if shared_origin
+                    else {}
+                ),
+            }
+        )
+        for i in range(1, source_count + 1)
+    ]
+    schema = _ReferenceSelection.model_json_schema()
+    calls = []
+
+    def choose_groups(call):
+        payload = json.loads(call.messages[1]["content"])
+        refs = [s["source_id"] for p in payload["input_packets"] for s in p["evidence"]]
+        priced = json.dumps(
+            {"messages": call.messages, "schema": schema},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        assert math.ceil(compression_tokens(priced) * 1.2) <= input_tokens
+        calls.append((len(payload["input_packets"]), len(refs)))
+        # At most 128 independently ranked whole groups; the host may keep a
+        # bounded subset but must not sever a group's qualifying citations.
+        width = math.ceil(len(refs) / 128)
+        return CompressionChoice(
+            points=[
+                CompressionPoint(
+                    category="selected_evidence",
+                    evidence_refs=refs[index : index + width],
+                )
+                for index in range(0, len(refs), width)
+            ]
+        )
+
+    result = run(
+        sources,
+        complete=choose_groups,
+        policy="offline_tuning",
+        response_schema=schema,
+        required_speakers=("agent",),
+        budget=CompressionBudget(
+            output_tokens=source_count * 250,
+            input_tokens=input_tokens,
+            section_tokens=section_tokens,
+        ),
+        measure_output=lambda packet: packet_tokens(packet) * 10,
+        output_contract="expanded-native-test-v1",
+    )
+    assert result.sections > 2
+    assert any(packets == 2 for packets, _refs in calls)
+    assert result.packet.evidence and result.packet.omission_counts.capacity_points > 0
+    assert result.calls <= 2 * result.sections - 1
+    originals = {s.interaction_id: s for s in sources}
+    assert all(
+        s.text == originals[s.interaction_id].text for s in result.packet.evidence
+    )
+    assert all(
+        set(point.evidence_refs) <= {s.source_id for s in result.packet.evidence}
+        for point in result.packet.points
+    )
+
+
+def test_reduction_budget_revision_changes_plan_and_cache_authority(monkeypatch):
+    import reflexio.server.services.input_compression as compression
+
+    originals = [source(text="Require approval.\n" + "status " * 1700)]
+    cache = {}
+    with monkeypatch.context() as previous:
+        previous.setattr(compression, "VERSION", "source-compression-v6")
+        old = plan(originals)
+        old.execute(complete=selected, save=cache.__setitem__)
+    current = plan(originals)
+    assert current.witness != old.witness
+    result = current.execute(complete=selected, load=cache.get)
+    assert result.calls > 0 and result.cache_hits == 0
+
+
 def test_measurement_integrity_errors_are_not_converted_to_budget_omissions():
     from reflexio.server.services.input_compression import _pack_choice
 

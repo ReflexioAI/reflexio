@@ -24,10 +24,11 @@ from reflexio.server.llm._litellm_types import (
     ModelProvenance,
     ProviderRequestGuardError,
 )
+from reflexio.server.llm.call_deadline import model_call_deadline, model_deadline
 from reflexio.server.llm.failure import OutageWait, classify_llm_failure
 from reflexio.server.llm.input_budget import (
     ComputationEvidenceChangedError,
-    InputBudgetConfigurationError,
+    ExtractionInputIntegrityError,
     InputBudgetExceededError,
     OutputTruncatedRequestError,
     ProviderInputOverflowError,
@@ -88,7 +89,7 @@ def legacy_observed_usage(payload: dict[str, Any] | None) -> dict[str, int] | No
         return None
     totals = asdict(sum_trace_tokens(trace))
     if any(type(value) is not int or value < 0 for value in totals.values()):
-        raise InputBudgetConfigurationError("Invalid observed historical usage")
+        raise ExtractionInputIntegrityError("Invalid observed historical usage")
     return totals
 
 
@@ -164,7 +165,7 @@ class OverflowCoordinator:
             or set(legacy) != set(asdict(RunTokenTotals()))
             or any(type(value) is not int or value < 0 for value in legacy.values())
         ):
-            raise InputBudgetConfigurationError("Invalid observed historical usage")
+            raise ExtractionInputIntegrityError("Invalid observed historical usage")
         self.storage, self.window, self.token = storage, window, token
         self.source_digest = source_digest
         self.context_limits = dict(context_limits)
@@ -228,7 +229,7 @@ class OverflowCoordinator:
             or any(char not in "0123456789abcdef" for char in receipt_key)
             or self._profile_request.get() is not None
         ):
-            raise InputBudgetConfigurationError("Profile package request changed")
+            raise ExtractionInputIntegrityError("Profile package request changed")
         self.validate_current_parent()
         binding = self._profile_request.set(
             (preparation, stage, copy.deepcopy(messages), receipt_key)
@@ -265,7 +266,7 @@ class OverflowCoordinator:
                 for identity in identities
             )
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Profile result lacks bound paid attempts"
             )
 
@@ -313,7 +314,7 @@ class OverflowCoordinator:
             or minimum_remaining_attempts < 0
             or self._attempt_stage.get() is not None
         ):
-            raise InputBudgetConfigurationError("Invalid package attempt stage")
+            raise ExtractionInputIntegrityError("Invalid package attempt stage")
         identities: list[str] = []
         token = self._attempt_stage.set((stage, minimum_remaining_attempts, identities))
         try:
@@ -371,7 +372,7 @@ class OverflowCoordinator:
             or run.generation_request_snapshot.get("output_schema_name")
             not in ((schema, None) if self.window.kind == "profile" else (schema,))
         ):
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Candidate lacks a scoped legacy adoption contract"
             )
         prepared = self.require_prepared()
@@ -384,7 +385,7 @@ class OverflowCoordinator:
     def _verify_adopted_record(self, record: ProtectedRecord) -> ProtectedRecord:
         run = self.saved_run
         if run is None:
-            raise InputBudgetConfigurationError("Saved adoption source is unavailable")
+            raise ExtractionInputIntegrityError("Saved adoption source is unavailable")
         spans = tuple(
             span
             for chunk in self.require_prepared().chunks
@@ -430,7 +431,7 @@ class OverflowCoordinator:
     def package_protocol(self) -> dict[str, Any]:
         """Return the frozen package descriptor without exposing mutable state."""
         if self._manifest["version"] != 2:
-            raise InputBudgetConfigurationError("Extraction is not package protocol")
+            raise ExtractionInputIntegrityError("Extraction is not package protocol")
         return copy.deepcopy(self._manifest["input_protocol"])
 
     @contextmanager
@@ -499,6 +500,12 @@ class OverflowCoordinator:
                     "Remaining extraction work exceeds provider attempt budget"
                 )
 
+    @property
+    def attempt_count(self) -> int:
+        """Physical reservations remain charged when a consumer resumes."""
+        with self._lock:
+            return len(self._manifest["attempts"])
+
     def _advance(self, **change: Any) -> None:
         with self._lock, self._parent_write():
             if self._manifest["version"] == 2:
@@ -523,7 +530,7 @@ class OverflowCoordinator:
             current = checkpoint.get(KEY)
             if current is not None:
                 if current["operation_key"] != key or current["limit"] != limit:
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Reconciliation source contract changed"
                     )
                 return
@@ -532,7 +539,7 @@ class OverflowCoordinator:
                 or checkpoint.get("audited_consolidation_budget")
                 or checkpoint.get("audited_conversation")
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Admitted reconciliation protocol cannot change"
                 )
             checkpoint[KEY] = {
@@ -612,7 +619,7 @@ class OverflowCoordinator:
                     and self.saved_run.binding.agent_version != playbook.agent_version
                 )
             ):
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Historical playbook scope or status changed"
                 )
             key = str(playbook.user_playbook_id)
@@ -627,7 +634,7 @@ class OverflowCoordinator:
                 witnesses[key] = digest
                 changed = True
         if len(witnesses) > 128:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Historical playbook witness limit exceeded"
             )
         if changed:
@@ -640,7 +647,7 @@ class OverflowCoordinator:
         contract = {"key": key, "policy": checkpoint.get("extraction_policy")}
         previous = children.get(identity)
         if previous is not None and previous != contract:
-            raise InputBudgetConfigurationError("Extraction child contract changed")
+            raise ExtractionInputIntegrityError("Extraction child contract changed")
         if previous is None:
             children[identity] = contract
             self.save_checkpoint(checkpoint)
@@ -723,7 +730,7 @@ class OverflowCoordinator:
     def complete_selection_step(self, key: str, receipt: dict[str, Any]) -> None:
         """Save a host-normalized selection without inventing authored provenance."""
         if self._manifest["version"] != 2:
-            raise InputBudgetConfigurationError(
+            raise ExtractionInputIntegrityError(
                 "Selection receipts require package protocol"
             )
         with self._lock:
@@ -838,8 +845,15 @@ class OverflowCoordinator:
         # Don't start a call that can outlive this turn. Each fallback/repair
         # reaches this boundary again, so a late rung yields without dispatch.
         remaining = self._deadline - time.monotonic()
-        if hard_timeout <= 0 or hard_timeout + 5 > remaining:
-            logger.warning(
+        # provider_scope already leaves this margin in the shared physical
+        # call deadline. Do not reserve it a second time against a timeout
+        # sampled just before this guard (which would always lose microseconds).
+        caller = model_call_deadline.get()
+        reserve = 0 if caller is not None and caller <= self._deadline - 5 else 5
+        if hard_timeout <= 0 or hard_timeout + reserve > remaining:
+            # Routine continuation, not a fault: the window resumes next turn,
+            # and one that never finishes surfaces as a failed window.
+            logger.info(
                 "event=extraction_turn_suspended reason=turn_budget kind=%s "
                 "window_id=%s model=%s request_fingerprint=%s "
                 "hard_timeout_seconds=%.1f turn_seconds_left=%.1f",
@@ -856,7 +870,7 @@ class OverflowCoordinator:
         stage = self._attempt_stage.get()
         if self._manifest["version"] == 2:
             if stage is None:
-                raise InputBudgetConfigurationError(
+                raise ExtractionInputIntegrityError(
                     "Package dispatch lacks stage attribution"
                 )
             if stage[0] != "compress":
@@ -870,13 +884,13 @@ class OverflowCoordinator:
                     "ladders"
                 ][ladder_name]
                 if _ladder != tuple(expected_ladder):
-                    raise InputBudgetConfigurationError(
+                    raise ExtractionInputIntegrityError(
                         "Package consumer model ladder changed"
                     )
                 if self.window.kind == "profile":
                     binding = self._profile_request.get()
                     if binding is None or binding[1] != ladder_name:
-                        raise InputBudgetConfigurationError(
+                        raise ExtractionInputIntegrityError(
                             "Profile package dispatch lacks its request contract"
                         )
                     binding[0].check_request(
@@ -899,7 +913,7 @@ class OverflowCoordinator:
                         context is None
                         or (context["operation_key"], context["limit"]) != operation
                     ):
-                        raise InputBudgetConfigurationError(
+                        raise ExtractionInputIntegrityError(
                             "Reconciliation reservation changed"
                         )
                     if len(context["attempt_ids"]) >= operation[1]:
@@ -1081,7 +1095,13 @@ class OverflowCoordinator:
         exhaustion_token = extraction_reasoning_exhaustion.set(self)
         identity_token = extraction_request_identity.set(None)
         try:
-            yield
+            # This scope also encloses main-thread consolidation and embeddings,
+            # not just extractor futures. The existing five-second finish
+            # margin belongs to the absolute owner, not each new model walk.
+            if time.monotonic() >= self._deadline - 5:
+                raise OverflowSuspendedError("Extraction turn needs continuation")
+            with model_deadline(self._deadline - 5):
+                yield
         finally:
             extraction_request_identity.reset(identity_token)
             extraction_reasoning_exhaustion.reset(exhaustion_token)

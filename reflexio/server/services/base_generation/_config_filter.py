@@ -1,7 +1,7 @@
 """Config-filtering helpers for ``BaseGenerationService`` (Tier-1b decomposition).
 
 ``ConfigFilterMixin`` holds the concrete, non-abstract config-filter helpers:
-``_filter_extractor_config_by_service_config`` (source/manual-trigger filtering),
+``_filter_extractor_config_by_service_config`` (request-source filtering),
 ``_get_extractor_state_service_name`` (stride bookmark service name, overridable),
 and ``_filter_config_by_stride`` (pre-LLM stride_size gate). The abstract config
 LOADERS (``_load_extractor_config``, ``_load_generation_service_config``,
@@ -12,8 +12,9 @@ concrete helpers. Method bodies are moved verbatim from the former monolithic
 """
 
 import logging
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
+from reflexio.models.extraction_window import ExtractionWindow
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.extractor_config_utils import (
     filter_extractor_configs,
@@ -21,7 +22,6 @@ from reflexio.server.services.extractor_config_utils import (
 )
 from reflexio.server.services.extractor_interaction_utils import (
     get_effective_source_filter,
-    get_extractor_window_params,
     should_extractor_run_by_stride,
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
@@ -50,18 +50,21 @@ class ConfigFilterMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
     org_id: str
     request_context: RequestContext
 
+    if TYPE_CHECKING:
+
+        def _get_extraction_window(self) -> ExtractionWindow: ...
+
     def _filter_extractor_config_by_service_config(
         self,
         extractor_config: TExtractorConfig,
         service_config: TGenerationServiceConfig,
     ) -> TExtractorConfig | None:
         """
-        Filter the extractor config based on request_sources_enabled and manual_trigger.
+        Filter the extractor config by its configured request sources.
         """
         filtered = filter_extractor_configs(
             extractor_configs=[extractor_config],
             source=getattr(service_config, "source", None),
-            allow_manual_trigger=getattr(service_config, "allow_manual_trigger", False),
         )
         return filtered[0] if filtered else None
 
@@ -89,7 +92,7 @@ class ConfigFilterMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
         - auto_run is False (rerun/manual flows skip stride_size)
 
         Args:
-            extractor_config: Extractor config after source/manual_trigger filtering
+            extractor_config: Extractor config after source filtering
 
         Returns:
             Extractor config when it passes the stride_size check, otherwise None.
@@ -101,16 +104,12 @@ class ConfigFilterMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
         if not getattr(self.service_config, "auto_run", True):
             return extractor_config
 
+        window = self._get_extraction_window()
+        if not window.automatic:
+            return None
+
         if getattr(self.service_config, "force_extraction", False):
             return extractor_config
-
-        root_config = self.request_context.configurator.get_config()
-        global_window_size = (
-            getattr(root_config, "window_size", None) if root_config else None
-        )
-        global_stride_size = (
-            getattr(root_config, "stride_size", None) if root_config else None
-        )
 
         state_manager = OperationStateManager(
             self.storage,  # type: ignore[reportArgumentType]
@@ -119,9 +118,7 @@ class ConfigFilterMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
         )
 
         name = get_extractor_name(extractor_config)
-        _, stride_size = get_extractor_window_params(
-            extractor_config, global_window_size, global_stride_size
-        )
+        _, stride_size = window
 
         # Resolve effective source filter for this extractor
         should_skip, effective_source = get_effective_source_filter(
