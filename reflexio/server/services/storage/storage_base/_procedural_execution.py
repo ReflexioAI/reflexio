@@ -7,7 +7,7 @@ import json
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
-from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
+from reflexio.server.llm._litellm_types import ExtractionInputIntegrityError
 from reflexio.server.work_scope import current_project_id
 
 from ._agent_run import AgentRunRecord

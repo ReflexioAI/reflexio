@@ -46,6 +46,36 @@ def test_server_environment_import_does_not_load_provider_clients(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_storage_policy_import_does_not_load_model_clients(tmp_path):
+    result = run_probe(
+        """
+import importlib.abc
+import sys
+class Guard(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname in (
+            'litellm', 'openai', 'reflexio.server.llm.litellm_client',
+            'reflexio.server.llm.input_budget',
+        ):
+            raise AssertionError('SQL-only storage import loaded model runtime: ' + fullname)
+sys.meta_path.insert(0, Guard())
+from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.services.storage.storage_base import learning_transition
+from reflexio.server.services.storage.storage_base._procedural_execution import (
+    ExtractionInputIntegrityError as checkpoint_failure,
+)
+from reflexio.server.llm._litellm_types import ExtractionInputIntegrityError
+assert checkpoint_failure is ExtractionInputIntegrityError
+assert callable(BaseStorage.checkpoint_procedural_execution)
+assert learning_transition.LearningPolicyAuthority is not None
+assert 'litellm' not in sys.modules
+assert 'openai' not in sys.modules
+""",
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize(
     "module",
     [
