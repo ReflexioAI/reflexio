@@ -8,15 +8,20 @@ authoritative depends on the path:
   into it (``_litellm_text_generation._log_token_usage``), so the total covers
   the whole run — extraction, consolidation/dedup, the playbook aggregator and
   reviewer, the should-run precheck — not just the extractor's own tool loop.
-* **Durable resume** uses :func:`sum_trace_tokens`, folding the per-turn counts
-  already on a ToolLoopTrace. A resumed window is decoded in a different
-  process, where the ContextVar is empty by construction, so the trace sum is
-  the only value available there.
+* **Durable procedural resume** retains native-observed cumulative totals in
+  its owned execution checkpoint. A new worker adds its fresh capture to that
+  retained earlier-worker prefix. Older checkpoints fall back to
+  :func:`sum_trace_tokens`, folding available per-turn counts already on a
+  ToolLoopTrace; that fallback cannot recover cache breakdowns or observations
+  that an older checkpoint never recorded.
 
-**They are never summed, and the capture only wins when it observed something.**
-Summing would double-count every extraction token, because in a live run the
-capture is a superset of the trace fold — it sees the extractor's completions
-*and* the ones after it. But a capture that observed ZERO completions has no
+**Overlapping current-run trace and capture totals are never summed.**
+Summing those would double-count extraction tokens, because in a live run the
+capture sees the extractor's completions *and* the ones after it. A resumed
+procedural window is different: its previously retained worker observations are
+disjoint from the new worker's fresh capture. That earlier prefix is added to the current
+capture, preserving completed earlier stages and additional current observations
+without adding the overlapping cumulative extractor trace. But a capture that observed ZERO completions has no
 opinion rather than an answer of zero, so the trace fold still stands. That is
 what keeps a caller who supplies ``token_totals`` by some other route from
 silently billing 0, and it is why :class:`RunTokenCapture` counts observations
@@ -151,7 +156,8 @@ def begin_run_token_capture() -> RunTokenCapture:
 def sum_trace_tokens(trace: Any) -> RunTokenTotals:
     """Fold a ToolLoopTrace's per-turn token counts into one RunTokenTotals.
 
-    Used by the durable-resume path only — see the module docstring. The trace
+    Used by durable resume and its retained earlier-worker prefix — see the
+    module docstring. The trace
     carries no cache breakdown, so those fields stay 0.
 
     Args:

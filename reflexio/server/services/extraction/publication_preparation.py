@@ -30,6 +30,35 @@ from reflexio.server.services.write_plan_codec import (
 )
 
 
+def _preparation_version(run: AgentRunRecord) -> int:
+    # Previous images reject version 2 before decoding/applying a cached plan.
+    # This floor belongs to the selected retained-output contract, never to a
+    # caller flag or a change in the user's current configuration.
+    return (
+        2
+        if (
+            run.binding.extractor_kind == "playbook"
+            and run.generation_request_snapshot.get("output_schema_name")
+            == "ProceduralOutput"
+        )
+        else 1
+    )
+
+
+def _require_procedural_plan(run: AgentRunRecord, plan: Any) -> None:
+    if _preparation_version(run) != 2:
+        return
+    from reflexio.server.services.playbook.procedural.inline import (
+        retained_plan,
+        reviewed_plan_payload,
+    )
+
+    if reviewed_plan_payload(retained_plan(run)) != reviewed_plan_payload(plan):
+        raise ExtractionInputIntegrityError(
+            "Prepared procedural plan changed its reviewed output"
+        )
+
+
 def _require_bookmark(
     run: AgentRunRecord, data: Any
 ) -> ExtractorBookmarkPosition | None:
@@ -96,8 +125,9 @@ class SavedPublicationPreparation:
             raise ExtractionInputIntegrityError(
                 "Prepared bookmark changed its original position"
             )
+        _require_procedural_plan(run, self.write_plan)
         return {
-            "version": 1,
+            "version": _preparation_version(run),
             "output_id": require_output_id(output.get("publication", {}).get("id")),
             "output_digest": build_scope_hash(output),
             "kind": run.binding.extractor_kind,
@@ -125,7 +155,7 @@ class SavedPublicationPreparation:
             raise ExtractionInputIntegrityError("Preparation requires retained output")
         if (
             type(data["version"]) is not int
-            or data["version"] != 1
+            or data["version"] != _preparation_version(run)
             or data["output_id"]
             != require_output_id(output.get("publication", {}).get("id"))
             or data["output_digest"] != build_scope_hash(output)
@@ -139,6 +169,7 @@ class SavedPublicationPreparation:
                 {"publication": {"history_inputs": data["history_inputs"]}}
             )
             plan = decode_write_plan(data["write_plan"], run.binding.extractor_kind)
+            _require_procedural_plan(run, plan)
             bookmark = _require_bookmark(run, data["bookmark"])
             if bookmark is not None and bookmark != bookmark_from_output(run):
                 raise ValueError("Prepared bookmark changed its original position")

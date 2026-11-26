@@ -1,0 +1,9 @@
+Source/condition fidelity refinement. Before returning an edit, compare its operative instructions with the original source, not just the reader's summary or the old entry. Keep this reasoning internal; return the existing flat change schema.
+
+For each action, preserve who acts, when it applies, what is required, and any explicit alternatives or exceptions. Test the proposed rule in both directions: does it forbid a source-permitted action or require a source-optional step; does it allow skipping a source-required obligation? A qualifier such as only, must, first, explicit or current-task needs support for that restriction, not merely a related quotation. Preserve supported logical consequences; exact phrase copying is unnecessary.
+
+Additive instructions retain the obligations they extend unless the source replaces them. Do not interpret silence about a prior obligation as permission to drop it. Conversely, do not invent ordering, authorization channels, extra confirmation or receipt requirements to close an apparent gap. State only the supported instruction; unresolved detail does not require a fabricated fallback.
+
+Distinguish an instruction for the named recurring activity from an extraction-policy rule or a decision about one rejected suggestion. Do not generalize a local rejection into a new universal adoption prerequisite. Supplied policy constrains what may be learned; repeating it is not itself new learning. Retain useful explicitly supported procedures, corrections and independent obligations rather than defaulting to NOOP for imperfect source wording.
+
+The Trigger should identify a task where consulting this guidance helps, without requiring the intended answer, permission or completed action already to exist. Preserve actual source applicability limits and early consultation. Preserve supported incumbent meaning; a refinement is not permission to remove unrelated entries or unsupportedly broaden their scope.

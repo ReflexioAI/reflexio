@@ -444,7 +444,55 @@ class PlaybookExtractor:
             model_provenance=self._last_model_provenance,
         )
 
+    def _retained_marker_free_schema(self) -> type[BaseModel] | None:
+        """A real older window keeps its admitted producer, never redraws as V8."""
+        window_id = self.service_config.extraction_window_id
+        storage = self.request_context.storage
+        if window_id is None or storage is None:
+            return None
+        run = storage.get_agent_run(f"window:{window_id}")
+        if run is None or "overflow" in run.generation_request_snapshot:
+            return None
+        name = run.generation_request_snapshot.get("output_schema_name")
+        if name == "ProceduralOutput":
+            return None
+        schemas = {
+            model.__name__: model
+            for model in (
+                StructuredPlaybookList,
+                StructuredExtractedPlaybookList,
+                StructuredReferencedExtractedPlaybookList,
+            )
+        }
+        schema = schemas.get(name) if isinstance(name, str) else None
+        if schema is None:
+            raise ExtractionInputIntegrityError("Saved playbook schema is incompatible")
+        return schema
+
     def extract_playbook_entries(
+        self, request_interaction_data_models: list[RequestInteractionDataModel]
+    ) -> list[UserPlaybook]:
+        """Use the selected normal method; preserve distinct retained/special contracts."""
+        from reflexio.server.services.playbook.procedural.input_scope import (
+            is_ordinary_text,
+        )
+
+        if (
+            not env_bool("MOCK_LLM_RESPONSE", default=False)
+            and current_overflow_coordinator.get() is None
+            and is_ordinary_text(request_interaction_data_models)
+            and self._retained_marker_free_schema() is None
+        ):
+            from reflexio.server.services.playbook.procedural.inline import (
+                extract_inline,
+            )
+
+            return extract_inline(self, request_interaction_data_models)
+        return self._extract_retained_or_special_entries(
+            request_interaction_data_models
+        )
+
+    def _extract_retained_or_special_entries(
         self, request_interaction_data_models: list[RequestInteractionDataModel]
     ) -> list[UserPlaybook]:
         """
@@ -505,12 +553,24 @@ class PlaybookExtractor:
             else ""
         )
         coordinator = current_overflow_coordinator.get()
-        stored_schema = _adopted_playbook_schema(coordinator)
+        stored_schema = (
+            _adopted_playbook_schema(coordinator)
+            if coordinator is not None
+            else self._retained_marker_free_schema()
+        )
         contract = build_playbook_extraction_contract(
             prompt_manager,
             expert=expert_mode,
             evidence_sources=prompt_context.evidence_sources,
             evidence_units=prompt_context.evidence_units,
+            strict_override=(stored_schema is not StructuredPlaybookList)
+            if stored_schema is not None
+            else None,
+            evidence_references_override=(
+                stored_schema is StructuredReferencedExtractedPlaybookList
+            )
+            if stored_schema is not None
+            else None,
         )
 
         if expert_mode:

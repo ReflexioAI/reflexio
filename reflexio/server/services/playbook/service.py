@@ -126,6 +126,8 @@ class PlaybookGenerationServiceConfig:
     window_interactions: list[RequestInteractionDataModel] | None = None
     extraction_window_id: str | None = None
     frozen_extractor_config: dict[str, Any] | None = None
+    output_pending_status: bool = False
+    skip_aggregation: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.user_id, str):
@@ -209,6 +211,8 @@ class PlaybookGenerationService(
             rerun_end_time=request.rerun_end_time,
             auto_run=request.auto_run,
             force_extraction=request.force_extraction,
+            output_pending_status=self.output_pending_status,
+            skip_aggregation=self.skip_aggregation,
         )
 
     def _configured_playbook_config(self) -> PlaybookConfig | None:
@@ -323,6 +327,20 @@ class PlaybookGenerationService(
         all_interactions = extract_interactions_from_request_interaction_data_models(
             session_data_models
         )
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+        from reflexio.server.services.playbook.procedural.input_scope import (
+            is_ordinary_text,
+        )
+
+        if (
+            is_ordinary_text(session_data_models)
+            and current_overflow_coordinator.get() is None
+        ):
+            # Normal procedural extraction owns its source-reader NOOP gate.
+            # Keep the existing deterministic cadence/window/cheap checks.
+            return None
         if has_expert_content(all_interactions):
             agent_context = self.configurator.get_agent_context()
             comparison_pairs = (
@@ -411,6 +429,26 @@ class PlaybookGenerationService(
         ``save_user_playbooks``/``merge_records``/``supersede_*`` — the write is
         the persist half's job (compute is write-free).
         """
+        run = self._review_run or self._last_extraction_run
+        if (
+            run is not None
+            and run.generation_request_snapshot.get("output_schema_name")
+            == "ProceduralOutput"
+        ):
+            from reflexio.server.services.playbook.procedural.inline import (
+                retained_plan,
+            )
+
+            plan = retained_plan(run)
+            if plan is not None and plan.new_playbooks:
+                # Retain the reviewed business result first. Native output
+                # preparation owns fallible embeddings and its exact cache, so
+                # an embedding retry never redraws successful semantic stages.
+                self.storage.precompute_user_playbook_embeddings(  # type: ignore[reportOptionalMemberAccess]
+                    plan.new_playbooks, expand_documents=False
+                )
+            return plan
+
         from reflexio.server.services.playbook.playbook_service_utils import (
             dedupe_and_drop_empty,
         )
@@ -429,7 +467,7 @@ class PlaybookGenerationService(
         )
 
         coordinator = current_overflow_coordinator.get()
-        saved_output = (
+        saved_output = (run is not None and run.committed_output is not None) or (
             coordinator is not None
             and coordinator.saved_run is not None
             and coordinator.saved_run.committed_output is not None
@@ -496,9 +534,26 @@ class PlaybookGenerationService(
                     "Skipping normal candidate reviewer for expert-content batch"
                 )
             else:
-                strict_normal = uses_evidence_grounded_extraction(
-                    self.request_context.prompt_manager,
-                    expert=False,
+                saved_schema = (
+                    run.generation_request_snapshot.get("output_schema_name")
+                    if run is not None
+                    else None
+                )
+                # Replay uses the admitted producer contract in conversion and
+                # review alike; current prompt activation cannot erase or reject
+                # a valid older result for evidence its schema never requested.
+                strict_normal = (
+                    saved_schema != "StructuredPlaybookList"
+                    if saved_schema
+                    in {
+                        "StructuredPlaybookList",
+                        "StructuredExtractedPlaybookList",
+                        "StructuredReferencedExtractedPlaybookList",
+                    }
+                    else uses_evidence_grounded_extraction(
+                        self.request_context.prompt_manager,
+                        expert=False,
+                    )
                 )
                 if not strict_normal:
                     logger.info(
