@@ -31,6 +31,12 @@ _REAL_PLAYBOOK_DISPATCH = PlaybookGenerationService._dispatch_playbook_scheduler
 
 
 def _initial(publication, monkeypatch, response=None):
+    """Exercise publication of the retained classic contract, including pending tools.
+
+    The fixture scripts the classic tool-loop response, not V8's three stage
+    declarations. New normal-method publication is covered by the procedural
+    inline/window integration tests; keep these historical recovery assertions.
+    """
     storage, worker, kind, _, events = publication
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     calls = []
@@ -46,6 +52,16 @@ def _initial(publication, monkeypatch, response=None):
     monkeypatch.setattr(
         "reflexio.server.services.extraction.resumable_agent.run_tool_loop", model
     )
+    if kind == "playbook":
+        from reflexio.server.services.playbook.components.extractor import (
+            PlaybookExtractor,
+        )
+
+        monkeypatch.setattr(
+            PlaybookExtractor,
+            "extract_playbook_entries",
+            PlaybookExtractor._extract_retained_or_special_entries,
+        )
     service = (
         ProfileGenerationService(worker.client, worker.request_context)
         if kind == "profile"

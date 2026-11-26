@@ -1,0 +1,47 @@
+{
+  "selected_method": "evidence_first_skill_compiler_v8_result_review",
+  "study": "role-specialized-compiler-evolution-20261118",
+  "source_namespace": "experiments/playbook_extractor_reviewer/target/candidates",
+  "source_sha256": {
+    "extract_review_playbooks/__init__.py": "0bd0048deedcb2108c23e21ae261d8b2cc6814d8d6ea4e289ac91cfd7f2d9bac",
+    "source_preserving_guidance/__init__.py": "6815e1030050b1f08b93a83871add9a498c480241e4aecd2697f1b992757f2a9",
+    "procedure_patch/__init__.py": "6e25a7fbb31a7b2e5381948eb2721526296bbd647a92c2d80b3d4639366a2b8b",
+    "procedural_wiki/__init__.py": "19e995358ad5c5b67bb341cc3a5da3b2b71e4a0e21c4816d4ab436a8a084204a",
+    "skill_bundle/__init__.py": "66e49f4759a1eb51c18ab074b53342084cc1bb4348c4fc000653edd72c2b24d3",
+    "skill_bundle/codec.py": "3591e7afb19244e0d5e3bd6882b9367be3ff5711cb7b790424ec98a19e38ffbd",
+    "skill_bundle/flat_delivery.py": "92813a725a066591af984bf6004a80562296eaee3833351c4e35cd6a16dc6447",
+    "skill_bundle/result_review.py": "3cf121dae5165c56b46c533b13651daa31e501ca4328424b81c7ac09527ebbb4",
+    "skill_bundle/evidence_first/source.md": "c6ed6dd9bef4a4157cd64a0c03c375d524f09027b7d0e571c45ee7b05f6fd984",
+    "skill_bundle/evidence_first/compile_minimal.md": "acb4589d4d84ef598a6cfc65484ca079beb8188559c6389409bad3fd9bb806b9",
+    "skill_bundle/evidence_first/source_conditions/maintain.md": "fdca84af93a175a6aca0c2b07f9d84984ec3cf96211aac26b3f31bc6c756c22f",
+    "skill_bundle/result-review-prompt.md": "5f017924207a77573dec27d109a9b410a81d4d008e463be9a47539b2ee2b66b3"
+  },
+  "prompt_mapping": {
+    "source.md": "skill_bundle/evidence_first/source.md",
+    "compile.md": "skill_bundle/evidence_first/compile_minimal.md",
+    "source_conditions.md": "skill_bundle/evidence_first/source_conditions/maintain.md",
+    "review.md": "skill_bundle/result-review-prompt.md"
+  },
+  "port_changes": [
+    "Native StrictStructuredOutput replaces research-only Model; extra=forbid and all field constraints preserved.",
+    "Compilation returns an explicit dataclass instead of a research Plan plus tuple.",
+    "Only selected bundle representation is retained; alternate research strategies, transport and filesystem materialization are excluded.",
+    "New-script original-byte validation is colocated with compilation instead of a wrapper.",
+    "Code annotations and native exceptions replace research imports; generation/review semantics and prompt bytes retained.",
+    "Read-only native-incumbent compatibility: strict canonical decode first; stale length framing can be read only when the original valid manifest and uniquely located ordered section markers partition the whole body. Stored content/digests/resources are never rewritten by this read view. New outputs remain strictly canonical."
+  ],
+  "verified_frozen_parity_scenarios": [
+    "NOOP",
+    "ADD",
+    "REVISE retaining resource",
+    "RETIRE",
+    "related resource revision and retirement"
+  ],
+  "parity_compares": [
+    "flat Maintenance output",
+    "canonical encoded content bytes",
+    "compiled records/keep_existing/retired_ids/change payloads",
+    "full-result review unit preparation",
+    "full-result verdict reduction"
+  ]
+}

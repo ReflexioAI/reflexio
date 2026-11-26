@@ -659,7 +659,15 @@ def prepare_initial_publication(
             raise ExtractionInputIntegrityError(
                 "Initial bookmark changed before preparation"
             )
-        write_plan = service._resolve_write_plan([items]) if items else None
+        # A reviewed procedural retirement has no new rows but still carries
+        # a retained write obligation. Ordinary empty paths retain their behavior.
+        procedural = (
+            retained.generation_request_snapshot.get("output_schema_name")
+            == "ProceduralOutput"
+        )
+        write_plan = (
+            service._resolve_write_plan([items or []]) if items or procedural else None
+        )
         return PreparedPublication(service, write_plan, bookmark)
 
     prepared, _ = _prepare_publication(storage, retained, candidate, prepare)

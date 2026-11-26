@@ -32,6 +32,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import (
     Tool,
+    ToolLoopResult,
     ToolLoopTrace,
     ToolRegistry,
     format_failure_label,
@@ -536,6 +537,7 @@ class ResumableExtractionAgent:
         structured_output_validator: (
             Callable[[BaseModel], Sequence[str]] | None
         ) = None,
+        workflow: Callable[[AgentRunRecord], ToolLoopResult] | None = None,
     ) -> AgentRunResult:
         """Create the run row, execute the tool loop, and store completed output."""
         from reflexio.server.services.extraction.overflow_coordinator import (
@@ -546,6 +548,10 @@ class ResumableExtractionAgent:
         )
 
         coordinator = current_overflow_coordinator.get()
+        if workflow is not None and coordinator is not None:
+            raise ExtractionInputIntegrityError(
+                "Inline procedural workflow cannot impersonate a window consumer"
+            )
         if coordinator is not None and current_overflow_presentation.get() is not None:
             if prepare_messages is not None:
                 messages = prepare_messages()
@@ -686,6 +692,7 @@ class ResumableExtractionAgent:
                 extra_tool_context=extra_tool_context,
                 log_label=log_label,
                 structured_output_validator=structured_output_validator,
+                workflow=workflow,
             )
 
     def _start_overflow_step(
@@ -1055,6 +1062,7 @@ class ResumableExtractionAgent:
         structured_output_validator: (
             Callable[[BaseModel], Sequence[str]] | None
         ) = None,
+        workflow: Callable[[AgentRunRecord], ToolLoopResult] | None = None,
     ) -> AgentRunResult:
         captured_bookmark = deepcopy(bookmark_position)
         captured_sources = deepcopy(source_inputs)
@@ -1089,17 +1097,21 @@ class ResumableExtractionAgent:
             extra_tool_context, storage=self.storage, run=run
         )
         with model_input_budget():
-            result = run_tool_loop(
-                client=self.client,
-                messages=messages,
-                registry=registry,
-                model_role=self.model_role,
-                max_steps=max_steps,
-                ctx=extra_tool_context,
-                response_format=output_schema,
-                structured_output_validator=structured_output_validator,
-                tool_choice="auto",
-                log_label=log_label,
+            result = (
+                workflow(run)
+                if workflow is not None
+                else run_tool_loop(
+                    client=self.client,
+                    messages=messages,
+                    registry=registry,
+                    model_role=self.model_role,
+                    max_steps=max_steps,
+                    ctx=extra_tool_context,
+                    response_format=output_schema,
+                    structured_output_validator=structured_output_validator,
+                    tool_choice="auto",
+                    log_label=log_label,
+                )
             )
         record_compute_result()
 

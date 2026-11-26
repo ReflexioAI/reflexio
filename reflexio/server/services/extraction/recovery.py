@@ -148,6 +148,14 @@ def _source_version_blockers(context: RequestContext, run: AgentRunRecord) -> li
 def _saved_output_blockers(run: AgentRunRecord) -> list[str]:
     """Validate the saved schema and payload without changing recovery state."""
     blockers: list[str] = []
+    if run.generation_request_snapshot.get("output_schema_name") == "ProceduralOutput":
+        from reflexio.server.services.playbook.procedural.inline import retained_plan
+
+        try:
+            retained_plan(run)
+        except (ValueError, TypeError, KeyError, InputBudgetConfigurationError):
+            return ["invalid_procedural_output"]
+        return []
     schemas = {
         model.__name__: model
         for model in (

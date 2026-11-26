@@ -237,10 +237,25 @@ class WindowExecutor:
         if type(chunk_tokens) is not int or chunk_tokens not in {8192, 10000, 20000}:
             raise ExtractionInputIntegrityError("Extraction partition changed")
         preparation_version = manifest.get("preparation_version", 1) if manifest else 3
-        if type(preparation_version) is not int or preparation_version not in {1, 2, 3}:
+        if type(preparation_version) is not int or preparation_version not in {
+            1,
+            2,
+            3,
+            5,
+        }:
             raise ExtractionInputIntegrityError(
                 "Unknown extraction preparation version"
             )
+        if preparation_version == 5:
+            from reflexio.server.services.playbook.procedural.native import (
+                require_preparation_contract,
+            )
+
+            if known is None or manifest is None:
+                raise ExtractionInputIntegrityError(
+                    "Procedural preparation parent unavailable"
+                )
+            require_preparation_contract(known, manifest)
         if known is None:
             prepared, chunk_tokens = prepare_initial_extraction_input(
                 groups, user_id=user_id
@@ -251,7 +266,7 @@ class WindowExecutor:
                 user_id=user_id,
                 chunk_tokens=chunk_tokens,
                 require_overlap=preparation_version >= 2,
-                include_request_source=preparation_version == 3,
+                include_request_source=preparation_version in {3, 5},
             )
         return prepared, chunk_tokens, preparation_version
 
@@ -368,6 +383,27 @@ class WindowExecutor:
             ]
             run = replace(expected_run, id=f"window:{window.window_id}")
             run.generation_request_snapshot["overflow"] = manifest
+            if window.kind == "playbook":
+                from reflexio.server.services.playbook.procedural.native import (
+                    KEY as PROCEDURAL_KEY,
+                )
+                from reflexio.server.services.playbook.procedural.native import (
+                    PREPARATION_VERSION,
+                    ProceduralOutput,
+                    accepts_fresh_sources,
+                    initial_contract,
+                )
+
+                if accepts_fresh_sources(service, prepared):
+                    # An old worker refuses preparation version 5 before model
+                    # work or cached publication. Admit the selected consumer
+                    # atomically with its real owned parent, not as a flag that
+                    # can reinterpret an older run after rollout/rollback.
+                    manifest["preparation_version"] = PREPARATION_VERSION
+                    manifest["checkpoint"][PROCEDURAL_KEY] = initial_contract(run)
+                    run.generation_request_snapshot["output_schema_name"] = (
+                        ProceduralOutput.__name__
+                    )
             if window.kind == "profile":
                 from reflexio.server.services.durable_learning.ordinary_profile_preparation import (
                     KEY,
@@ -795,6 +831,16 @@ class WindowExecutor:
         plan: Any,  # noqa: ARG002
     ) -> None:
         """Scoped consumers may fence additional frozen decision inputs."""
+        from reflexio.server.services.playbook.procedural.native import (
+            KEY as PROCEDURAL_KEY,
+        )
+        from reflexio.server.services.playbook.procedural.native import (
+            validate_window_plan,
+        )
+
+        if PROCEDURAL_KEY in coordinator.checkpoint:
+            validate_window_plan(coordinator, service, plan)
+            return
         from reflexio.server.services.durable_learning.ordinary_profile_preparation import (
             require_original_ordinary_profile_preparation,
         )
@@ -824,7 +870,19 @@ class WindowExecutor:
         from reflexio.server.services.durable_learning.ordinary_profile_preparation import (
             original_ordinary_instruction_scope,
         )
+        from reflexio.server.services.playbook.procedural.native import (
+            compute_window,
+            is_procedural_window,
+        )
 
+        # The selected normal consumer owns source discovery and complete
+        # result review. Do not prepend the retired binary eligibility or
+        # protected-record model stages to its reviewed native plan. A complete
+        # compiler request that cannot fit fails explicitly; the legacy input
+        # repartitioner cannot turn it into source-quoted fallback execution.
+        if is_procedural_window(coordinator, service):
+            with coordinator.provider_scope():
+                return compute_window(coordinator, service, config)
         try:
             with original_ordinary_instruction_scope(
                 self, coordinator, service, config

@@ -500,6 +500,12 @@ class OverflowCoordinator:
                     "Remaining extraction work exceeds provider attempt budget"
                 )
 
+    @property
+    def attempt_count(self) -> int:
+        """Physical reservations remain charged when a consumer resumes."""
+        with self._lock:
+            return len(self._manifest["attempts"])
+
     def _advance(self, **change: Any) -> None:
         with self._lock, self._parent_write():
             if self._manifest["version"] == 2:

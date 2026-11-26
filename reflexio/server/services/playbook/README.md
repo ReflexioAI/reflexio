@@ -1,5 +1,5 @@
 # /reflexio/server/services/playbook
-Description: Evidence-grounded playbook extraction, candidate review, aggregation, and consolidation pipeline
+Description: Source-grounded procedural extraction, atomic library updates, review and aggregation
 
 > Part of the [Reflexio Server](../../README.md). See also the [Prompt Bank](../../prompt/prompt_bank/README.md) for prompt template details.
 
@@ -8,7 +8,8 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 
 - **Service Orchestrator**: `service.py` - Manages playbook extraction lifecycle (regular, rerun, manual modes)
 - **Playbook Extractor**: `components/extractor.py` - Extracts user playbooks from interactions via LLM
-- **Candidate Reviewer**: `components/reviewer.py` - Accepts, narrowly revises, or rejects validated normal-extraction candidates before consolidation
+- **Normal Procedural Pipeline**: `procedural/` - Source-reader NOOP, complete procedure compilation and full-result review; returns an immutable native write plan
+- **Retained Candidate Reviewer**: `components/reviewer.py` - Reviews historical/expert candidates and supports persisted review; not an extra stage after procedural output
 - **Persisted Review Service**: `review_service.py` - Re-reviews a bounded created-at selection and optionally commits each completed decision newest-first
 - **Playbook Aggregator**: `components/aggregator.py` - Matches same-version cluster centroids, clusters residuals, and generates agent playbooks
 - **Aggregation Scheduler**: `aggregation_scheduler.py` - Claims fenced per-version work and runs one bounded aggregation unit
@@ -46,49 +47,49 @@ Turn evidenced corrections into user playbooks, review/consolidate them, and agg
 ### Data Flow
 
 
-```
-Interactions
-  -> PlaybookExtractor (per-extractor, extraction-only, parallel)
-    -> PlaybookCandidateReviewer (normal strict-evidence candidates only)
-      -> PlaybookConsolidator (consolidates reviewed vs existing DB playbooks)
-        -> UserPlaybook (validated evidence + persisted provenance) -> Storage
-        -> Durable aggregation signal (coalesces new work into the hourly window)
-          -> PlaybookAggregationScheduler (bounded work; hourly idle minimum)
-            -> PlaybookAggregator (incremental clustering)
-              -> AgentPlaybook (aggregated insights) -> Storage
+```text
+Interactions -> deterministic cadence / source-window admission
+  -> source reader (valid NOOP stops here)
+  -> complete procedure compiler (ADD / revise / retire)
+  -> full resulting-unit review + code-owned atomic group reduction
+  -> native reviewed write plan -> existing publication transaction -> Storage
+  -> durable aggregation signal -> existing aggregation scheduler -> agent playbooks
 ```
 
-### Playbook Extraction (`components/extractor.py`)
+### Normal procedural extraction (`procedural/`)
 
+The source reader supplies exact original-source addresses, not a draft answer
+for the compiler to endorse. A valid empty observation batch skips both later
+model stages. The compiler sees original source, configured learning criteria
+and the bounded current user/version library. It writes complete `SKILL.md`
+instructions with supported optional reference, script and asset text. These
+resources remain inert inline text; extraction never executes a script.
 
-Extends `BaseGenerationService` extractor pattern. Each extractor:
-1. Checks stride_size threshold before running
-2. Constructs messages from interactions (via `service_utils.py`)
-3. Formats request boundaries and visible turns with call-local references for strict normal extraction
-4. Runs the LLM with the versioned extraction prompts
-5. Validates required fields, allowed turn references, atomic scope, and exact duplicates
-6. Resolves validated local references to exact source text and persisted request/interaction provenance
+The full-result reviewer checks every changed unit, including inherited clauses.
+Code requires exactly one verdict per unit and accepts a related change group
+only when every check passes for every member. Independent groups can survive a
+rejected group. Unchanged incumbents retain their original bytes. There is no
+extra old candidate-review, model reconciliation or DocumentExpander call after
+this review. Native vector preparation, index writes, lineage, tenant/user/version
+checks, billing and aggregation keep their existing owners.
 
-Malformed structured output receives one bounded repair attempt. An invalid
-candidate is dropped independently so a valid sibling in the same response can
-continue; an unresolved malformed response fails the extraction run.
+`procedural/native.py` journals semantic stages through the durable window owner;
+`procedural/inline.py` uses the existing owned extraction-run and publication
+lifecycle for direct/manual work. Both retain exact reviewed results, including
+retirement-only plans with zero new rows. Finalization replay does not regenerate
+or re-review an already retained plan. Malformed declarations receive at most one
+structural correction per stage; explicit incomplete delivery is a method failure.
 
-**Tool Analysis**: Reads `tool_can_use` from root `Config` for tool usage analysis and resumable extraction decisions.
+The measured MiniMax route uses M3 for source/review and M3.1-Flash low for
+compilation. Explicit customer provider selections and configured smaller output
+or timeout limits are preserved. Different providers or operational envelopes
+are integration adaptations, not evidence of the measured quality/resource gain.
 
-### Candidate Review (`components/reviewer.py`)
-
-
-Strict normal candidates enter a fresh same-model review call before
-consolidation. The reviewer receives the request-bounded chronology, validated
-referenced turns, artifact-availability context, and relevant existing playbooks.
-Every candidate must be accounted for exactly once as `accept`, `revise`, or
-`reject`. Revisions may narrow unsupported wording but cannot add evidence or
-create a lesson that extraction missed. Reviewer output receives one bounded
-repair attempt and otherwise fails closed. Expert and legacy extraction paths
-do not use this reviewer. New user-playbook generation requires a non-empty
-`user_id`. A legacy durable run whose stored binding is null may resume only
-when every persisted source interaction and request proves the same owner;
-missing or mixed-owner evidence fails closed before review or persistence.
+See [procedural contracts and compatibility](procedural/README.md). Expert
+extraction, historical pending-question obligations, persisted manual review and
+source-quoted multi-chunk recovery retain their distinct contracts. The new
+ordinary procedure does not add a human-question generation stage or silently
+fall back to the historical extractor after failure.
 
 ### Persisted Review (`review_service.py`)
 
@@ -213,8 +214,9 @@ post-processes generated outputs before storage or model-response logging.
 
 ### Playbook Consolidation (`components/consolidator.py`)
 
-Every nonempty generation batch uses one evidence-backed Create/Replace/Remove
-method. Configured `search_threshold` and `search_top_k` bound incumbent retrieval;
+Historical and special-contract generation batches use the retained evidence-backed
+Create/Replace/Remove method. New normal procedural extraction compiles and reviews
+its own complete update plan instead of invoking this model pipeline again. Configured `search_threshold` and `search_top_k` bound incumbent retrieval;
 they do not decide semantic equivalence. The planner accounts for every NEW input,
 can replace multiple originals with multiple outputs, and independently audits the
 complete proposed memory before publication. Unmentioned incumbents remain.
@@ -277,7 +279,7 @@ configuration originals, rather than a runtime engine selector.
 
 - **Fail closed on unreconstructable or invalid evidence**; manual review skips an unreconstructable row instead of inventing chronology.
 - **Preserve per-version aggregation, bounded discovery, and transaction rules** listed in the aggregation section above.
-- **Keep normal candidate review separate from expert/legacy paths**; a revision cannot invent evidence or a missing lesson.
+- **Publish only the exact reviewed procedural plan**; keep historical/expert review contracts separate and never run them as an additional or fallback normal engine.
 
 ## See Also
 

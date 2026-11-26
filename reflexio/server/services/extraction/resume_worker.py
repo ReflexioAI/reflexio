@@ -1383,6 +1383,16 @@ class ExtractionResumeWorker:
         request_interaction_data_models: list[RequestInteractionDataModel],
         committed_output: dict[str, Any],
     ) -> tuple[list[Any], list[str]]:
+        if (
+            run.generation_request_snapshot.get("output_schema_name")
+            == "ProceduralOutput"
+        ):
+            from reflexio.server.services.playbook.procedural.inline import (
+                retained_plan,
+            )
+
+            plan = retained_plan(run)
+            return plan.new_playbooks if plan else [], run.pending_tool_call_ids
         if not isinstance(extractor_config, PlaybookConfig):
             raise ResumeWorkerError("Expected playbook extractor config")
         user_id = run.binding.user_id

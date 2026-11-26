@@ -447,6 +447,28 @@ class PlaybookExtractor:
     def extract_playbook_entries(
         self, request_interaction_data_models: list[RequestInteractionDataModel]
     ) -> list[UserPlaybook]:
+        """Use the selected normal method; preserve distinct retained/special contracts."""
+        from reflexio.server.services.playbook.procedural.input_scope import (
+            is_ordinary_text,
+        )
+
+        if (
+            not env_bool("MOCK_LLM_RESPONSE", default=False)
+            and current_overflow_coordinator.get() is None
+            and is_ordinary_text(request_interaction_data_models)
+        ):
+            from reflexio.server.services.playbook.procedural.inline import (
+                extract_inline,
+            )
+
+            return extract_inline(self, request_interaction_data_models)
+        return self._extract_retained_or_special_entries(
+            request_interaction_data_models
+        )
+
+    def _extract_retained_or_special_entries(
+        self, request_interaction_data_models: list[RequestInteractionDataModel]
+    ) -> list[UserPlaybook]:
         """
         Extract playbook entries from the given request interaction groups using structured output.
 
