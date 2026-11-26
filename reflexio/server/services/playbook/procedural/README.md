@@ -176,3 +176,22 @@ and stage key. Raw descriptors can contain credential-bearing route URLs and
 never enter these records. A changed effective policy holds cached work before
 dispatch; unchanged policies reuse it. Malformed terminal delivery cannot gain
 another repair cycle on retry.
+
+### Parked terminal failures
+
+Malformed/incomplete terminal output and an exhausted six-dispatch allowance
+remain failed operations. The existing window scheduler retries with backoff,
+then parks that cursor after 12 charged window attempts. Cached terminal failure
+receipts never authorize another model draw. Later conversations on the same
+user/project/playbook cursor wait behind that parked window; sibling cursors
+retain their ordinary scheduling.
+
+Use `plan_input_budget_recovery(storage, window_id, action="retire")` in the
+existing input-recovery owner, review its organization/project/window and held
+state, then call `apply_input_budget_recovery(storage, receipt)` with that exact
+receipt under the existing operator authority. A stale receipt must be refused.
+Retirement advances the cursor without learning or billing the failed window;
+it does not manufacture successful output or refund its consumed calls. A later
+window is a distinct operation with its own admission. Rearming alone preserves
+the terminal receipt and spent quota and therefore does not resolve a terminal
+method failure. There is no automatic skip or partial-manual continuation.
