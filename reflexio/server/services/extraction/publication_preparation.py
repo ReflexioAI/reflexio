@@ -48,9 +48,12 @@ def _preparation_version(run: AgentRunRecord) -> int:
 def _require_procedural_plan(run: AgentRunRecord, plan: Any) -> None:
     if _preparation_version(run) != 2:
         return
-    from reflexio.server.services.playbook.procedural.inline import retained_plan
+    from reflexio.server.services.playbook.procedural.inline import (
+        retained_plan,
+        reviewed_plan_payload,
+    )
 
-    if encode_write_plan(retained_plan(run)) != encode_write_plan(plan):
+    if reviewed_plan_payload(retained_plan(run)) != reviewed_plan_payload(plan):
         raise ExtractionInputIntegrityError(
             "Prepared procedural plan changed its reviewed output"
         )

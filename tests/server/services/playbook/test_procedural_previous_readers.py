@@ -14,7 +14,10 @@ import pytest
 from pydantic import ValidationError
 
 from reflexio.server.env_utils import env_bool
-from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
+from reflexio.server.llm.input_budget import (
+    ExtractionInputIntegrityError,
+    InputBudgetConfigurationError,
+)
 from reflexio.server.services.playbook.procedural.native import PREPARATION_VERSION
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     OverflowCheckpointConflictError,
@@ -40,10 +43,11 @@ def previous(commit, group, **namespace):
     return namespace
 
 
-@pytest.mark.parametrize("commit", ["88accf44", "f850e9a2"])
+@pytest.mark.parametrize("commit", ["88accf44", "f850e9a2", "db97b093"])
 @pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("adapter", [None, "inline"])
 def test_old_window_consumer_refuses_v5_before_models_or_cached_publication(
-    monkeypatch, commit, cached
+    monkeypatch, commit, cached, adapter
 ):
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     original_prepare = Mock(
@@ -54,6 +58,7 @@ def test_old_window_consumer_refuses_v5_before_models_or_cached_publication(
         "WindowExecutor",
         env_bool=env_bool,
         ExtractionInputIntegrityError=ExtractionInputIntegrityError,
+        InputBudgetConfigurationError=InputBudgetConfigurationError,
         OverflowCheckpointConflictError=OverflowCheckpointConflictError,
         validate_extraction_overflow_manifest=validate_extraction_overflow_manifest,
         prepare_extraction_input=original_prepare,
@@ -69,6 +74,8 @@ def test_old_window_consumer_refuses_v5_before_models_or_cached_publication(
         "input_chunk_tokens": 10000,
         "checkpoint": {"stage": "prepare", "completed_steps": {}},
     }
+    if adapter is not None:
+        manifest["checkpoint"]["procedural_playbook_v1"] = {"adapter": adapter}
     run = SimpleNamespace(generation_request_snapshot={"overflow": manifest})
     storage, client = Mock(), Mock()
     storage.get_agent_run.return_value = run
@@ -84,7 +91,7 @@ def test_old_window_consumer_refuses_v5_before_models_or_cached_publication(
     )
     service = SimpleNamespace(service_config=SimpleNamespace(window_interactions=[]))
     with pytest.raises(
-        ExtractionInputIntegrityError, match="Unknown extraction preparation version"
+        InputBudgetConfigurationError, match="Unknown extraction preparation version"
     ):
         ns["_coordinator"](owner, window, "token", service, None, None)
     original_prepare.assert_not_called()
@@ -92,13 +99,14 @@ def test_old_window_consumer_refuses_v5_before_models_or_cached_publication(
     assert [call[0] for call in storage.mock_calls] == ["get_agent_run"]
 
 
-@pytest.mark.parametrize("commit", ["88accf44", "f850e9a2"])
+@pytest.mark.parametrize("commit", ["88accf44", "f850e9a2", "db97b093"])
 def test_old_cached_inline_preparation_refuses_version2_before_decode_or_apply(commit):
     decode = Mock(side_effect=AssertionError("Old plan decoder must not run"))
     ns = previous(
         commit,
         "SavedPublicationPreparation",
         ExtractionInputIntegrityError=ExtractionInputIntegrityError,
+        InputBudgetConfigurationError=InputBudgetConfigurationError,
         decode_write_plan=decode,
     )
     run = SimpleNamespace(committed_output={"publication": {"id": "output"}})
@@ -114,12 +122,12 @@ def test_old_cached_inline_preparation_refuses_version2_before_decode_or_apply(c
         }
     )
     payload["version"] = 2
-    with pytest.raises(ExtractionInputIntegrityError, match="binding changed"):
+    with pytest.raises(InputBudgetConfigurationError, match="binding changed"):
         ns["from_payload"](object, run, payload)
     decode.assert_not_called()
 
 
-@pytest.mark.parametrize("commit", ["88accf44", "f850e9a2"])
+@pytest.mark.parametrize("commit", ["88accf44", "f850e9a2", "db97b093"])
 def test_old_unprepared_inline_output_cannot_validate_as_old_candidates(commit):
     from reflexio.models.config_schema import PlaybookConfig
     from reflexio.server.prompt.prompt_manager import PromptManager

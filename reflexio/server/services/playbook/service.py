@@ -439,7 +439,15 @@ class PlaybookGenerationService(
                 retained_plan,
             )
 
-            return retained_plan(run)
+            plan = retained_plan(run)
+            if plan is not None and plan.new_playbooks:
+                # Retain the reviewed business result first. Native output
+                # preparation owns fallible embeddings and its exact cache, so
+                # an embedding retry never redraws successful semantic stages.
+                self.storage.precompute_user_playbook_embeddings(  # type: ignore[reportOptionalMemberAccess]
+                    plan.new_playbooks, expand_documents=False
+                )
+            return plan
 
         from reflexio.server.services.playbook.playbook_service_utils import (
             dedupe_and_drop_empty,

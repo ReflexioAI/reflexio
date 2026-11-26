@@ -114,14 +114,18 @@ def run_pipeline(
             witnesses(observation.evidence, quotes)
         return observations
 
-    observations = client.ask(
-        "source",
-        _prompt("source"),
-        body,
-        {"record_observation": Observation},
-        observations_from,
-        lambda _: None,
-        evidence_choices=list(quotes),
+    observations = (
+        client.ask(
+            "source",
+            _prompt("source"),
+            body,
+            {"record_observation": Observation},
+            observations_from,
+            lambda _: None,
+            evidence_choices=list(quotes),
+        )
+        if data.sources
+        else []
     )
     raw_observations = [item.model_dump(mode="json") for item in observations]
     # The reader can discover useful locations without pre-authoring the answer.
@@ -213,6 +217,11 @@ def run_pipeline(
     }
     return {
         "method_version": VERSION,
+        **(
+            {"source_projection": "no_visible_native_evidence"}
+            if not data.sources
+            else {}
+        ),
         "source_observations": raw_observations,
         "downstream_source_observations": body["source_observations"],
         "produced": produced.model_dump(mode="json"),

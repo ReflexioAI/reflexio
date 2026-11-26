@@ -27,7 +27,8 @@ class Source(Model):
     owner: Text
     role: Text
     request_source: str
-    text: Text
+    # Evidence is an exact byte-preserving view, not a semantic instruction.
+    text: str = Field(min_length=1)
     created_at: int | None = Field(default=None, strict=True)
     request_created_at: int | None = Field(default=None, strict=True)
     # Code-owned display provenance. Omitted from serialized input so ordinary
@@ -38,12 +39,14 @@ class Source(Model):
 
 class Quotation(Model):
     interaction_id: int = Field(gt=0, strict=True)
-    text: Text = Field(max_length=600)
+    text: str = Field(min_length=1, max_length=600)
 
 
 class Input(Model):
     owner: Text
-    sources: list[Source] = Field(min_length=1)
+    # The native owner may prove that a complete original window has no visible
+    # text. That projection is a deterministic NOOP, never a fabricated source.
+    sources: list[Source]
     existing: list[dict[str, Any]]
     agent_context: str
     definition: Text

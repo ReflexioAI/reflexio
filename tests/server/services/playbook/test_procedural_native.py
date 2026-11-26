@@ -430,3 +430,43 @@ def test_publication_requires_the_exact_retained_plan_and_full_reader_coverage(r
     checkpoint[native.KEY]["reader_steps"] = {}
     with pytest.raises(ExtractionInputIntegrityError, match="source/state binding"):
         native.validate_window_plan(coordinator, service, computed)
+
+
+def test_unstamped_project_admission_uses_actual_scope_and_preserves_stamped_scope(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "reflexio.server.work_scope.current_project_id", lambda: "production-project"
+    )
+    run = SimpleNamespace(
+        id="window:w",
+        project_id=None,
+        binding=SimpleNamespace(
+            org_id="org",
+            user_id="u",
+            extractor_kind="playbook",
+            request_id="r",
+            agent_version="v",
+        ),
+        generation_request_snapshot={
+            "output_schema_name": native.ProceduralOutput.__name__
+        },
+    )
+    manifest = {
+        "preparation_version": native.PREPARATION_VERSION,
+        "checkpoint": {native.KEY: native.initial_contract(run)},
+    }
+    assert (
+        manifest["checkpoint"][native.KEY]["scope"]["project_id"]
+        == "production-project"
+    )
+    run.project_id = "production-project"
+    native.require_preparation_contract(run, manifest)
+    monkeypatch.setattr(
+        "reflexio.server.work_scope.current_project_id",
+        lambda: "different-current-project",
+    )
+    assert native.initial_contract(run)["scope"]["project_id"] == "production-project"
+    run.project_id = "another-stored-project"
+    with pytest.raises(ExtractionInputIntegrityError, match="contract changed"):
+        native.require_preparation_contract(run, manifest)

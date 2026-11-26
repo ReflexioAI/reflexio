@@ -566,3 +566,95 @@ def test_native_tuner_exact_clause_edit_remains_consumable_without_rewriting_its
         result.revised_content == raw_tuner_result
         and incumbents["P1"]["content"] == raw_tuner_result
     )
+
+
+def test_catalog_preserves_an_interior_whitespace_only_six_hundred_character_slice() -> (
+    None
+):
+    original = "a" * 600 + " " * 600 + "z"
+    data = Input(
+        owner="owner",
+        sources=[
+            Source(
+                interaction_id=2,
+                request_id="r",
+                owner="owner",
+                role="User",
+                request_source="app",
+                text=original,
+            )
+        ],
+        existing=[],
+        agent_context="Assistant",
+        definition="Learn recurring procedures",
+        tool_context="",
+    )
+    body, quotes, segments = catalog(data, {2: [original]})
+    assert list(quotes) == ["EXCERPT_1_1_1", "EXCERPT_1_1_2", "EXCERPT_1_1_3"]
+    assert [item.text for item in quotes.values()] == ["a" * 600, " " * 600, "z"]
+    assert segments == {"SEGMENT_1_1": (2, original)}
+    assert (
+        "".join(item["text"] for item in body["sources"][0]["segments"][0]["excerpts"])
+        == original
+    )
+
+
+def test_catalog_keeps_whitespace_only_pieces_and_their_original_boundaries() -> None:
+    pieces = [" " * 600, "\t \n", "An actual useful instruction."]
+    original = "\n\n".join(pieces)
+    data = Input(
+        owner="owner",
+        sources=[
+            Source(
+                interaction_id=2,
+                request_id="r",
+                owner="owner",
+                role="User",
+                request_source="app",
+                text=original,
+            )
+        ],
+        existing=[],
+        agent_context="Assistant",
+        definition="Learn recurring procedures",
+        tool_context="",
+    )
+    body, quotes, segments = catalog(data, {2: pieces})
+    assert [item.text for item in quotes.values()] == pieces
+    assert segments == {
+        f"SEGMENT_1_{index}": (2, piece) for index, piece in enumerate(pieces, 1)
+    }
+    restored = [
+        "".join(excerpt["text"] for excerpt in segment["excerpts"])
+        for segment in body["sources"][0]["segments"]
+    ]
+    assert restored == pieces and "\n\n".join(restored) == original
+
+
+def test_raw_whitespace_evidence_does_not_relax_semantic_instruction_contracts() -> (
+    None
+):
+    assert (
+        Source(
+            interaction_id=2,
+            request_id="r",
+            owner="owner",
+            role="User",
+            request_source="app",
+            text=" \t\n",
+        ).text
+        == " \t\n"
+    )
+    assert Quotation(interaction_id=2, text=" " * 600).text == " " * 600
+    with pytest.raises(ValidationError):
+        Quotation(interaction_id=2, text="")
+    with pytest.raises(ValidationError):
+        Page(path="SKILL.md", content=" \t\n")
+    with pytest.raises(ValidationError):
+        Create(
+            group="A",
+            name="rule",
+            trigger="Relevant task",
+            entry=" \t\n",
+            evidence="EXCERPT_1_1_1",
+        )

@@ -82,12 +82,16 @@ def accepts_fresh_sources(service: Any, prepared: Any) -> bool:
 
 def initial_contract(run: Any) -> dict[str, Any]:
     """Source-preparation v5 is admitted with this exact native parent scope."""
+    from reflexio.server.work_scope import current_project_id
+
     return {
         "version": 1,
         "method": workflow.VERSION,
         "scope": {
             "org_id": run.binding.org_id,
-            "project_id": run.project_id or "",
+            "project_id": run.project_id
+            if run.project_id is not None
+            else current_project_id() or "",
             "user_id": run.binding.user_id,
             "run_id": run.id,
             "kind": run.binding.extractor_kind,
@@ -105,6 +109,7 @@ def require_preparation_contract(run: Any, manifest: dict[str, Any]) -> None:
         manifest.get("preparation_version") != PREPARATION_VERSION
         or run.binding.extractor_kind != "playbook"
         or not isinstance(descriptor, dict)
+        or descriptor.get("adapter") not in (None, "inline")
         or type(descriptor.get("version")) is not int
         or any(
             descriptor.get(key) != expected[key]
@@ -371,6 +376,7 @@ def _input(
     visible = {
         row.interaction_id: list(row.evidence_texts)
         for row in context.evidence_sources.values()
+        if row.evidence_texts
     }
     originals = {
         row.interaction_id: (row, group.request)
@@ -427,6 +433,7 @@ def _input(
                 else None,
             )
             for row in context.evidence_sources.values()
+            if row.interaction_id in visible
         ],
         existing=[
             row.model_dump(mode="json", exclude={"embedding"}) for row in existing

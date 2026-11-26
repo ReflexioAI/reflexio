@@ -40,6 +40,7 @@ from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
 from ._pending_tool_expiry import PendingToolExpiryStore
 from ._playbook import AGGREGATE_REASON_PREFIX
+from ._procedural_execution import ProceduralExecutionStore
 from ._publication_preparations import PublicationPreparationStore
 from ._publication_receipts import PublicationReceiptStore
 from ._requests import RequestMixin, SessionJudgmentInputs
@@ -83,6 +84,7 @@ class BaseStorage(
     LearningTransitionStore,
     TransitionInventoryStore,
     PublicationPreparationStore,
+    ProceduralExecutionStore,
     PublicationReceiptStore,
     ExtractionStreamStore,
     CommitScopeMixin,

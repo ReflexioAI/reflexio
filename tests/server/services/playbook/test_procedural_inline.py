@@ -259,3 +259,286 @@ def test_inline_changed_original_inputs_cannot_retire_incumbent(
             (existing[0].user_playbook_id,),
         )
     assert rows[0]["status"] is None and rows[0]["superseded_by"] is None
+
+
+def _manual_request():
+    return PlaybookGenerationRequest(
+        user_id="u",
+        agent_version="v",
+        request_id="procedural",
+        source="test",
+        auto_run=False,
+        force_extraction=True,
+    )
+
+
+def test_inline_skips_empty_visible_turns_but_keeps_all_original_source_witnesses(
+    pipeline, monkeypatch
+):
+    engine, storage, service, client, calls, _ = inline_setup(pipeline, monkeypatch)
+    storage._execute(
+        "UPDATE interactions SET content='' WHERE user_id=? AND interaction_id IN (?,?)",
+        ("u", 2, 3),
+    )
+    storage._execute(
+        "UPDATE interactions SET tools_used=? WHERE user_id=? AND interaction_id=?",
+        (
+            json.dumps(
+                [
+                    {
+                        "tool_name": "inspect",
+                        "tool_data": {"result": "not visible without content"},
+                    }
+                ]
+            ),
+            "u",
+            3,
+        ),
+    )
+    service.run(_manual_request())
+    assert len(calls) == 3
+    run = service._last_extraction_run
+    assert run is not None and run.committed_output is not None
+    source_body = json.loads(calls[0]["messages"][1]["content"])
+    assert {item["interaction_id"] for item in source_body["sources"]} == {1, 4, 5}
+    assert set(run.binding.source_interaction_ids) == {1, 2, 3, 4, 5}
+    assert set(run.committed_output["publication"]["source_inputs"]["sources"]) == {
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+    }
+    assert len(storage.get_user_playbooks(user_id="u", agent_version="v")) == 1
+    republish(
+        ExtractionResumeWorker(
+            request_context=engine.request_context, llm_client=client
+        ),
+        storage,
+        run,
+    )
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("visible_content", ["", " \n\t " * 200])
+def test_all_empty_inline_projection_is_retained_noop_without_any_provider_receipt(
+    pipeline, monkeypatch, visible_content
+):
+    engine, storage, service, client, calls, existing = inline_setup(
+        pipeline, monkeypatch, retire=True
+    )
+    storage._execute(
+        "UPDATE interactions SET content=?,shadow_content=? WHERE user_id=?",
+        (visible_content, "Hidden shadow must not become an invented source.", "u"),
+    )
+    service.run(_manual_request())
+    assert calls == []
+    run = service._last_extraction_run
+    assert run is not None and run.committed_output is not None
+    assert run.status == AgentRunStatus.FINALIZED
+    assert run.committed_output["model_provenance"] is None
+    assert run.committed_output["trace"]["turns"] == []
+    assert (
+        run.committed_output["output"]["receipt"]["source_projection"]
+        == "no_visible_native_evidence"
+    )
+    assert set(run.binding.source_interaction_ids) == {1, 2, 3, 4, 5}
+    assert set(run.committed_output["publication"]["source_inputs"]["sources"]) == {
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+    }
+    assert retained_plan(run) is None
+    rows = storage.get_user_playbooks(user_id="u", agent_version="v")
+    assert len(rows) == 1 and rows[0].content == existing[0].content
+    assert (
+        storage.get_agent_run_finalization_receipt(
+            run_id=run.id, entity_type="user_playbook"
+        )
+        == []
+    )
+    republish(
+        ExtractionResumeWorker(
+            request_context=engine.request_context, llm_client=client
+        ),
+        storage,
+        run,
+    )
+    assert calls == []
+
+
+def test_inline_embedding_failure_preserves_reviewed_business_output_for_owned_retry(
+    pipeline, monkeypatch
+):
+    engine, storage, service, client, calls, _ = inline_setup(pipeline, monkeypatch)
+    from reflexio.server.llm.providers.embedding_service_provider import (
+        EmbeddingUnavailableError,
+    )
+
+    precompute = storage.precompute_user_playbook_embeddings
+    monkeypatch.setattr(
+        storage,
+        "precompute_user_playbook_embeddings",
+        Mock(side_effect=EmbeddingUnavailableError("synthetic unavailable index")),
+    )
+    service.run(_manual_request())
+    assert len(calls) == 3
+    run = service._last_extraction_run
+    assert run is not None and run.committed_output is not None
+    assert run.status == AgentRunStatus.FINALIZATION_FAILED
+    reviewed = retained_plan(run)
+    assert reviewed is not None
+    assert reviewed.new_playbooks[0].embedding == []
+    reviewed_content = reviewed.new_playbooks[0].content
+    assert storage.get_user_playbooks(user_id="u", agent_version="v") == []
+    monkeypatch.setattr(storage, "precompute_user_playbook_embeddings", precompute)
+    updated = republish(
+        ExtractionResumeWorker(
+            request_context=engine.request_context, llm_client=client
+        ),
+        storage,
+        run,
+    )
+    assert updated.status == AgentRunStatus.FINALIZED
+    assert len(calls) == 3
+    rows = storage.get_user_playbooks(user_id="u", agent_version="v")
+    assert len(rows) == 1 and rows[0].content == reviewed_content
+    with agent_run_user_work(storage, updated):
+        adopted = adopt_agent_run_for_execution(storage, updated)
+        prepared = storage.agent_output_preparation(adopted)
+    assert prepared is not None
+    assert prepared["write_plan"]["new_playbooks"][0]["embedding"]
+    from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
+    from reflexio.server.services.extraction.publication_preparation import (
+        SavedPublicationPreparation,
+    )
+
+    # Prepared vectors are allowed; a generated-term or instruction rewrite is not.
+    SavedPublicationPreparation.from_payload(updated, prepared)
+    prepared["write_plan"]["new_playbooks"][0]["expanded_terms"] = "unreviewed rewrite"
+    with pytest.raises(ExtractionInputIntegrityError):
+        SavedPublicationPreparation.from_payload(updated, prepared)
+
+
+def test_inline_retirement_bills_zero_new_learnings_and_preserves_tokens_on_replay(
+    pipeline, monkeypatch
+):
+    from reflexio.server import metering_events
+
+    engine, storage, service, client, calls, _ = inline_setup(
+        pipeline, monkeypatch, retire=True
+    )
+    events = []
+    monkeypatch.setattr(
+        metering_events, "record_usage_event", lambda **event: events.append(event)
+    )
+    monkeypatch.setattr(
+        metering_events,
+        "record_usage_event_strict",
+        lambda **event: events.append(event),
+    )
+    service.run(_manual_request())
+    run = service._last_extraction_run
+    assert run is not None and run.status == AgentRunStatus.FINALIZED
+    assert (
+        storage.get_agent_run_finalization_receipt(
+            run_id=run.id, entity_type="user_playbook"
+        )
+        == []
+    )
+    assert len(calls) == 3
+    assert not any(event["event_name"] == "learnings_generated" for event in events)
+    tokens = [event for event in events if event["event_name"] == "extraction_tokens"]
+    assert len(tokens) == 1
+    assert tokens[0]["prompt_tokens"] == 300
+    assert tokens[0]["completion_tokens"] == 60
+    republish(
+        ExtractionResumeWorker(
+            request_context=engine.request_context, llm_client=client
+        ),
+        storage,
+        run,
+    )
+    assert len(calls) == 3
+    assert [
+        event for event in events if event["event_name"] == "extraction_tokens"
+    ] == tokens
+    assert not any(event["event_name"] == "learnings_generated" for event in events)
+
+
+def test_inline_ack_failure_keeps_native_token_emission_and_retained_retry(
+    pipeline, monkeypatch
+):
+    from reflexio.server import metering_events
+
+    engine, storage, service, client, calls, _ = inline_setup(pipeline, monkeypatch)
+    events = []
+    monkeypatch.setattr(
+        metering_events, "record_usage_event", lambda **event: events.append(event)
+    )
+    monkeypatch.setattr(
+        metering_events,
+        "record_usage_event_strict",
+        lambda **event: events.append(event),
+    )
+    ack = storage._ack_publication_receipt
+    monkeypatch.setattr(
+        storage,
+        "_ack_publication_receipt",
+        Mock(side_effect=RuntimeError("synthetic receipt acknowledgement unavailable")),
+    )
+    service.run(_manual_request())
+    run = service._last_extraction_run
+    assert run is not None and run.committed_output is not None
+    assert len(calls) == 3
+    monkeypatch.setattr(storage, "_ack_publication_receipt", ack)
+    republish(
+        ExtractionResumeWorker(
+            request_context=engine.request_context, llm_client=client
+        ),
+        storage,
+        run,
+    )
+    resumed = storage.get_agent_run(run.id)
+    assert resumed is not None and resumed.status == AgentRunStatus.FINALIZED
+    assert len(calls) == 3
+    tokens = [event for event in events if event["event_name"] == "extraction_tokens"]
+    assert len(tokens) == 1
+    assert tokens[0]["prompt_tokens"] == 300
+    assert tokens[0]["completion_tokens"] == 60
+
+
+def test_manual_partial_provider_failure_is_recorded_not_claimed_as_automatic_resume(
+    pipeline, monkeypatch
+):
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+
+    _, storage, service, client, calls, _ = inline_setup(pipeline, monkeypatch)
+    wire = client._completion_with_hard_timeout
+
+    def outage(params, timeout):
+        if "source_observations" in json.loads(params["messages"][1]["content"]):
+            calls.append(params)
+            raise ProviderRequestGuardError("synthetic manual provider interruption")
+        return wire(params, timeout)
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", outage)
+    with pytest.raises(RuntimeError, match="did not complete"):
+        service.run(_manual_request())
+    with storage._stream_sql(read_only=True) as db:
+        rows = db.query(
+            "SELECT id FROM _agent_runs WHERE user_id=? AND id NOT LIKE 'window:%' LIMIT 2",
+            ("u",),
+        )
+    assert len(rows) == 1
+    run = storage.get_agent_run(rows[0]["id"])
+    assert run is not None and run.status == AgentRunStatus.FAILED
+    assert run.committed_output is None
+    assert run.next_resume_at is None
+    checkpoint = run.generation_request_snapshot["procedural_execution"]
+    assert checkpoint["physical_calls"] == 2
+    assert len(checkpoint["completed"]) == 1
+    assert len(calls) == 2
+    assert storage.get_user_playbooks(user_id="u", agent_version="v") == []

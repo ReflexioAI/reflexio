@@ -270,6 +270,34 @@ class WindowExecutor:
             )
         return prepared, chunk_tokens, preparation_version
 
+    def _uses_inline_source_preparation(
+        self,
+        known: AgentRunRecord | None,
+        manifest: dict[str, Any] | None,
+        groups: list[RequestInteractionDataModel],
+        user_id: str,
+    ) -> bool:
+        if manifest is not None:
+            from reflexio.server.services.playbook.procedural.native import KEY
+
+            if manifest.get("checkpoint", {}).get(KEY, {}).get("adapter") == "inline":
+                # This is a source/version contract for an opaque native
+                # transport, not an OverflowCoordinator capacity declaration.
+                prepared, _, _ = self._prepare_coordinator_sources(
+                    groups, user_id, known, manifest
+                )
+                if manifest["source_digest"] != prepared.source_digest or manifest.get(
+                    "chunk_digests"
+                ) != [
+                    OverflowCoordinator.candidate_key(chunk.text)
+                    for chunk in prepared.chunks
+                ]:
+                    raise ExtractionInputIntegrityError(
+                        "Inline procedural source geometry changed"
+                    )
+                return True
+        return False
+
     def _coordinator(
         self,
         window: Window,
@@ -287,6 +315,10 @@ class WindowExecutor:
         manifest = self._overflow_manifest(known)
         groups = service.service_config.window_interactions
         if self._requires_compatibility_execution(window, known, manifest, groups):
+            return None
+        if self._uses_inline_source_preparation(
+            known, manifest, groups, window.user_id
+        ):
             return None
         if known is None:
             # Host CLIs select opaque models and do not honor max_tokens. Keep

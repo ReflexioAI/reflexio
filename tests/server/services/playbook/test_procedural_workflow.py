@@ -26,6 +26,39 @@ from reflexio.server.services.playbook.procedural.workflow import run_pipeline
 WITNESS = "EXCERPT_1_1_1"
 
 
+def test_empty_verified_projection_is_a_code_noop_without_a_reader_call():
+    data = Input(
+        owner="owner",
+        sources=[],
+        existing=[],
+        agent_context="",
+        definition="Extract useful procedures.",
+        tool_context="",
+    )
+    client = MagicMock()
+    result = run_pipeline(data, {}, client)
+    assert result["outcome"] == "empty"
+    assert result["source_projection"] == "no_visible_native_evidence"
+    assert result["source_observations"] == []
+    assert result["rendered"] == {} and result["retired_ids"] == []
+    client.ask.assert_not_called()
+
+
+def test_empty_projection_cannot_substitute_a_hidden_visible_source():
+    data = Input(
+        owner="owner",
+        sources=[],
+        existing=[],
+        agent_context="",
+        definition="Extract useful procedures.",
+        tool_context="",
+    )
+    client = MagicMock()
+    with pytest.raises(ContractError, match="actual visible pieces"):
+        run_pipeline(data, {1: ["Hidden material"]}, client)
+    client.ask.assert_not_called()
+
+
 def _call(
     name: str, arguments: dict[str, Any] | str, identity: str = "return-1"
 ) -> dict[str, Any]:
@@ -111,6 +144,10 @@ def _client(responses: list[CompletionResult]) -> tuple[StageClient, MagicMock]:
         model="minimax/MiniMax-M3", max_tokens=None, timeout=240
     )
     native.get_completion_model_ladder.side_effect = lambda **kwargs: (kwargs["model"],)
+    native.get_completion_request_contract.side_effect = lambda **kwargs: {
+        "model": kwargs["model"],
+        "custom_llm_provider": None,
+    }
     pending = iter(responses)
 
     def complete(**kwargs: Any) -> CompletionResult:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, replace
 from typing import Any
 
 from reflexio.server.llm._litellm_types import (
@@ -52,11 +53,11 @@ from reflexio.server.services.write_plan_codec import (
     encode_write_plan,
 )
 
+from .continuation import ContinuingClient
 from .input_scope import native_display_fields
 from .models import Input, Source
 from .native import ProceduralOutput, receipt_to_plan
-from .transport import StageClient
-from .workflow import digest, run_pipeline
+from .workflow import VERSION, digest, run_pipeline
 
 
 def retained_plan(run: AgentRunRecord) -> PlaybookWritePlan | None:
@@ -136,6 +137,15 @@ def retained_plan(run: AgentRunRecord) -> PlaybookWritePlan | None:
     return plan
 
 
+def reviewed_plan_payload(plan: PlaybookWritePlan | None) -> dict[str, Any] | None:
+    """Native preparation may add vectors, never rewrite reviewed business data."""
+    value = encode_write_plan(plan)
+    if value is not None:
+        for row in value["new_playbooks"]:
+            row.pop("embedding", None)
+    return value
+
+
 def run_inline(extractor: Any, groups: list[Any]) -> AgentRunResult:
     """Retain source, history and reviewed native plan before inline publication."""
     storage = extractor.request_context.storage
@@ -155,12 +165,48 @@ def run_inline(extractor: Any, groups: list[Any]) -> AgentRunResult:
         agent_context=extractor.agent_context,
         output_schema_name=ProceduralOutput.__name__,
     )
+    window_id = getattr(current, "extraction_window_id", None)
+    if window_id is not None:
+        run = replace(run, id=f"window:{window_id}")
+    if window_id is not None:
+        from reflexio.server.services.extraction.input_preparation import (
+            prepare_initial_extraction_input,
+        )
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            OverflowCoordinator,
+        )
+
+        from .native import KEY, initial_contract
+
+        prepared, chunk_tokens = prepare_initial_extraction_input(
+            groups, user_id=current.user_id
+        )
+        manifest = OverflowCoordinator.initial_manifest(prepared.source_digest)
+        manifest.update(
+            {
+                "preparation_version": 5,
+                "input_chunk_tokens": chunk_tokens,
+                "chunk_digests": [
+                    OverflowCoordinator.candidate_key(chunk.text)
+                    for chunk in prepared.chunks
+                ],
+            }
+        )
+        descriptor = initial_contract(run)
+        descriptor["adapter"] = "inline"
+        manifest["checkpoint"][KEY] = descriptor
+        run.generation_request_snapshot["overflow"] = manifest
     sources = capture_source_inputs(storage, run, groups)
     context = build_playbook_prompt_context(groups, label_turns=True)
     visible = {
         row.interaction_id: list(row.evidence_texts)
         for row in context.evidence_sources.values()
+        if row.evidence_texts
     }
+    if not any(piece.strip() for pieces in visible.values() for piece in pieces):
+        # Keep blank pieces byte-exact when useful text is also present, but a
+        # wholly blank projection contains nothing for a model to read.
+        visible = {}
     originals = {
         row.interaction_id: (row, group.request)
         for group in groups
@@ -171,21 +217,33 @@ def run_inline(extractor: Any, groups: list[Any]) -> AgentRunResult:
     ]
     from reflexio.models.api_schema.domain.entities import UserPlaybook
 
-    old = PlaybookConsolidator(
-        extractor.request_context,
-        extractor.client,
-        extractor.config.deduplication_config,
-    ).retrieve_existing_playbooks(
-        [
-            UserPlaybook(
+    known = storage.get_agent_run(run.id) if window_id is not None else None
+    checkpoint = (
+        known.generation_request_snapshot.get("procedural_execution") if known else None
+    )
+    old = (
+        [UserPlaybook.model_validate(row) for row in checkpoint["contract"]["existing"]]
+        if checkpoint is not None
+        else (
+            PlaybookConsolidator(
+                extractor.request_context,
+                extractor.client,
+                extractor.config.deduplication_config,
+            ).retrieve_existing_playbooks(
+                [
+                    UserPlaybook(
+                        user_id=current.user_id,
+                        agent_version=current.agent_version,
+                        request_id=current.request_id,
+                        trigger=query,
+                    )
+                ],
                 user_id=current.user_id,
                 agent_version=current.agent_version,
-                request_id=current.request_id,
-                trigger=query,
             )
-        ],
-        user_id=current.user_id,
-        agent_version=current.agent_version,
+            if visible
+            else []
+        )
     )
     history = HistoricalInputs(
         playbooks={
@@ -212,6 +270,7 @@ def run_inline(extractor: Any, groups: list[Any]) -> AgentRunResult:
                 else None,
             )
             for row in context.evidence_sources.values()
+            if row.interaction_id in visible
         ],
         existing=[row.model_dump(mode="json", exclude={"embedding"}) for row in old],
         agent_context=extractor.agent_context,
@@ -219,12 +278,33 @@ def run_inline(extractor: Any, groups: list[Any]) -> AgentRunResult:
         or "Extract useful supported procedural guidance.",
         tool_context="",
     )
-    stage_client = StageClient(
+    stage_client = ContinuingClient(
         extractor.client, extractor.default_generation_model_name
     )
 
     def execute(_run: AgentRunRecord) -> ToolLoopResult:
         try:
+            stage_client.bind(
+                storage,
+                _run,
+                {
+                    "method": VERSION,
+                    "source_inputs": sources,
+                    "history": asdict(history),
+                    "input_sha256": digest(
+                        {
+                            "input": data.model_dump(mode="json"),
+                            "source_fields": [
+                                source.piece_fields for source in data.sources
+                            ],
+                            "visible": visible,
+                        }
+                    ),
+                    "existing": data.existing,
+                    "profiles": stage_client.profiles,
+                    "model_ladders": stage_client.model_ladders,
+                },
+            )
             receipt = run_pipeline(data, visible, stage_client)
             plan = receipt_to_plan(
                 receipt,
@@ -236,10 +316,6 @@ def run_inline(extractor: Any, groups: list[Any]) -> AgentRunResult:
                 skip_aggregation=getattr(current, "skip_aggregation", False),
                 provenance=stage_client.latest_provenance,
             )
-            if plan is not None and plan.new_playbooks:
-                storage.precompute_user_playbook_embeddings(
-                    plan.new_playbooks, expand_documents=False
-                )
             encoded = encode_write_plan(plan)
             source_digest = build_scope_hash(sources)
             output = ProceduralOutput(
@@ -258,8 +334,22 @@ def run_inline(extractor: Any, groups: list[Any]) -> AgentRunResult:
                 structured_output=output,
                 provenance=stage_client.latest_provenance,
             )
-        except ProviderRequestGuardError:
+        except ExtractionInputIntegrityError:
             raise
+        except ProviderRequestGuardError as error:
+            if window_id is not None:
+                raise
+            # Manual UUID operations have no background continuation owner.
+            # Retain the partial checkpoint as a failed operation, never a
+            # completed NOOP or an automatically reissued request.
+            return ToolLoopResult(
+                ctx=None,
+                trace=stage_client.trace,
+                finished_reason="error",
+                error=error,
+                error_type=type(error).__name__,
+                error_detail="procedural_provider_interrupted",
+            )
         except Exception as error:
             return ToolLoopResult(
                 ctx=None,
@@ -272,13 +362,17 @@ def run_inline(extractor: Any, groups: list[Any]) -> AgentRunResult:
 
     return ResumableExtractionAgent(client=extractor.client, storage=storage).start(
         run=run,
-        publication_origin="initial_inline",
+        publication_origin="initial_window"
+        if window_id is not None
+        else "initial_inline",
         bookmark_position=ExtractorBookmarkPosition(
             get_extractor_name(extractor.config),
             [item.interaction_id for group in groups for item in group.interactions],
             max(item.created_at for group in groups for item in group.interactions),
             current.user_id,
-        ),
+        )
+        if window_id is None
+        else None,
         messages=[],
         history_inputs=history,
         output_schema=ProceduralOutput,

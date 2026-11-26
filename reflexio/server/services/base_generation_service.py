@@ -728,7 +728,18 @@ class BaseGenerationService(
                     self._last_bookmark_advance,
                 ).write_plan
             else:
-                write_plan = self._resolve_write_plan([result]) if result else None
+                procedural_output = (
+                    self._last_extraction_run is not None
+                    and self._last_extraction_run.generation_request_snapshot.get(
+                        "output_schema_name"
+                    )
+                    == "ProceduralOutput"
+                )
+                write_plan = (
+                    self._resolve_write_plan([result])
+                    if result or procedural_output
+                    else None
+                )
         except Exception as exc:
             self._mark_extraction_runs_finalization_failed(exc)
             raise
@@ -854,6 +865,42 @@ class BaseGenerationService(
         # Initial inline agent publication took the owned output adapter above.
         # Here the actual window caller owns atomic completion and immutable
         # effects; a run-wide receipt would create a redundant publication owner.
+        run = plan.execution_run
+        if (
+            run is not None
+            and run.generation_request_snapshot.get("output_schema_name")
+            == "ProceduralOutput"
+            and (
+                "overflow" not in run.generation_request_snapshot
+                or run.generation_request_snapshot["overflow"]
+                .get("checkpoint", {})
+                .get("procedural_playbook_v1", {})
+                .get("adapter")
+                == "inline"
+            )
+        ):
+            from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
+            from reflexio.server.services.extraction.history_inputs import (
+                history_from_output,
+            )
+            from reflexio.server.services.playbook.procedural.inline import (
+                retained_plan,
+                reviewed_plan_payload,
+            )
+
+            if reviewed_plan_payload(plan.write_plan) != reviewed_plan_payload(
+                retained_plan(run)
+            ):
+                raise ExtractionInputIntegrityError(
+                    "Window procedural plan changed after review"
+                )
+            if self.storage is None:
+                raise RuntimeError("Generation requires storage")
+            self.storage.validate_agent_output_sources(run)
+            history = history_from_output(run.committed_output)
+            self.storage.validate_agent_history_inputs(
+                run, history.profiles, history.playbooks
+            )
         if plan.write_plan is not None:
             self._persist_write_plan(plan.write_plan)
         self._apply_bookmark_advance(plan.bookmark_advance)
