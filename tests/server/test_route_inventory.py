@@ -8,7 +8,11 @@ from fastapi import APIRouter, Depends, FastAPI
 
 import reflexio
 from reflexio.server.api import core_router, create_app
-from reflexio.server.route_inventory import api_route_contexts, find_raw_route_reads
+from reflexio.server.route_inventory import (
+    api_route_contexts,
+    find_raw_route_reads,
+    route_endpoint_for_scope,
+)
 
 _REPO_ROOT = Path(reflexio.__file__).resolve().parents[1]
 
@@ -37,6 +41,41 @@ def test_included_routes_carry_prefix_and_include_dependencies() -> None:
     ungated = [d.call for d in contexts["/b/items/{item_id}"].dependant.dependencies]
     assert gated == [_gate]
     assert ungated == []
+
+
+def _http_scope(method: str, path: str) -> dict:
+    return {"type": "http", "method": method, "path": path, "root_path": ""}
+
+
+def test_scope_resolves_to_the_handler_inside_nested_included_routers() -> None:
+    """Middleware runs before routing; a raw ``app.routes`` match stops at the
+    included-router node, which has no endpoint, and reads as "no handler"."""
+    leaf = APIRouter()
+
+    @leaf.get("/items/{item_id}")
+    def read_item(item_id: str) -> str:
+        return item_id
+
+    @leaf.post("/items")
+    def create_item() -> None:
+        return None
+
+    middle = APIRouter()
+    middle.include_router(leaf, prefix="/leaf")
+    app = FastAPI()
+    app.include_router(middle, prefix="/api")
+
+    assert route_endpoint_for_scope(app, _http_scope("GET", "/api/leaf/items/7")) is (
+        read_item
+    )
+    assert route_endpoint_for_scope(app, _http_scope("POST", "/api/leaf/items")) is (
+        create_item
+    )
+    # Unprefixed path and wrong method are not full matches.
+    assert route_endpoint_for_scope(app, _http_scope("GET", "/items/7")) is None
+    assert (
+        route_endpoint_for_scope(app, _http_scope("DELETE", "/api/leaf/items")) is None
+    )
 
 
 def test_core_router_enumeration_reaches_every_domain_router() -> None:

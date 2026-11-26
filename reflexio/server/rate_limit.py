@@ -20,7 +20,7 @@ from anyio.lowlevel import checkpoint_if_cancelled
 from fastapi import Request
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import _find_route_handler, _should_exempt
+from slowapi.middleware import _should_exempt
 from slowapi.util import get_remote_address
 from slowapi.wrappers import Limit, LimitGroup
 from starlette.concurrency import run_in_threadpool
@@ -28,6 +28,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from reflexio.server.rate_limit_policy import RateLimitPolicy
+from reflexio.server.route_inventory import route_endpoint_for_scope
 from reflexio.server.tracing import profile_step
 
 _configured_key_func: Callable[..., str] | None = None
@@ -216,7 +217,7 @@ class RateLimitMiddleware:
             return await self.app(scope, receive, send)
         app = scope["app"]
         limiter = app.state.limiter
-        handler = _find_route_handler(app.routes, scope)
+        handler = route_endpoint_for_scope(app, scope)
         if not limiter.enabled or _should_exempt(limiter, handler):
             return await self.app(scope, receive, send)
         request = Request(scope, receive=receive)

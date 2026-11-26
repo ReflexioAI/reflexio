@@ -24,6 +24,9 @@ from typing import Any, cast
 
 from fastapi import APIRouter, FastAPI
 from fastapi.routing import APIRoute, RouteContext, iter_route_contexts
+from slowapi.middleware import _find_route_handler
+from starlette.routing import BaseRoute
+from starlette.types import Scope
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,28 @@ def api_route_contexts(owner: FastAPI | APIRouter) -> Iterator[ApiRouteContext]:
     for context in iter_route_contexts(owner.routes):
         if isinstance(context.original_route, APIRoute):
             yield ApiRouteContext(context)
+
+
+def route_endpoint_for_scope(
+    owner: FastAPI | APIRouter, scope: Scope
+) -> Callable[..., Any] | None:
+    """Return the handler that would serve ``scope``, before routing runs.
+
+    Middleware sees the request before the router sets ``scope["route"]``.
+    Matching the raw ``owner.routes`` tree stops at the included-router node,
+    which has no endpoint; this matches each effective route instead, with
+    slowapi's selection rule (the last full match wins).
+
+    Args:
+        owner (FastAPI | APIRouter): The app or router serving the request.
+        scope (Scope): The ASGI HTTP scope.
+
+    Returns:
+        Callable[..., Any] | None: The matched handler, or None.
+    """
+    contexts = list(iter_route_contexts(owner.routes))
+    # RouteContext delegates ``matches`` and ``endpoint`` to the effective route.
+    return _find_route_handler(cast(list[BaseRoute], contexts), scope)
 
 
 def _terminal_name(node: ast.expr) -> str | None:

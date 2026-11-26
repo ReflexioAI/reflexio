@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 
 from reflexio.models.api_schema.service_schemas import ReviewUserPlaybooksRequest
 from reflexio.server import operation_limiter, usage_metrics
+from reflexio.server.route_inventory import api_route_contexts
 from reflexio.server.routes import playbooks
 
 _PAYLOAD = {
@@ -193,8 +194,8 @@ def test_cancelled_endpoint_cannot_orphan_a_constructed_reservation(
         try:
             route = next(
                 route
-                for route in test_app.routes
-                if getattr(route, "path", None) == "/api/review_user_playbooks"
+                for route in api_route_contexts(test_app)
+                if route.path == "/api/review_user_playbooks"
             )
 
             async def receive():
