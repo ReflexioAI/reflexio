@@ -926,8 +926,12 @@ async def test_search_ingress_rejects_oversize_before_starting_auth(
 
 
 @pytest.mark.asyncio
-async def test_disconnect_during_body_does_not_start_application():
+async def test_disconnect_during_body_does_not_start_application(monkeypatch, caplog):
     called = []
+    events = []
+    monkeypatch.setattr(
+        runtime, "record_health", lambda name, *_args, **kw: events.append((name, kw))
+    )
 
     async def app(scope, receive, send):
         called.append(True)
@@ -939,6 +943,17 @@ async def test_disconnect_during_body_does_not_start_application():
     assert await call(middleware, receive_input=disconnected) == []
     assert not called
     assert not middleware.tasks
+    timing = next(
+        json.loads(record.message.split("event=search_timing ", 1)[1])
+        for record in caplog.records
+        if "event=search_timing " in record.message
+    )
+    assert timing["outcome"] == "disconnected"
+    assert timing["status_code"] is None
+    assert (
+        "search.requests",
+        {"outcome": "disconnected", "status": "no_response"},
+    ) in (events)
 
 
 @pytest.mark.asyncio
