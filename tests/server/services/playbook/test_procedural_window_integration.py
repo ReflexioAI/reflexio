@@ -445,8 +445,9 @@ def test_cli_retirement_only_window_keeps_native_owner_and_atomic_retirement(
     assert storage.extraction_status("u", "procedural")["status"] == "done"
 
 
+@pytest.mark.parametrize("nonempty", [False, True])
 def test_marker_free_legacy_window_replays_its_actual_retained_schema_without_v8(
-    pipeline, monkeypatch
+    pipeline, monkeypatch, nonempty
 ):
     from dataclasses import replace
 
@@ -497,11 +498,29 @@ def test_marker_free_legacy_window_replays_its_actual_retained_schema_without_v8
                 ctx=None,
                 trace=ToolLoopTrace(finished=True),
                 finished_reason="structured_output",
-                structured_output=StructuredPlaybookList(playbooks=[]),
+                structured_output=StructuredPlaybookList.model_validate(
+                    {
+                        "playbooks": [
+                            {
+                                "content": "Require explicit approval before deploying.",
+                                "trigger": "When deploying.",
+                            }
+                        ]
+                        if nonempty
+                        else []
+                    }
+                ),
             ),
         )
         assert saved.output is not None
-        assert extractor.extract_playbook_entries(groups) == []
+        assert saved.execution_run is not None
+        entries = extractor.extract_playbook_entries(groups)
+        assert len(entries) == int(nonempty)
+        if nonempty:
+            assert entries[0].content == "Require explicit approval before deploying."
+            assert entries[0].source_interaction_ids == list(
+                saved.execution_run.binding.source_interaction_ids
+            )
     assert calls == []
     retained = storage.get_agent_run(run.id)
     assert retained is not None
@@ -512,6 +531,27 @@ def test_marker_free_legacy_window_replays_its_actual_retained_schema_without_v8
     )
     assert saved.execution_run is not None
     assert retained.committed_output == saved.execution_run.committed_output
+    # Supply the independent classic consolidator's unchanged verdict. Exercise
+    # the actual window publisher, not a direct storage insertion or V8 fallback.
+    monkeypatch.setattr(
+        PlaybookConsolidator,
+        "deduplicate",
+        lambda _self, results, *_args, **_kwargs: (
+            [item for group in results for item in group],
+            [],
+            [],
+        ),
+    )
+    executor.execute(window, token)
+    rows = storage.get_user_playbooks(user_id="u", agent_version="v")
+    assert len(rows) == int(nonempty)
+    if nonempty:
+        assert rows[0].content == "Require explicit approval before deploying."
+        assert rows[0].source_interaction_ids == list(
+            run.binding.source_interaction_ids
+        )
+    assert storage.extraction_status("u", "procedural")["status"] == "done"
+    assert calls == []
 
 
 def test_retirement_window_delivers_zero_learning_quantity_and_keeps_token_charges_on_ack_retry(
@@ -788,3 +828,223 @@ def test_cli_checkpoint_rejects_stale_claim_and_checkpoint_revision(
     assert saved is not None
     assert saved.generation_request_snapshot["procedural_execution"] == checkpoint
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("cached_replay", [False, True])
+@pytest.mark.parametrize("extra_prior_usage", [False, True])
+@pytest.mark.parametrize("extra_current_usage", [False, True])
+def test_mixed_transport_resume_and_ack_keep_cumulative_usage_exactly_once(
+    pipeline,
+    monkeypatch,
+    tmp_path,
+    extra_current_usage,
+    extra_prior_usage,
+    cached_replay,
+):
+    from reflexio.models.config_schema import LLMConfig
+    from reflexio.server import metering_events
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+    from reflexio.server.services.durable_learning.user_lease import (
+        owned_user_work_context,
+    )
+    from reflexio.server.services.playbook.procedural.transport import BATCH_TOOL
+
+    engine, storage, window, token, _, _, _, _ = cli_setup(
+        pipeline, monkeypatch, tmp_path
+    )
+    config = engine.request_context.configurator.get_config().model_copy(deep=True)
+    config.llm_config = LLMConfig(generation_model_name="gpt-4o-mini")
+    engine.request_context.configurator.set_config(config)
+    client = LiteLLMClient(
+        LiteLLMConfig(
+            model="gpt-4o-mini",
+            max_tokens=16384,
+            fallback_models=["local-cli/codex/fixture-model"],
+        )
+    )
+    calls = []
+    suspended = False
+
+    def wire(params, _timeout):
+        nonlocal suspended
+        calls.append(params)
+        assert params["model"] == "gpt-4o-mini"
+        assert {item["function"]["name"] for item in params["tools"]} == {BATCH_TOOL}
+        body = json.loads(params["messages"][1]["content"])
+        if "result_review_units" in body:
+            name = "review_result"
+            arguments = {
+                "unit": "U0",
+                "decision": "accept",
+                "result_support": "pass",
+                "scope_conditions": "pass",
+                "useful_nonduplicate": "pass",
+                "preservation_and_correction": "pass",
+                "resource_consistency": "pass",
+                "reason": "The source supports retirement.",
+            }
+        elif "source_observations" in body:
+            if not suspended:
+                suspended = True
+                raise ProviderRequestGuardError("synthetic compiler suspension")
+            name = "retire_procedure"
+            arguments = {
+                "group": "deployment",
+                "target": "P1",
+                "evidence": body["source_observations"][0]["evidence"],
+            }
+            if extra_current_usage:
+                # Exercise the native observer for completion usage outside the
+                # procedural stage trace; no provider is called here.
+                client._log_token_usage(
+                    params,
+                    litellm.ModelResponse(
+                        usage={
+                            "prompt_tokens": 7,
+                            "completion_tokens": 3,
+                            "total_tokens": 10,
+                        }
+                    ),
+                )
+        else:
+            if extra_prior_usage:
+                client._log_token_usage(
+                    params,
+                    litellm.ModelResponse(
+                        usage={
+                            "prompt_tokens": 11,
+                            "completion_tokens": 5,
+                            "total_tokens": 16,
+                            "cache_read_input_tokens": 4,
+                            "cache_creation_input_tokens": 2,
+                        }
+                    ),
+                )
+            name = "record_observation"
+            arguments = {
+                "topic": "Deployment",
+                "observation": "The old command is no longer valid.",
+                "evidence": body["sources"][0]["segments"][0]["excerpts"][0]["id"],
+            }
+        payload = {
+            "calls": [
+                {"id": "member", "name": name, "arguments": arguments},
+                {
+                    "id": "done",
+                    "name": "finish_batch",
+                    "arguments": {"status": "complete", "reason": "Complete batch."},
+                },
+            ]
+        }
+        return litellm.ModelResponse(
+            model=params["model"],
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": f"call-{len(calls)}",
+                                "type": "function",
+                                "function": {
+                                    "name": BATCH_TOOL,
+                                    "arguments": json.dumps(payload),
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", wire)
+    executor = WindowExecutor(engine.request_context, client)
+    with pytest.raises(ProviderRequestGuardError, match="compiler suspension"):
+        executor.execute(window, token)
+    partial = storage.get_agent_run(f"window:{window.window_id}")
+    assert partial is not None
+    trace = partial.generation_request_snapshot["procedural_execution"]["trace"]
+    assert sum(turn["prompt_tokens"] or 0 for turn in trace["turns"]) == 100
+    prior_observed = partial.generation_request_snapshot["procedural_execution"][
+        "observed_usage"
+    ]
+    assert prior_observed["prompt_tokens"] == (111 if extra_prior_usage else 100)
+    assert prior_observed["completion_tokens"] == (25 if extra_prior_usage else 20)
+    assert prior_observed["cache_read_input_tokens"] == (4 if extra_prior_usage else 0)
+    assert prior_observed["cache_write_input_tokens"] == (2 if extra_prior_usage else 0)
+    window = storage.prepare_extraction(window.user_id, token)
+    if cached_replay:
+        from reflexio.server.services.playbook.service import PlaybookGenerationService
+
+        resolve = PlaybookGenerationService._resolve_write_plan
+
+        def fail_preparation(service, results):
+            resolve(service, results)
+            raise RuntimeError("synthetic post-review preparation failure")
+
+        monkeypatch.setattr(
+            PlaybookGenerationService, "_resolve_write_plan", fail_preparation
+        )
+        with pytest.raises(RuntimeError, match="post-review preparation failure"):
+            executor.execute(window, token)
+        assert len(calls) == 4
+        monkeypatch.setattr(PlaybookGenerationService, "_resolve_write_plan", resolve)
+        window = storage.prepare_extraction(window.user_id, token)
+    executor.execute(window, token)
+    assert len(calls) == 4
+    effect_user, token = storage.claim_extraction("mixed-effects-owner", 600)
+    assert effect_user == window.user_id
+    [(pending, effects)] = storage.pending_extraction_effects(
+        user_id=effect_user, token=token
+    )
+    expected_prompt = (
+        300 + (7 if extra_current_usage else 0) + (11 if extra_prior_usage else 0)
+    )
+    expected_completion = (
+        60 + (3 if extra_current_usage else 0) + (5 if extra_prior_usage else 0)
+    )
+    assert effects["billing"]["ids"] == []
+    assert effects["billing"]["prompt_tokens"] == expected_prompt
+    assert effects["billing"]["completion_tokens"] == expected_completion
+    assert effects["billing"]["cache_read_input_tokens"] == (
+        4 if extra_prior_usage else 0
+    )
+    assert effects["billing"]["cache_write_input_tokens"] == (
+        2 if extra_prior_usage else 0
+    )
+    events = []
+    monkeypatch.setattr(
+        metering_events,
+        "record_usage_event_strict",
+        lambda **event: events.append(event),
+    )
+    ack = storage.ack_extraction_effects
+    monkeypatch.setattr(
+        storage,
+        "ack_extraction_effects",
+        Mock(side_effect=RuntimeError("synthetic effects acknowledgement failure")),
+    )
+    with owned_user_work_context(storage, effect_user, token, 300):
+        with pytest.raises(RuntimeError, match="acknowledgement failure"):
+            executor.deliver(pending, effects, token=token)
+        monkeypatch.setattr(storage, "ack_extraction_effects", ack)
+        executor.deliver(pending, effects, token=token)
+    charges = [event for event in events if event["event_name"] == "extraction_tokens"]
+    assert len(charges) == 2
+    assert len({event["event_key"] for event in charges}) == 1
+    assert all(
+        event["prompt_tokens"] == expected_prompt
+        and event["completion_tokens"] == expected_completion
+        for event in charges
+    )
+    assert all(
+        event["cache_read_input_tokens"] == (4 if extra_prior_usage else 0)
+        and event["cache_write_input_tokens"] == (2 if extra_prior_usage else 0)
+        for event in charges
+    )
+    assert not any(event["event_name"] == "learnings_generated" for event in events)
+    assert storage.pending_extraction_effects() == []
+    assert len(calls) == 4

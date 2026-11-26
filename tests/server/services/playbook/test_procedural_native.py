@@ -286,6 +286,7 @@ def journal_fixture() -> tuple[Any, Any, Input, dict[str, Any]]:
     delegate = SimpleNamespace(
         profiles={"source": {"model": "test-model"}},
         model_ladders={"source": ["test-model"]},
+        request_contracts={"source": {"primary": "p" * 64, "rungs": ["r" * 64]}},
         latest_provenance=ModelProvenance(model_name="test-model", provider="test"),
         ask=Mock(
             return_value=[

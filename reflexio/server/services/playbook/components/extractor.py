@@ -563,6 +563,14 @@ class PlaybookExtractor:
             expert=expert_mode,
             evidence_sources=prompt_context.evidence_sources,
             evidence_units=prompt_context.evidence_units,
+            strict_override=(stored_schema is not StructuredPlaybookList)
+            if stored_schema is not None
+            else None,
+            evidence_references_override=(
+                stored_schema is StructuredReferencedExtractedPlaybookList
+            )
+            if stored_schema is not None
+            else None,
         )
 
         if expert_mode:

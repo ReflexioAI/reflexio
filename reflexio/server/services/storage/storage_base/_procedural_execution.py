@@ -50,7 +50,28 @@ class ProceduralExecutionStore:
             raise ExtractionInputIntegrityError(
                 "Invalid procedural execution checkpoint"
             )
+        usage = requested.get("observed_usage")
+        fields = {
+            "prompt_tokens",
+            "completion_tokens",
+            "cache_read_input_tokens",
+            "cache_write_input_tokens",
+        }
+        if usage is not None and (
+            not isinstance(usage, dict)
+            or set(usage) != fields
+            or any(type(value) is not int or value < 0 for value in usage.values())
+        ):
+            raise ExtractionInputIntegrityError("Invalid procedural observed usage")
         previous = deepcopy(expected)
+        earlier_usage = previous.get("observed_usage") if previous is not None else None
+        if earlier_usage is not None and (
+            usage is None
+            or any(usage[field] < earlier_usage[field] for field in fields)
+        ):
+            raise ExtractionInputIntegrityError(
+                "Procedural observed usage cannot decrease"
+            )
         if requested["revision"] != (previous["revision"] + 1 if previous else 0):
             raise ExtractionInputIntegrityError(
                 "Procedural checkpoint revision changed"

@@ -8,7 +8,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Generic, TypeVar
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
@@ -652,6 +652,48 @@ class BaseGenerationService(
         self._window_prior_attempts = prior_attempts
         self._window_frozen_extractor_config = frozen_extractor_config
 
+    def _retained_inline_token_totals(
+        self,
+    ) -> tuple[RunTokenTotals, RunTokenTotals] | None:
+        """Read only earlier worker usage; current capture owns this worker's usage."""
+        window_id = getattr(self, "_window_id", None)
+        if window_id is None or self.storage is None:
+            return None
+        run = self.storage.get_agent_run(f"window:{window_id}")
+        if (
+            run is None
+            or run.generation_request_snapshot.get("output_schema_name")
+            != "ProceduralOutput"
+        ):
+            return None
+        snapshot = run.generation_request_snapshot
+        if (
+            snapshot.get("overflow", {})
+            .get("checkpoint", {})
+            .get("procedural_playbook_v1", {})
+            .get("adapter")
+            != "inline"
+        ):
+            return None
+        from reflexio.server.llm.token_accounting import sum_trace_tokens
+        from reflexio.server.llm.tools import ToolLoopTrace
+
+        observed = snapshot.get("procedural_execution", {}).get("observed_usage")
+        trace = (
+            run.committed_output.get("trace")
+            if run.committed_output is not None
+            else snapshot.get("procedural_execution", {}).get("trace")
+        )
+        if trace is None:
+            return None
+        trace_totals = sum_trace_tokens(ToolLoopTrace.model_validate(trace))
+        observed_totals = (
+            RunTokenTotals(**observed)
+            if observed is not None
+            else RunTokenTotals(**asdict(trace_totals))
+        )
+        return observed_totals, trace_totals
+
     def compute_generation(self, request: TRequest) -> GenerationComputePlan | None:
         """Compute half of one generation run — NO learning DB write, NO fence.
 
@@ -688,6 +730,7 @@ class BaseGenerationService(
         # "item 2 bills ZERO provider tokens") and what makes a worker orphaned
         # by `_execute_extractor`'s timeout harmless — it keeps writing into the
         # object the previous run left behind, which nothing reads again.
+        retained_inline_tokens = self._retained_inline_token_totals()
         token_capture = begin_run_token_capture()
         prepared = self._prepare_generation_run(request)
         if prepared is None:
@@ -761,7 +804,32 @@ class BaseGenerationService(
         # `litellm.completion` wrapper), so it wins and brings the later stages
         # with it. The trace fold also survives for the durable-resume path,
         # which decodes in another process where this ContextVar is empty.
-        if token_capture.completions:
+        if retained_inline_tokens is not None:
+            earlier_observed, earlier_trace = retained_inline_tokens
+            if token_capture.completions:
+                # Prior observed usage is disjoint from this fresh worker's
+                # capture; adding the cumulative trace would double count.
+                earlier_observed.add(**asdict(token_capture.totals))
+            else:
+                # Cached replay observes no current completions. Preserve its
+                # earlier observer-only/cache usage, plus any newly reported
+                # trace usage from a producer outside the native capture.
+                cumulative = asdict(self._last_token_totals or RunTokenTotals())
+                delta = {
+                    key: amount - asdict(earlier_trace)[key]
+                    for key, amount in cumulative.items()
+                }
+                if any(amount < 0 for amount in delta.values()):
+                    from reflexio.server.llm.input_budget import (
+                        ExtractionInputIntegrityError,
+                    )
+
+                    raise ExtractionInputIntegrityError(
+                        "Procedural usage trace lost retained turns"
+                    )
+                earlier_observed.add(**delta)
+            self._last_token_totals = earlier_observed
+        elif token_capture.completions:
             self._last_token_totals = token_capture.totals
         generated_count = self._count_generated_results(result)
         billable_count = (

@@ -240,6 +240,7 @@ class JournalClient:
         _, self.quotes, _ = catalog(data, visible)
         self.profiles = deepcopy(delegate.profiles)
         self.model_ladders = deepcopy(delegate.model_ladders)
+        self.request_contracts = deepcopy(delegate.request_contracts)
         self.latest_provenance: ModelProvenance | None = None
 
     def ask[T](
@@ -270,6 +271,7 @@ class JournalClient:
                 "evidence_choices": evidence_choices,
                 "profiles": self.profiles,
                 "model_ladders": self.model_ladders,
+                "request_contracts": self.request_contracts,
             },
         )
         self.coordinator.validate_current_parent()
@@ -378,6 +380,10 @@ def _input(
         for row in context.evidence_sources.values()
         if row.evidence_texts
     }
+    if not any(piece.strip() for pieces in visible.values() for piece in pieces):
+        # Preserve every source witness, but do not ask a model to learn from
+        # an entirely blank projection. Mixed useful/blank pieces stay exact.
+        visible = {}
     originals = {
         row.interaction_id: (row, group.request)
         for group in groups
@@ -389,19 +395,23 @@ def _input(
         query = "\n\n".join(text for pieces in visible.values() for text in pieces)[
             -MAX_KNOWLEDGE_QUERY_CHARS:
         ]
-        existing = PlaybookConsolidator(
-            service.request_context, service.client, config.deduplication_config
-        ).retrieve_existing_playbooks(
-            [
-                UserPlaybook(
-                    user_id=current.user_id,
-                    agent_version=current.agent_version,
-                    request_id=current.request_id,
-                    trigger=query,
-                )
-            ],
-            user_id=current.user_id,
-            agent_version=current.agent_version,
+        existing = (
+            PlaybookConsolidator(
+                service.request_context, service.client, config.deduplication_config
+            ).retrieve_existing_playbooks(
+                [
+                    UserPlaybook(
+                        user_id=current.user_id,
+                        agent_version=current.agent_version,
+                        request_id=current.request_id,
+                        trigger=query,
+                    )
+                ],
+                user_id=current.user_id,
+                agent_version=current.agent_version,
+            )
+            if visible
+            else []
         )
         coordinator.remember_historical_playbooks(existing)
         checkpoint = coordinator.checkpoint
@@ -455,10 +465,21 @@ def _retained(coordinator: OverflowCoordinator) -> ProceduralOutput:
         for chunk in coordinator.require_prepared().chunks
     ]
     steps = coordinator.checkpoint[KEY].get("reader_steps", {})
+    blank_source_noop = (
+        output.receipt.get("source_projection") == "no_visible_native_evidence"
+        and output.write_plan is None
+        and not steps
+        and coordinator.attempt_count == 0
+        and all(
+            not span.text.strip()
+            for chunk in coordinator.require_prepared().chunks
+            for span in (*chunk.neighbors, *chunk.spans)
+        )
+    )
     if (
         output.source_digest != coordinator.source_digest
         or output.source_coverage != expected
-        or set(steps) != set(expected)
+        or (not blank_source_noop and set(steps) != set(expected))
         or any(coordinator.completed_step(key) is None for key in steps.values())
         or output.historical_playbooks
         != coordinator.checkpoint.get("historical_playbooks", {})
@@ -539,6 +560,7 @@ def compute_window(
             {
                 "profiles": deepcopy(delegate.profiles),
                 "model_ladders": deepcopy(delegate.model_ladders),
+                "request_contracts": deepcopy(delegate.request_contracts),
                 "attempt_start": coordinator.attempt_count,
             }
         )
@@ -546,6 +568,7 @@ def compute_window(
     elif (
         checkpoint[KEY]["profiles"] != delegate.profiles
         or checkpoint[KEY]["model_ladders"] != delegate.model_ladders
+        or checkpoint[KEY].get("request_contracts") != delegate.request_contracts
     ):
         raise ExtractionInputIntegrityError("Procedural stage model settings changed")
     # Restore the selected operation's finite physical-call allowance; a worker

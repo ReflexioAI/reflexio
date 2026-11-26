@@ -14,6 +14,11 @@ from reflexio.server.llm._litellm_types import (
     ExtractionInputIntegrityError,
     ModelProvenance,
 )
+from reflexio.server.llm.token_accounting import (
+    RunTokenTotals,
+    run_token_capture,
+    sum_trace_tokens,
+)
 from reflexio.server.llm.tools import ToolLoopTrace
 from reflexio.server.services.storage.storage_base import AgentRunRecord, BaseStorage
 from reflexio.server.services.storage.storage_base._procedural_execution import KEY
@@ -52,6 +57,14 @@ class ContinuingClient(StageClient):
         )
         self.physical_calls = self.checkpoint["physical_calls"]
         self.trace = ToolLoopTrace.model_validate(self.checkpoint["trace"])
+        self.capture = run_token_capture.get()
+        self.earlier_trace_usage = sum_trace_tokens(self.trace)
+        observed = self.checkpoint.get("observed_usage")
+        self.earlier_usage = (
+            RunTokenTotals(**observed)
+            if observed is not None
+            else sum_trace_tokens(self.trace)
+        )
         if self.checkpoint["provenance"] is not None:
             self.latest_provenance = ModelProvenance(**self.checkpoint["provenance"])
         self.persisted = deepcopy(saved)
@@ -62,6 +75,22 @@ class ContinuingClient(StageClient):
         value["revision"] += 1
         value["physical_calls"] = self.physical_calls
         value["trace"] = self.trace.model_dump(mode="json")
+        if self.capture is not None:
+            # Each save recomputes from a fixed earlier-worker prefix. Adding
+            # the current capture repeatedly would charge stages repeatedly.
+            observed = RunTokenTotals(**asdict(self.earlier_usage))
+            observed.add(**asdict(self.capture.totals))
+        else:
+            observed = RunTokenTotals(**asdict(self.earlier_usage))
+            current_trace = asdict(sum_trace_tokens(self.trace))
+            earlier_trace = asdict(self.earlier_trace_usage)
+            observed.add(
+                **{
+                    field: amount - earlier_trace[field]
+                    for field, amount in current_trace.items()
+                }
+            )
+        value["observed_usage"] = asdict(observed)
         value["provenance"] = (
             asdict(self.latest_provenance) if self.latest_provenance else None
         )
@@ -100,6 +129,7 @@ class ContinuingClient(StageClient):
                     name: model.model_json_schema() for name, model in models.items()
                 },
                 "evidence_choices": evidence_choices,
+                "request_contracts": self.request_contracts,
             }
         )
         failure = self.checkpoint["failed"].get(key)

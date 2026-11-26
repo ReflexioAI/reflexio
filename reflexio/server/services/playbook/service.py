@@ -467,7 +467,7 @@ class PlaybookGenerationService(
         )
 
         coordinator = current_overflow_coordinator.get()
-        saved_output = (
+        saved_output = (run is not None and run.committed_output is not None) or (
             coordinator is not None
             and coordinator.saved_run is not None
             and coordinator.saved_run.committed_output is not None
@@ -534,9 +534,26 @@ class PlaybookGenerationService(
                     "Skipping normal candidate reviewer for expert-content batch"
                 )
             else:
-                strict_normal = uses_evidence_grounded_extraction(
-                    self.request_context.prompt_manager,
-                    expert=False,
+                saved_schema = (
+                    run.generation_request_snapshot.get("output_schema_name")
+                    if run is not None
+                    else None
+                )
+                # Replay uses the admitted producer contract in conversion and
+                # review alike; current prompt activation cannot erase or reject
+                # a valid older result for evidence its schema never requested.
+                strict_normal = (
+                    saved_schema != "StructuredPlaybookList"
+                    if saved_schema
+                    in {
+                        "StructuredPlaybookList",
+                        "StructuredExtractedPlaybookList",
+                        "StructuredReferencedExtractedPlaybookList",
+                    }
+                    else uses_evidence_grounded_extraction(
+                        self.request_context.prompt_manager,
+                        expert=False,
+                    )
                 )
                 if not strict_normal:
                     logger.info(

@@ -166,3 +166,13 @@ run row. Continuation uses the persisted row's project identity. A different
 current scope cannot relabel stored preparation. Default-project SQLite tests do
 not establish the nonempty-project enterprise cohort: that requires the native
 project-aware storage qualification cells.
+
+
+Exhausted malformed outer-batch JSON becomes a terminal, content-free contract
+failure after the existing single structural repair. Both journals retain that
+outcome. Every stage binds resolved request-policy and fallback-rung descriptors
+by SHA-256 alongside source/schema/profile witnesses, in its checkpoint contract
+and stage key. Raw descriptors can contain credential-bearing route URLs and
+never enter these records. A changed effective policy holds cached work before
+dispatch; unchanged policies reuse it. Malformed terminal delivery cannot gain
+another repair cycle on retry.

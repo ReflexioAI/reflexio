@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from copy import deepcopy
 from functools import reduce
+from hashlib import sha256
 from operator import or_
 from typing import Annotated, Any, Literal, cast
 
@@ -29,6 +30,21 @@ from .models import ContractError, Finish, Model, Text
 
 MAX_CALLS = 6
 BATCH_TOOL = "return_procedural_batch"
+
+
+def _request_contract_digest(contract: dict[str, Any]) -> str:
+    """Bind effective native policy without retaining credential-bearing routes."""
+    try:
+        payload = json.dumps(
+            contract,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        raise ContractError("Procedural request contract is not hashable") from None
+    return sha256(payload.encode()).hexdigest()
 
 
 class IncompleteBatchError(ContractError):
@@ -233,6 +249,7 @@ class StageClient:
         }
         self.single_call: dict[str, bool] = {}
         self.tool_choices: dict[str, str] = {}
+        self.request_contracts: dict[str, dict[str, Any]] = {}
         for stage, options in self.profiles.items():
             primary = client.get_completion_request_contract(**options)
             if not isinstance(primary, dict) or not isinstance(
@@ -259,6 +276,30 @@ class StageClient:
                 )
                 else "required"
             )
+            # Profiles bind explicit overrides, but inherited provider options
+            # (top_p, extensions, routing) also affect a resumed completion.
+            # Rebuild each rung exactly as the native ladder does. Descriptor
+            # URLs may contain credentials, so only their safe hashes escape.
+            self.request_contracts[stage] = {
+                "primary": _request_contract_digest(
+                    client.get_completion_request_contract(
+                        **options, tool_choice=self.tool_choices[stage]
+                    )
+                ),
+                "rungs": [
+                    _request_contract_digest(
+                        client.get_completion_request_contract(
+                            **{
+                                **options,
+                                "model": rung,
+                                "fallback_models": [],
+                                "tool_choice": self.tool_choices[stage],
+                            }
+                        )
+                    )
+                    for rung in self.model_ladders[stage]
+                ],
+            }
 
     def _dispatch_guard(self, *_args: Any) -> None:
         if self.physical_calls >= MAX_CALLS:
@@ -407,6 +448,10 @@ class StageClient:
                 raise
             except (ValidationError, ContractError, json.JSONDecodeError) as error:
                 if attempt or remaining == 1:
+                    if isinstance(error, json.JSONDecodeError):
+                        raise ContractError(
+                            "Malformed procedural batch JSON after bounded structural repair"
+                        ) from None
                     raise
                 feedback = (
                     error.errors(include_input=False, include_url=False)

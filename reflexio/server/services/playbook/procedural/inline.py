@@ -303,6 +303,7 @@ def run_inline(extractor: Any, groups: list[Any]) -> AgentRunResult:
                     "existing": data.existing,
                     "profiles": stage_client.profiles,
                     "model_ladders": stage_client.model_ladders,
+                    "request_contracts": stage_client.request_contracts,
                 },
             )
             receipt = run_pipeline(data, visible, stage_client)
