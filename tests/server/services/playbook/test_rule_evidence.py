@@ -25,6 +25,17 @@ from reflexio.server.services.playbook.rule_evidence.wire import (
 
 
 @pytest.mark.unit
+def test_judge_prompt_states_schema_output_limits(data):
+    from reflexio.server.services.playbook.rule_evidence.wire import diagnostic_request
+
+    prompt, _, schema = diagnostic_request(data, data.sessions[0])
+    properties = schema.model_json_schema()["properties"]
+    for field in ("observations", "missing_information"):
+        limit = properties[field]["maxItems"]
+        assert f"at most {limit} `{field}`" in prompt
+
+
+@pytest.mark.unit
 def test_provider_parser_accepts_original_integer_turn_ids(data, diagnostic):
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
