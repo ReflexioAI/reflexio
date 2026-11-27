@@ -417,7 +417,7 @@ class LineageGCScheduler(ThreadedScheduler):
 
         Extracted from ``_gc_tick``'s per-org loop body so it can be handed to
         :func:`iterate_orgs_bounded` as the per-org work item; the stop-event
-        check that used to guard the loop iteration now lives in that helper.
+        check lives in that helper.
 
         Args:
             org_id (str): The org to sweep this tick.
@@ -517,8 +517,8 @@ class LineageGCScheduler(ThreadedScheduler):
             #
             # NOT a fallback to one unscoped pass. Under project row-level
             # policies an unscoped sweep matches nothing anyway, so the fallback
-            # would do no work while re-emitting the very unbound-credential
-            # warning this change exists to clear. Skipping says the same thing
+            # would do no work while re-emitting an unbound-credential
+            # warning. Skipping says the same thing
             # honestly. Mirrors the aggregation capability, which skips an org
             # with no project to attribute its work to.
             logger.warning(

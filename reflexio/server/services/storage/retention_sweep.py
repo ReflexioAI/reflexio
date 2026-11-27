@@ -1,19 +1,18 @@
 """Row-count retention caps, swept on the shared lineage GC scheduler.
 
-This body used to run on the publish request thread, two lines before the
-generation service's own clock started. It probes every registered retention
-target -- 17 today -- each one a serialised remote round trip, so one unlucky
-publish per throttle window paid for all of them and reported a fast request.
-Measured at 968ms on idle staging: 52% of that publish.
+It stays off the publish request thread. It probes every registered retention
+target, each one a serialised remote round trip, so on the request path one
+unlucky publish per throttle window would pay for all of them while the
+generation service's own clock reported a fast request. Measured at 968ms on
+idle staging: 52% of that publish.
 
-It now runs once per project per lineage-GC tick, and sizes every target in
+It runs once per project per lineage-GC tick, and sizes every target in
 ONE ``RetentionMixin.probe_retention_targets`` call before the per-target loop.
 On a remote backend that is a catalog read plus at most one batched count, not
-two to three round trips per target: an empty, never-analyzed org used to pay
-for 17 exact counts one by one, ~23 s per project, all of it overhead. The
-decisions are the per-target ones -- a delete still rests on an exact count, and
-after any delete the remaining targets are probed one at a time, as they always
-were, because a cascade may have shrunk them (``user_playbooks`` ->
+two to three round trips per target: exact counts one by one cost an empty,
+never-analyzed org ~23 s per project, all of it overhead. The decisions are
+the per-target ones -- a delete still rests on an exact count, and after any
+delete the remaining targets are probed one at a time, because a cascade may have shrunk them (``user_playbooks`` ->
 ``agent_playbook_source_user_playbooks``).
 
 The probe is a snapshot taken at the start of the pass, and a snapshot is only
@@ -31,7 +30,7 @@ It is the same shape as, and narrower than, the residual the estimate already
 carries -- a burst of 20% of the cap inside the statistics flush delay, the
 documented limit of a ``reltuples``-based ``estimate_retention_target_rows``.
 Closing it entirely means counting every target at its own turn, which is the
-cost this change exists to remove.
+cost the batched probe exists to avoid.
 
 Two properties are
 load-bearing and easy to lose:
@@ -162,11 +161,11 @@ class RetentionSweepResult:
 #:
 #: The library has NO background scheduler -- `maybe_start_lineage_gc` is called
 #: only from the FastAPI lifespan -- so an embedded/SQLite user who publishes
-#: through `Reflexio.publish_interaction` would otherwise get no row caps at all
-#: once the sweep left the server's request path. Sweeping there is correct and
-#: cheap: the cost this change removed was a REMOTE round trip per target, and
-#: the embedded case is typically a local file. The throttle keeps it from
-#: running on every single publish, exactly as the request path used to.
+#: through `Reflexio.publish_interaction` would otherwise get no row caps at all,
+#: because the sweep is not on the server's request path. Sweeping there is
+#: correct and cheap: the cost that matters is a REMOTE round trip per target,
+#: and the embedded case is typically a local file. The throttle keeps it from
+#: running on every single publish.
 LIBRARY_SWEEP_MIN_INTERVAL_SECONDS = 300.0
 
 _library_last_sweep: dict[str, float] = {}

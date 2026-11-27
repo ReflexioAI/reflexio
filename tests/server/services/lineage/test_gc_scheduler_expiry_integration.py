@@ -1,4 +1,4 @@
-"""Integration test: _gc_tick tombstones TTL-expired active profiles (Task 1.4).
+"""Integration test: _gc_tick tombstones TTL-expired active profiles.
 
 Verifies that the expiry sweep step is wired into _gc_tick BEFORE the tombstone
 GC so that profiles past their TTL are tombstoned in the same tick that would

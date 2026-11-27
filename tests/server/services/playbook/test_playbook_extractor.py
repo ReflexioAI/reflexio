@@ -785,7 +785,7 @@ class TestUpdateOperationState:
     ):
         """run()'s outcome.bookmark_advance carries the returned interactions.
 
-        The extractor no longer self-advances the bookmark (F1); it defers the
+        The extractor does not self-advance the bookmark; it defers the
         advance onto the ExtractionOutcome for persist to apply atomically with
         the playbook row writes.
         """
@@ -964,7 +964,7 @@ class TestRun:
     ):
         """After successful extraction the outcome carries a bookmark advance.
 
-        The extractor no longer writes the bookmark itself (F1) — it defers the
+        The extractor does not write the bookmark itself — it defers the
         advance onto the ExtractionOutcome for persist to apply.
         """
         config = PlaybookConfig(

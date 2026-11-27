@@ -203,7 +203,7 @@ def test_evaluate_agent_success(mock_chat_completion):
             request_interaction_data_models=[request_interaction],
         )
 
-        # The service should run without errors (no longer saves playbooks)
+        # The service should run without errors
         agent_success_service.run(evaluation_request)
 
         # Verify the service ran successfully (does not save playbooks anymore)

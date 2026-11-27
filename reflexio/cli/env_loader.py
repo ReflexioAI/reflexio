@@ -670,7 +670,6 @@ def _create_default_env(
     if created_dir:
         sys.stdout.write(f"Created directory: {target_dir}\n")
 
-    # Auto-generate secret keys
     for key in auto_generate_keys:
         token = secrets.token_hex(32)
         content = re.sub(

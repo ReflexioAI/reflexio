@@ -399,9 +399,9 @@ class TestGetInteractions:
 
 
 class TestUpdateOperationState:
-    """Tests for the deferred stride-bookmark advance (F1).
+    """Tests for the deferred stride-bookmark advance.
 
-    The extractor no longer self-advances its bookmark inside ``run()``; instead
+    The extractor does not self-advance its bookmark inside ``run()``; instead
     it carries the advance on the returned ``ExtractionOutcome`` so persist (or
     ``.run()``'s persist half) can apply it atomically with the row writes.
     """
@@ -694,7 +694,7 @@ class TestRun:
     ):
         """After successful extraction the outcome carries a bookmark advance.
 
-        The extractor no longer writes the bookmark itself (F1) — it defers the
+        The extractor does not write the bookmark itself — it defers the
         advance onto the ExtractionOutcome for persist to apply.
         """
         config = ProfileExtractorConfig(
@@ -862,7 +862,7 @@ class TestResumableAgentPath:
         sample_request_interaction_models,
         tool_call_completion,
     ):
-        """Post-#107 a profile extractor exposes attach_pending_info_request, not
+        """A profile extractor exposes attach_pending_info_request, not
         ask_human. The attach tool does not CREATE a pending tool call; it attaches
         the current run to an existing org-scoped Prior Knowledge (ask_human)
         request. We seed that org-scoped pending call, have the agent attach to it,
@@ -985,8 +985,8 @@ class TestResumableAgentPath:
         and produced no profiles yet) must still surface its run_id so the
         generation service can finalize the run to FINALIZED_PENDING_TOOL.
 
-        Regression: previously run() returned None for empty output, dropping
-        the run_id and orphaning the run in AGENT_COMPLETED so the resolve ->
+        Regression guard: if run() returned None for empty output, it would drop
+        the run_id and orphan the run in AGENT_COMPLETED so the resolve ->
         resume chain could never fire.
         """
         config = ProfileExtractorConfig(
@@ -1065,7 +1065,7 @@ class TestConvertRawToUserProfiles:
         )
         assert result[0].content == "User prefers dark mode"
         assert result[0].user_id == "test_user"
-        # Singleton extraction no longer records per-extractor provenance.
+        # Singleton extraction does not record per-extractor provenance.
         assert result[0].extractor_names is None
         assert result[1].content == "User's name is John"
 

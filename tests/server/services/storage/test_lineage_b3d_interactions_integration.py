@@ -1,15 +1,10 @@
-"""Integration tests for B3d: interaction delete fts+row+vec atomicity (SQLite only).
+"""Integration tests: interaction delete fts+row+vec atomicity (SQLite only).
 
-Both delete_user_interaction and delete_all_interactions_for_user previously called
-the self-committing _fts_delete helper BEFORE the interactions-row DELETE, leaving a
-crash window where the FTS entry was durably gone but the interaction row still existed.
-
-The fix rewrites both methods to do the FTS DELETE and the row DELETE inside a single
-`with self._lock:` block with one `conn.commit()`, mirroring the already-correct
-delete_all_interactions and delete_oldest_interactions siblings.
-
-A follow-on fix (B3d vec) also adds interactions_vec cleanup to all four delete methods
-inside the same atomic block, closing the orphaned-vector leak.
+The interaction-delete methods do the FTS DELETE, the interactions_vec DELETE and
+the row DELETE inside a single `with self._lock:` block with one `conn.commit()`.
+Calling the self-committing _fts_delete helper BEFORE the interactions-row DELETE
+would leave a crash window where the FTS entry is durably gone but the
+interaction row still exists; skipping the vec DELETE leaks orphaned vectors.
 
 These tests assert that after each method: the interaction row is gone AND its
 interactions_fts entry is also gone. When sqlite-vec is available, also assert that

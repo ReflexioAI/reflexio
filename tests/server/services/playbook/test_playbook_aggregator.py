@@ -2061,8 +2061,8 @@ def _make_pb(
 ) -> UserPlaybook:
     """Build a minimal UserPlaybook for grouping/aggregation tests.
 
-    Grouping is now purely content-similarity based (Option B): whole-content
-    polarity is no longer derived or gated. A skill may legitimately hold
+    Grouping is purely content-similarity based: whole-content polarity is not
+    derived or gated. A skill may legitimately hold
     mixed-orientation rules for different sub-aspects; preserving distinct
     do/avoid rules when merging is the aggregation prompt's responsibility.
     """
@@ -2077,12 +2077,12 @@ def _make_pb(
 
 
 def test_aggregator_groups_by_content_similarity_not_polarity():
-    """Grouping no longer gates on whole-content polarity.
+    """Grouping does not gate on whole-content polarity.
 
     Two rows whose tokens overlap above the threshold but carry opposite
-    orientations (a "do" rule and an "avoid" rule) MUST now land in the same
-    similarity group — the retired mechanical whole-content polarity
-    direction-split used to force them apart. Keeping the opposite-orientation
+    orientations (a "do" rule and an "avoid" rule) MUST land in the same
+    similarity group — a mechanical whole-content polarity direction-split
+    would force them apart. Keeping the opposite-orientation
     rules distinct inside a
     merged skill is delegated to the aggregation prompt, not to a mechanical
     pre-LLM split.

@@ -352,7 +352,7 @@ class TestReflexioBaseInit:
 
 
 # ---------------------------------------------------------------------------
-# Generation client timeout (claude-smart#162)
+# Generation client timeout
 # ---------------------------------------------------------------------------
 
 
@@ -371,8 +371,8 @@ def _generation_client_with(llm_config: LLMConfig | None) -> LiteLLMClient:
 def test_generation_client_outlives_the_120s_default() -> None:
     """The eval path must not inherit LiteLLMConfig's 120s default.
 
-    Regression for claude-smart#162: relevance evaluations died at ~122s,
-    seconds short of finishing, and agent-success evaluations legitimately ran
+    Measured under that default: relevance evaluations died at ~122s, seconds
+    short of finishing, and agent-success evaluations legitimately ran
     145-265s. 120s discards work that was about to succeed.
     """
     client = _generation_client_with(None)

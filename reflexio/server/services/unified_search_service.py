@@ -377,7 +377,7 @@ def _run_unified_search(
 
     # PARTIAL failure: the profiles arm failed while a requested playbook arm
     # answered. Serve what we have, but say so, rather than letting a storage
-    # outage read as "this user has no profile" (the pooled-connection incident).
+    # outage read as "this user has no profile".
     profiles_degraded = profiles is None
     if profiles_degraded:
         logger.warning(
@@ -1633,8 +1633,8 @@ def _search_profiles_via_storage(
 
     Returns ``None`` -- not ``[]`` -- when the search FAILED, so a storage
     outage is distinguishable from "this user genuinely has no matching
-    profile". Collapsing the two is what let a dead pooled connection surface
-    to an agent as an empty, successful answer (the pooled-connection incident).
+    profile". Collapsing the two lets a dead pooled connection surface to an
+    agent as an empty, successful answer.
 
     Args:
         storage (BaseStorage): Storage instance
@@ -1766,7 +1766,7 @@ class UnifiedSearchService:
 
     Wraps :func:`run_unified_search` so the dispatcher factory can return an
     object whose ``__class__.__name__`` can be inspected uniformly alongside
-    the agentic search service (Phase 4).
+    the agentic search service.
 
     Args:
         llm_client (LiteLLMClient): Configured LLM client.

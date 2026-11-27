@@ -1,4 +1,4 @@
-"""F1 shadow win-rate aggregator: ShadowComparisonVerdict[] → ShadowWinRateTrend.
+"""Shadow win-rate aggregator: ShadowComparisonVerdict[] → ShadowWinRateTrend.
 
 Pure: DB-free, LLM-free. Bucketed by UTC calendar date; the window total is
 computed by summing the daily buckets, so it is consistent with what the

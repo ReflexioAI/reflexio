@@ -929,8 +929,8 @@ def test_resolve_write_plan_fails_closed_for_strict_candidate_without_evidence()
 def test_run_manual_regular_no_window_size(mock_chat_completion):
     """Test run_manual_regular works even without window_size configured.
 
-    Since extractors handle window size at their level, the manual flow no longer
-    validates window_size upfront. Extractors use a fallback of 1000 interactions
+    Since extractors handle window size at their level, the manual flow does not
+    validate window_size upfront. Extractors use a fallback of 1000 interactions
     when no window size is configured.
     """
     org_id = "0"

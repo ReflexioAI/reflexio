@@ -640,8 +640,8 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
 def test_run_manual_regular_no_window_size(mock_chat_completion):
     """Test run_manual_regular works even without window_size configured.
 
-    Since extractors handle window size at their level, the manual flow no longer
-    validates window_size upfront. Extractors use a fallback of 1000 interactions
+    Since extractors handle window size at their level, the manual flow does not
+    validate window_size upfront. Extractors use a fallback of 1000 interactions
     when no window size is configured.
     """
     user_id = "test_user_manual"
@@ -1180,7 +1180,7 @@ def test_create_run_request_for_item_uses_distinct_rerun_operation_request_ids()
 def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
     """Pre-check should use the single extractor's window and source filters.
 
-    Post-#101 the pre-check is per-extractor: it takes ONE ProfileExtractorConfig
+    The pre-check is per-extractor: it takes ONE ProfileExtractorConfig
     and returns (session_data_models, that_config). The source-scoping intent is
     preserved by also asserting the should-skip path for a config whose enabled
     sources do not include the triggering request source.
@@ -1329,7 +1329,7 @@ def test_should_run_capacity_refusal_preserves_direct_gate_failure_policy(
 def test_should_run_before_extraction_includes_extractor_definition_and_override():
     """Per-extractor pre-check prompt must include the extractor's definition AND override.
 
-    Post-#101 the pre-check runs per extractor with a single config; the prompt
+    The pre-check runs per extractor with a single config; the prompt
     built by ProfileGenerationService._build_should_run_prompt combines that one
     extractor's extraction_definition_prompt and should_extract_profile_prompt_override.
     """

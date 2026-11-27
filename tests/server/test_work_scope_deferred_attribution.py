@@ -9,10 +9,10 @@ between the request that queues work and the thread that runs it:
    window collapse into ONE callback, attributed to whichever request won the
    race. The tests below fail against a project-less key.
 
-2. **A scope failure must surface.** Each deferred path used to funnel every
-   exception into a blanket ``except`` + log. While that stands, no test
-   asserting "the job raises" can go red, because the handler eats it one frame
-   above the storage call. The tests below assert the escalation instead, and
+2. **A scope failure must surface.** Each deferred path has a blanket
+   ``except`` + log, so no test asserting "the job raises" can go red: the
+   handler eats it one frame above the storage call. The tests below assert the
+   escalation instead, and
    go red if the narrow ``WorkScopeError`` branch is folded back into the
    blanket one.
 
@@ -99,7 +99,7 @@ def test_tagging_debounce_does_not_coalesce_two_projects(
 ) -> None:
     """THE central assertion: same org/user/agent, two projects, one window.
 
-    Against the old ``(org_id, user_id, agent_version)`` key the second schedule
+    Against a project-less ``(org_id, user_id, agent_version)`` key the second schedule
     overwrites the first and exactly ONE callback fires.
     """
     monkeypatch.setattr(tagging_scheduler, "_EFFECTIVE_DELAY_SECONDS", 0.01)

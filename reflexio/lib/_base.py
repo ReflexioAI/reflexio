@@ -46,7 +46,7 @@ class StorageNotConfiguredError(RuntimeError):
 # LiteLLMConfig.timeout (120s). That default kills work that is about to
 # succeed: session evaluations against a local-CLI bridge were measured at
 # 145-265s, and relevance evaluations died at ~122s -- seconds short of
-# finishing (claude-smart#162). This client backs background generation,
+# finishing. This client backs background generation,
 # aggregation and evaluation workers rather than a user-facing request, so
 # waiting longer is cheaper than discarding completed work. Per-tenant
 # override: LLMConfig.generation_timeout_seconds; process-wide:

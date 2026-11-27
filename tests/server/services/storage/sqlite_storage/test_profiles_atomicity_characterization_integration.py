@@ -1,10 +1,8 @@
-"""Characterization tests: SQLite profile/interaction atomicity (Tier-1 Task 1).
+"""Characterization tests: SQLite profile/interaction atomicity.
 
-Phase-A invariant guards established BEFORE the ``ProfileMixin`` decomposition
-(``_profiles.py`` -> ProfileStore / InteractionStore / Search). They pin the CURRENT
-commit / lineage-event / no-op behavior of the top-risk, atomicity-sensitive profile
-MUTATION + STATUS methods and the interaction INSERT path so a "tidying" reorder during
-the mixin split is caught by a failing test. Modeled on the gold standards
+These pin the commit / lineage-event / no-op behavior of the top-risk,
+atomicity-sensitive profile MUTATION + STATUS methods and the interaction INSERT
+path so a "tidying" reorder is caught by a failing test. Modeled on
 ``test_lineage_b3f_profile_atomic_integration.py`` (profile deletes) and
 ``test_playbook_atomicity_characterization_integration.py`` (crash-window pattern).
 

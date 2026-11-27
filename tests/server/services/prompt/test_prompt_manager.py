@@ -285,12 +285,12 @@ class TestPromptManager:
         ``active: false``) are allowed and are listed in
         ``deprecated_prompt_dirs``. They are kept on disk as a historical
         record so verdicts produced by retired prompts can still be traced in
-        audit logs, but they no longer drive any production code path.
+        audit logs, but they do not drive any production code path.
         """
-        # F1 cleanup: the session-level shadow comparison code path was
-        # retracted because multi-turn shadow content suffers from
-        # trajectory contamination. Both prompts that backed that path are
-        # kept as historical records with every version marked inactive.
+        # There is no session-level shadow comparison code path: multi-turn
+        # shadow content suffers from trajectory contamination. Both prompts
+        # that would back it are kept as historical records with every version
+        # marked inactive.
         deprecated_prompt_dirs = {
             "agent_success_evaluation_with_comparison",
             "shadow_content_evaluation",

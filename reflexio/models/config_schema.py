@@ -788,7 +788,7 @@ class LLMConfig(BaseModel):
     # takes the module default in reflexio.lib._base, which is deliberately
     # higher than LiteLLMConfig.timeout: this client backs background
     # generation, aggregation and session evaluation, and real evaluations were
-    # measured at 145-265s against a local-CLI bridge (claude-smart#162).
+    # measured at 145-265s against a local-CLI bridge.
     generation_timeout_seconds: int | None = Field(default=None, gt=0)
     # Explicit tenant output/cost policy, required for opaque custom gateways.
     # None preserves native provider defaults; never infer it from context size.
@@ -969,9 +969,8 @@ class Config(BaseModel):
 
         ``storage_config is None`` is allowed: in enterprise deployments storage
         is configured centrally (via ``REFLEXIO_STORAGE``) and the per-org config
-        blob carries ``None`` rather than a concrete backend. The only removed
-        non-database backend (``disk``) is no longer representable as a
-        ``StorageConfig``, so a ``None`` here always denotes a deployment-managed
+        blob carries ``None`` rather than a concrete backend. No non-database
+        backend is representable as a ``StorageConfig``, so a ``None`` here always denotes a deployment-managed
         database backend (sqlite/supabase/postgres).
         """
         if (

@@ -302,7 +302,7 @@ def test_sweep_runs_unless_explicitly_disabled(
     Parametrised over unset and explicit-false together because the default is
     the whole point: asserting only the enabled case would still pass if the
     flag were ignored, and asserting only the disabled case would still pass
-    under the old opt-in default.
+    under an opt-in default.
     """
     from reflexio.server.services.lineage import vector_backfill_sweep as vbs
 

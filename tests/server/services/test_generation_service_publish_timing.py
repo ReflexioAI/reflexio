@@ -382,25 +382,22 @@ def _retention_entry_points() -> list[str]:
 
 
 def test_the_publish_path_issues_no_retention_round_trips() -> None:
-    """INVERTED from a phase-attribution guard when its subject was deleted.
+    """The retention sweep runs on the lineage GC scheduler, never on publish.
 
-    This test used to assert that `retention_sweep_ms` was present and contained
-    the sweep's elapsed time, because the sweep ran two lines above
-    `publish_start` and was in no phase at all. The sweep has since moved to the
-    lineage GC scheduler, so the subject of that assertion is gone. Where the
-    deleted thing WAS the test's subject, invert the test: asserting
-    `retention_sweep_ms == 0` would be a check that cannot fail, because a key
-    that is never written reads as absent either way.
+    The test asserts that no `retention_sweep_ms` phase is reported and that no
+    retention entry point is called. Asserting `retention_sweep_ms == 0` instead
+    would be a check that cannot fail, because a key that is never written reads
+    as absent either way.
 
     BOTH halves are required. The missing-phase-key assertion alone still passes
     if someone calls a storage hook outside a `publish_timing.phase` wrapper,
     which is precisely the defect shape the instrument was built to find.
 
-    The call half watches a DERIVED SET, not one method name. A review of the
-    first version produced a working bypass in three lines -- `count_all_interactions`
-    then `delete_oldest_interactions`, both live in production today, neither
-    named `count_retention_target_rows` -- which reintroduced an exact count and
-    an irreversible delete onto the publish path while the guard stayed green.
+    The call half watches a DERIVED SET, not one method name. A single-name
+    check has a three-line bypass -- `count_all_interactions` then
+    `delete_oldest_interactions`, both live in production, neither named
+    `count_retention_target_rows` -- which would put an exact count and an
+    irreversible delete onto the publish path while the guard stayed green.
 
     Known limits, stated rather than left for the next reader to discover:
     it sees only the OSS SQLite storage class, so an enterprise-side publish

@@ -207,7 +207,7 @@ def test_server_scope_resets_after_failure_and_does_not_suppress_other_threads(
 def test_publish_attributes_evaluation_config_without_changing_calls(
     reflexio: Reflexio, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Previously invisible config costs retain their call semantics."""
+    """Attributing evaluation config costs does not change their calls."""
     from types import SimpleNamespace
 
     clock = [0.0]

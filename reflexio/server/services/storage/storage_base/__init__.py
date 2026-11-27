@@ -250,8 +250,8 @@ class BaseStorage(
 
         # All statuses a user's row can have — including tombstones (SUPERSEDED,
         # MERGED, EXPIRED). Erasure MUST reach every row the user owns regardless
-        # of status; the old filter excluded tombstones, leaving them in the DB
-        # after clear_user_data (GDPR regression).
+        # of status; a filter that excludes tombstones leaves them in the DB
+        # after clear_user_data.
         _all_statuses: list[Status | None] = [
             None,  # CURRENT
             Status.ARCHIVED,

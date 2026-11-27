@@ -1,6 +1,6 @@
-"""Task 3 (gate-b F2): explicit ``skip_embedding`` on the SQLite write methods.
+"""Explicit ``skip_embedding`` on the SQLite write methods.
 
-V1 override of the plan: the durable compute/persist split must opt OUT of
+The durable compute/persist split must opt OUT of
 write-time embedding via an EXPLICIT ``skip_embedding=True`` (the vector was
 already populated up front by ``precompute_*_embeddings``), never via an
 ``if not X.embedding`` guard.

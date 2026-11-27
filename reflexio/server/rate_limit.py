@@ -163,7 +163,7 @@ class _SDKLimiter(Limiter):
     def _admission(self, decorate: Callable) -> Callable:
         def decorator(endpoint: Callable) -> Callable:
             # Keep upstream validation and live registration maps, but omit its
-            # response wrapper: the SDK no longer reads success quota metadata.
+            # response wrapper: the SDK does not read success quota metadata.
             decorate(endpoint)
             signature = inspect.signature(endpoint)
 

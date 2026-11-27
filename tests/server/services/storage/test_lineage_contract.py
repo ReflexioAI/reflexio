@@ -1,8 +1,7 @@
 """Storage contract tests for the lineage mixin.
 
 Parametrized over locally-testable backends via the shared ``storage`` fixture
-in conftest.py (currently SQLite only).  Enterprise backends (postgres/supabase)
-are added in Task 12 when their gated suite is built.
+in conftest.py (currently SQLite only).
 """
 
 import pytest
@@ -145,9 +144,9 @@ def test_merge_records_nothing_when_every_source_is_already_tombstoned(
 ) -> None:
     """A merge that changes no row must not record that it merged anything.
 
-    The row guard makes this a no-op, but the event was previously appended
-    unconditionally — so a retry under a NEW request_id wrote a ``merge`` event
-    asserting a state change that never occurred. A new request_id is essential
+    The row guard makes this a no-op, and the event must follow the same guard:
+    appended unconditionally, a retry under a NEW request_id would write a
+    ``merge`` event asserting a state change that never occurred. A new request_id is essential
     to the test: ``_append_event_stmt`` de-duplicates on
     ``(org_id, entity_type, entity_id, op, request_id)``, so replaying the SAME
     id would be suppressed by that key and hide the defect.

@@ -1,9 +1,10 @@
 """Integration tests: hard_delete lineage events on all remaining physical-delete methods.
 
-Phase A already covered delete_user_playbooks_by_ids / delete_agent_playbooks_by_ids.
-This file covers the net-new methods added in Phase B1 / Task 2:
+delete_user_playbooks_by_ids is also covered in
+``test_hard_delete_events_integration.py``. This file covers:
   - Single-row: delete_user_playbook, delete_agent_playbook, delete_user_profile
-  - Bulk by-ids: delete_profiles_by_ids (+ emit_hard_delete=False skip)
+  - Bulk by-ids: delete_profiles_by_ids (+ emit_hard_delete=False skip),
+      delete_agent_playbooks_by_ids
   - Bulk GDPR/org-wipe: delete_all_profiles_for_user, delete_all_profiles,
       delete_all_user_playbooks, delete_all_agent_playbooks,
       delete_all_user_playbooks_by_playbook_name, delete_all_agent_playbooks_by_playbook_name,

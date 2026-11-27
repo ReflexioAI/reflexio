@@ -196,8 +196,8 @@ class TestSetConfig:
         """Round-tripping the redacted platform-managed marker that get_config()
         emits resolves to the real storage config instead of failing readiness.
 
-        Regression: the marker (a StorageConfigManagedSupabase) carries no real
-        credentials, so it has no readiness check and previously failed with
+        The marker (a StorageConfigManagedSupabase) carries no real
+        credentials, so it has no readiness check; unresolved, it fails with
         "Storage configuration is incomplete" on the HTTP set_config path (which
         binds the body to a typed Config and never hits normalize_config_payload).
         """

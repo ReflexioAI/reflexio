@@ -291,7 +291,7 @@ def test_pinned_profile_contract_admits_only_the_derived_resend():
 def test_plain_path_resends_without_thinking(caplog, first):
     """The no-validator rung's one retry is the thinking-disabled resend.
 
-    It used to re-issue the request byte-identically, thinking on, at the
+    It must not re-issue the request byte-identically, thinking on, at the
     same cap -- the reply that had just reasoned the whole budget away.
     """
     calls, result = _run(M3, [first, (VALID, "stop")], caplog, validator=None)

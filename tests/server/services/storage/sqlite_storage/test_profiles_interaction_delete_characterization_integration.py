@@ -1,9 +1,7 @@
-"""Characterization tests: SQLite interaction-delete row removal (Tier-1 Task 1).
+"""Characterization tests: SQLite interaction-delete row removal.
 
-Phase-A characterization net for the InteractionStore bucket of the ``ProfileMixin``
-decomposition (``_profiles.py`` -> ProfileStore / InteractionStore / Search). These pin
-the CURRENT row-removal contract of the four interaction-delete methods so a later
-VERBATIM code move into the InteractionStore bucket is provably safe:
+These pin the row-removal contract of the four interaction-delete methods so a
+code move or refactor of the InteractionStore is caught if it changes them:
   - ``delete_user_interaction``
   - ``delete_all_interactions_for_user``
   - ``delete_all_interactions``

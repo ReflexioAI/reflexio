@@ -1,15 +1,14 @@
 """Integration test: GET /api/profile_change_log serves the lineage reconstruction.
 
-B3 Task 3 repoints the endpoint (via the lib facade ``get_profile_change_logs``)
-from the legacy ``profile_change_logs`` table to ``reconstruct_profile_change_log``
-(lineage_event linkage + survivor/tombstone content). The earlier revert to the
-legacy path is now resolved: the dedup write-side soft-supersedes superseded
-profiles (``supersede_profiles_by_ids`` → ``status_change``/``superseded`` events)
+The endpoint (via the lib facade ``get_profile_change_logs``) serves
+``reconstruct_profile_change_log`` (lineage_event linkage + survivor/tombstone
+content). The dedup write-side soft-supersedes superseded profiles
+(``supersede_profiles_by_ids`` → ``status_change``/``superseded`` events)
 instead of hard-deleting without linkage, so reconstruction can reproduce the
 removals.
 
-These tests seed via the REAL dedup write-side and deliberately do NOT write the
-legacy table — proving the endpoint is served from reconstruction.
+These tests seed via the REAL dedup write-side and write no change-log rows
+directly — proving the endpoint is served from reconstruction.
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ def _make_profile(
 
 
 def test_endpoint_serves_reconstructed_change_log(client_with_org):
-    """GET /api/profile_change_log returns the RECONSTRUCTED view (B3 Task 3).
+    """GET /api/profile_change_log returns the RECONSTRUCTED view.
 
     Seeds via the real dedup write-side:
       - survivor profile carries generated_from_request_id == the dedup run id
@@ -49,9 +48,9 @@ def test_endpoint_serves_reconstructed_change_log(client_with_org):
         a status_change/superseded lineage event under that run id (the "removed"
         signal).
 
-    It does NOT write the legacy table — so if the endpoint still read the legacy
-    table it would return zero rows. The endpoint must return the reconstructed
-    row with a schema-parseable shape.
+    It writes no change-log rows directly, so the endpoint can only return
+    rows by reconstruction. The endpoint must return the reconstructed row with
+    a schema-parseable shape.
     """
     client, org_id = client_with_org
     storage = get_reflexio(org_id=org_id).request_context.storage

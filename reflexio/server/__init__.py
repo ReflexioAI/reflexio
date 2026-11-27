@@ -142,22 +142,17 @@ _NOISY_FIRST_PARTY = (("reflexio.server.site_var.site_var_manager", logging.ERRO
 #: the whole unpinned third-party tail -- measured, ``boto3``, ``starlette`` and
 #: ``psycopg2`` all start firing. Note that the six names in
 #: ``_NOISY_THIRD_PARTY`` are NOT the reason: they carry an explicit WARNING that
-#: outranks the root, so they are immune. An earlier version of this comment cited
-#: exactly those two (``litellm``, ``httpx``) and was wrong about its own example.
+#: outranks the root, so they are immune.
 #:
 #: THIS PACKAGE'S OWN namespace only. A downstream distribution whose code lives
 #: under a different root passes it as ``extra_first_party_roots``; nothing here
 #: names it.
 #:
-#: An earlier version of this tuple carried a second, downstream root as a bare
-#: string, on the reasoning that a logger name is not an import -- ``getLogger``
-#: creates an object for any name, so on a machine without that package the entry
-#: is inert. The reasoning was not wrong; it was not mine to make. The enterprise
-#: guard added in reflexio-enterprise#474,
-#: ``test_oss_never_imports_enterprise``, walks the AST of every file here and
+#: Do not add a downstream root here, even as a bare string that ``getLogger``
+#: would treat as inert where that package is absent. The enterprise guard
+#: ``test_oss_never_imports_enterprise`` walks the AST of every file here and
 #: rejects a string constant naming that package as well as a real import, with no
-#: allowlist and no rationale field -- an absolute invariant, already decided. It
-#: had been red on the superproject's ``main`` for two commits before anyone looked.
+#: allowlist and no rationale field.
 _FIRST_PARTY_ROOTS = ("reflexio",)
 
 
@@ -204,9 +199,8 @@ def resolve_logging_env() -> dict[str, object]:
 
     The ONLY place this module reads the environment for logging, so
     :func:`configure_logging` stays a function of its arguments. That separation
-    is the point: the configuration used to be a module body nobody could call,
-    which is why working out what a deployed process could log meant running a
-    child interpreter against it.
+    is the point: a module body nobody can call means working out what a
+    deployed process could log requires running a child interpreter against it.
 
     ``REFLEXIO_LOG_PROFILE`` is the sole profile selector. A verbose request
     still requires explicit incident authorization under production; that
@@ -324,11 +318,10 @@ def _build_verbose_handlers(root: logging.Logger) -> None:
 #: * pytest's ``LogCaptureHandler`` is a ``StreamHandler`` subclass, so a class
 #:   check adopts the test framework's handler as the console.
 #: * ``RotatingFileHandler`` is ALSO a ``StreamHandler`` subclass (via
-#:   ``FileHandler``), so one unrelated rotating handler on the root made the
+#:   ``FileHandler``), so one unrelated rotating handler on the root would make the
 #:   verbose profile skip its console AND both log files -- no ``dev.log``, no
-#:   ``llm_io.log``, no console. Raised by Codex on reflexio#551, after the same
-#:   defect had been fixed for the stdout handler alone: marking one of four
-#:   handlers was fixing the line, not the class.
+#:   ``llm_io.log``, no console. Every managed handler is marked, not just the
+#:   stdout one.
 _MANAGED_HANDLER_ATTR = "_reflexio_managed_handler_role"
 
 
@@ -365,9 +358,9 @@ def _build_production_handler(root: logging.Logger, level: int) -> None:
       explicitly raised to INFO (``REFLEXIO_INFO_LOGGERS``, or
       ``first_party_level``) still reaches the log driver.
     * But a fixed INFO discards DEBUG records even when ``level`` lowered the root
-      to DEBUG -- so ``REFLEXIO_LOG_LEVEL=debug`` was ACCEPTED and did nothing.
-      A setting that silently has no effect is the exact class of defect this
-      module was rewritten to remove. Raised by Codex on reflexio#551.
+      to DEBUG -- so ``REFLEXIO_LOG_LEVEL=debug`` would be ACCEPTED and do
+      nothing. A setting that silently has no effect is the defect class this
+      module exists to prevent.
     """
     handler_level = min(logging.INFO, level)
 
@@ -407,8 +400,8 @@ def configure_logging(
     * Lowering is REQUIRED. A caller that forwards records elsewhere -- to a log
       aggregator, a file, an HTTP sink -- gets nothing if the records never fire
       in the first place, however low it sets its own threshold.
-    * Raising is pure harm, and used to ship. A caller asking for ERROR raised the
-      first-party loggers to ERROR and deleted every WARNING line from stdout,
+    * Raising is pure harm. A caller asking for ERROR would raise the
+      first-party loggers to ERROR and delete every WARNING line from stdout,
       which for a self-hosted deployment is the only observability channel there
       is.
     * Raising is also UNNECESSARY. A downstream consumer filters on its OWN
@@ -421,7 +414,7 @@ def configure_logging(
 
     A note on the default. ``level`` defaults to WARNING rather than INFO because
     app-wide INFO on a busy server drove ~3x log volume and grew memory to the
-    container ceiling over a few hours (production incident 2026-07-04). INFO is
+    container ceiling over a few hours in production. INFO is
     therefore opt-in: globally through ``REFLEXIO_LOG_LEVEL`` when an operator
     deliberately asks, or per subsystem through ``info_loggers``, which stays the
     surgical option and the one to prefer.
@@ -456,10 +449,10 @@ def configure_logging(
         root.setLevel(min(level, logging.WARNING))
 
     # Per-subsystem overrides FIRST, noisy suppression second, so suppression
-    # wins -- the order the module body used, and not interchangeable with it:
+    # wins -- the order is not interchangeable:
     # `REFLEXIO_INFO_LOGGERS=litellm` would otherwise overwrite litellm's WARNING
     # pin and turn its INFO traffic on in production, which is a volume
-    # regression nothing else would have caught. Raised by Codex on reflexio#551.
+    # regression nothing else would catch.
     for name in info_loggers:
         logging.getLogger(name).setLevel(logging.INFO)
         pinned[name] = logging.INFO

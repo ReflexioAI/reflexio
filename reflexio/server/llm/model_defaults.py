@@ -494,7 +494,7 @@ def _warn_if_fallback_cannot_run(fallbacks: list[str]) -> None:
 
     The ladder walk enforces one wall-clock budget across all rungs
     (``_LADDER_WALL_CLOCK_BUDGET_SECONDS``), so this is a configuration fact, not
-    a per-call one -- it used to be re-warned on every structured call. Checked
+    a per-call one. Checked
     against the process default generation timeout; a tenant's
     ``generation_timeout_seconds`` override is not visible here.
 

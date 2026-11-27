@@ -4,13 +4,12 @@ Companion to :mod:`llm_mock`, which does the same for ``litellm.completion``.
 Patches the shared embedding dispatch so unit tests get a vector without a
 running inference service.
 
-Why this exists: embeddings used to be computed in-process during tests, so
-storage writes got real vectors for free. That path was removed when local
-inference moved behind a service, and nothing replaced it for tests -- the
-suite kept passing only because the SQLite ingest path swallows
-``EmbeddingUnavailableError`` and stores an empty vector. So the write
-succeeded, the row was silently unsearchable, and any assertion about vector
-search or clustering downstream of it was passing vacuously.
+Why this exists: local inference runs behind a service, so tests have no
+in-process embedder. Without a stub the suite still passes, only because the
+SQLite ingest path swallows ``EmbeddingUnavailableError`` and stores an empty
+vector. The write succeeds, the row is silently unsearchable, and any
+assertion about vector search or clustering downstream of it passes
+vacuously.
 
 The vectors are deterministic but **not semantic**: they are derived from a
 hash of the text, so identical text embeds identically and different text

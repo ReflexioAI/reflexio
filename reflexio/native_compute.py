@@ -128,7 +128,7 @@ def native_compute_env(env: Mapping[str, str]) -> dict[str, str]:
     """Return a validated child environment without mutating the parent.
 
     The standard library variables are derived outputs for cold native imports;
-    they are no longer independent Reflexio inference configuration choices.
+    they are not independent Reflexio inference configuration choices.
     """
     threads = str(native_compute_threads(env))
     prepared = dict(env)

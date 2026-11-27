@@ -1,11 +1,10 @@
 """``service_config_snapshot`` never persists copied user content.
 
 The snapshot is audit metadata only (its sole reader is recovery's
-``payload_fingerprint``, which hashes whatever a row stores). Window
-interactions, every existing profile of the user and a third copy of the
-extractor config used to be written into it on every run; the builder now
-drops them for every run shape, and these tests fail if any path brings one
-back.
+``payload_fingerprint``, which hashes whatever a row stores). The builder
+must not write window interactions, the user's existing profiles or a copy of
+the extractor config into it, for any run shape; these tests fail if any path
+writes one.
 """
 
 from __future__ import annotations

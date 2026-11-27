@@ -736,12 +736,12 @@ class TestStructuredPlaybookList:
         ]
 
     def test_legacy_single_playbook_shape_rejected(self):
-        """Legacy {"playbook": ...} shape is no longer accepted."""
+        """Legacy {"playbook": ...} shape is not accepted."""
         with pytest.raises(ValueError):
             StructuredPlaybookList.model_validate({"playbook": None})
 
     def test_legacy_feedback_shape_rejected(self):
-        """Legacy {"feedback": ...} shape is no longer accepted."""
+        """Legacy {"feedback": ...} shape is not accepted."""
         with pytest.raises(ValueError):
             StructuredPlaybookList.model_validate({"feedback": None})
 
@@ -756,7 +756,7 @@ class TestStructuredPlaybookList:
         """Legacy flat single-entry shape (no `playbooks` wrapper) is rejected.
 
         Pins the contract that an LLM regression to the v1 single-entry
-        shape ``{"trigger": ..., "content": ...}`` no longer parses
+        shape ``{"trigger": ..., "content": ...}`` does not parse
         as a StructuredPlaybookList — the broad ``except`` in
         ``PlaybookExtractor.extract_playbook_entries`` then logs the
         ValidationError and returns ``[]`` instead of silently building

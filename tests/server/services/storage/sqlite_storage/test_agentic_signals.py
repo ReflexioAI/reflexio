@@ -1,4 +1,4 @@
-"""Task 2.4: agentic signal columns persist through profiles + user_playbooks."""
+"""Agentic signal columns persist through profiles + user_playbooks."""
 
 from __future__ import annotations
 

@@ -4,9 +4,9 @@ FastAPI validates a declared body model inside its request handler, on the
 event loop, even for a sync (``def``) endpoint: only the endpoint call itself
 moves to the threadpool. A bulk-ingest body -- a list of nested models, up to
 the 10 MB body limit -- costs per-element Python-level validation there, and
-everything else on that loop waits, ``/health/live`` included. On 2026-11-10 a
-multi-MB publish held the single production task's loop long enough for two
-consecutive ALB liveness probes to time out, and ECS replaced the task.
+everything else on that loop waits, ``/health/live`` included. In production a
+multi-MB publish has held a single task's loop long enough for two consecutive
+ALB liveness probes to time out, and ECS replaced the task.
 
 :func:`off_loop_body` keeps the route's contract unchanged and moves only the
 model validation:

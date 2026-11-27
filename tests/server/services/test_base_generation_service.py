@@ -125,8 +125,8 @@ class ConcreteGenerationService(BaseGenerationService):
 
     # Legacy generic service (no durable persist split): write in compute via
     # the permanent _finalize_extracted_items wrapper, mirroring
-    # AgentSuccessEvaluationService, so it stays instantiable after gate (b)
-    # flipped _resolve_write_plan/_persist_write_plan to @abstractmethod.
+    # AgentSuccessEvaluationService, so it stays instantiable while
+    # _resolve_write_plan/_persist_write_plan are @abstractmethod.
     def _resolve_write_plan(self, results):
         for result in results:
             if result:
@@ -2334,10 +2334,8 @@ class TestPureSlashCommand:
     def test_handles_bare_slash_with_no_body(self):
         """A lone ``/`` has no command-name token; treat as non-pure.
 
-        Pins the edge-case behavior after the switch from
-        ``startswith("/")`` to the token-regex approach — the old rule
-        would have flagged this as a slash command, the new rule does
-        not, and we want regressions here to be loud.
+        A ``startswith("/")`` rule would flag this as a slash command; the
+        token-regex rule does not, and we want regressions here to be loud.
         """
         assert _is_pure_slash_command("/") is False
         assert _is_pure_slash_command("  /  ") is False

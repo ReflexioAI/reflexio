@@ -13,7 +13,7 @@ def test_client_reads_reflexio_url(monkeypatch):
 
 
 def test_client_ignores_legacy_reflexio_api_url(monkeypatch):
-    """The legacy ``REFLEXIO_API_URL`` name is no longer honored.
+    """The legacy ``REFLEXIO_API_URL`` name is ignored.
 
     Only ``REFLEXIO_URL`` is read; with it unset the client must fall back to
     ``BACKEND_URL`` and never pick up the legacy value.

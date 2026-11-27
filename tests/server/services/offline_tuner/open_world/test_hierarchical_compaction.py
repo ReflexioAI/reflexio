@@ -88,7 +88,7 @@ def test_session_adapter_preserves_outcome_prefix_scope_and_citable_originals(
     monkeypatch,
 ):
     # Use the same real core/wrapper as the extraction adapter, and a REAL
-    # client: the compression admission path (reflexio#649 onward) builds and
+    # client: the compression admission path builds and
     # checks native request params through the client, so only the provider
     # transport is stubbed here, as the OSS adapter tests do.
     import litellm

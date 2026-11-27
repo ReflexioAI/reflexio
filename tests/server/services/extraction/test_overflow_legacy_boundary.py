@@ -247,7 +247,7 @@ def test_stale_claimed_protocol_parent_is_refused_before_any_legacy_effect(
         },
     )
     # Persist the exact claimed state the owned executor receives. A changed
-    # DTO alone no longer bypasses the executor's writer-backed revision read.
+    # DTO alone does not bypass the executor's writer-backed revision read.
     with context.storage._stream_sql() as db:
         db.query(
             "UPDATE _agent_runs SET generation_request_snapshot=?,status=? WHERE id=?",

@@ -1,14 +1,16 @@
-"""Integration tests for B3c: profile delete search-cleanup after commit + supersede guard.
+"""Integration tests: profile delete search cleanup + supersede request_id guard.
 
-Finding 1 (SQLite ONLY): Four profile-delete methods previously called self-committing
-_fts_delete_profile/_vec_delete BEFORE the row DELETE+emit+commit. The fix moves search
-cleanup to AFTER the commit, exactly like delete_agent_playbooks_by_ids in _playbook.py.
+SQLite ONLY: the four profile-delete methods must clean up FTS + vec with the row.
+A self-committing _fts_delete_profile/_vec_delete called BEFORE the row
+DELETE+emit+commit would leave a crash window where the search entry is gone but
+the row survives. (``test_lineage_b3f_profile_atomic_integration.py`` pins the
+single-transaction ordering.)
 
-Finding 2 (both backends): supersede_profiles_by_ids accepted empty request_id, which
-corrupts get_lineage_events(request_id=R) grouping. Guard added: raise ValueError.
+Both backends: supersede_profiles_by_ids must reject an empty request_id, which
+would corrupt get_lineage_events(request_id=R) grouping.
 
 These tests verify:
-- The four fixed methods still delete the row AND clean up FTS + vec after commit.
+- The four delete methods delete the row AND clean up FTS + vec.
 - A hard_delete lineage event was emitted for each deleted profile.
 - supersede_profiles_by_ids raises (StorageError wrapping ValueError) on empty request_id.
 """

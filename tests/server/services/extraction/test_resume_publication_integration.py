@@ -623,7 +623,7 @@ def test_second_answer_publishes_a_new_output_in_the_same_run(
         for d in storage.list_run_tool_dependencies("run_1")
     } == {"ptc_1": True, "ptc_2": True}
     # The publisher's required read-only observation seam is per output, not
-    # the old run-wide lookup. It is deliberately not implemented yet: these
+    # a run-wide lookup. It is deliberately not implemented yet: these
     # are retained red contracts, not passing feature or migration gates.
     assert (
         storage.get_agent_output_finalization_receipt(

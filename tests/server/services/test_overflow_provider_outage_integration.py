@@ -178,11 +178,11 @@ def test_failures_while_the_provider_serves_others_stay_charged(overflow):
 
 
 def test_outage_probes_spend_no_package_stage_attempts(pipeline, monkeypatch):
-    """A package stage holds one attempt per model rung; a probe used to spend it.
+    """A package stage holds one attempt per model rung; a probe must not spend it.
 
-    The gate stage of a single-model ladder has exactly one attempt. Before
-    the fix the first failed probe spent it, and the next turn held the window
-    with ``Package stage attempt budget exhausted``.
+    The gate stage of a single-model ladder has exactly one attempt. A failed
+    probe that spent it would leave the next turn holding the window with
+    ``Package stage attempt budget exhausted``.
     """
     from reflexio.server.llm.failure import OutageWait, classify_llm_failure
     from reflexio.server.llm.provider_circuit import OPEN_AFTER_FAILURES

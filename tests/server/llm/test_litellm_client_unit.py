@@ -1330,9 +1330,9 @@ class TestMaybeParseStructuredOutput:
     def test_whitespace_content_is_empty_not_a_syntax_error(self, client, content):
         """A blank body is classified as empty, never parsed into a JSON error.
 
-        Parsing ``"\n\n"`` used to yield ``json_invalid at line 1 column 1``
-        as a validation error, which steered a corrective turn at output that
-        was never written. An empty error carries no validation errors, so the
+        Parsing ``"\n\n"`` would yield ``json_invalid at line 1 column 1``
+        as a validation error and steer a corrective turn at output that was
+        never written. An empty error carries no validation errors, so the
         plain rung re-issues the request instead.
         """
         with pytest.raises(
@@ -1934,7 +1934,7 @@ class TestStrictStructuredOutputRequest:
     def test_finder_ignores_property_named_like_a_keyword(self):
         # A field literally named `oneOf`/`discriminator` is a property NAME, not a
         # schema keyword, and must not trip the strict-schema guard (the finder is
-        # context-aware — CodeRabbit false-positive fix).
+        # context-aware).
         class _TrickyNames(BaseModel):
             oneOf: str = ""  # noqa: N815  (deliberately a keyword-like field name)
             discriminator: int = 0
@@ -2794,7 +2794,7 @@ class TestStructuredOutputRepair:
     def test_a_repair_refused_for_budget_keeps_first_parsed_provenance(
         self, monkeypatch
     ):
-        """Codex on reflexio#568: when the walk's budget runs out between a
+        """When the walk's budget runs out between a
         parsed-but-invalid first attempt and its repair, the stop must still
         carry the parsed attempt's provenance -- salvage attributes that content
         to its model."""
@@ -3667,8 +3667,7 @@ class TestLogTokenUsage:
         This is what makes the figure "generation-pipeline tokens" rather than
         "extraction tokens". In a real run the later calls are the deduplicator,
         the playbook aggregator and reviewer, and the should-run precheck — all
-        of which used to contribute nothing because the only producer folded one
-        extractor trace.
+        of which must count, not just the extractor trace.
         """
         capture = begin_run_token_capture()
         client._log_token_usage({"model": "gpt-4o"}, self._response(100, 10))
@@ -3788,9 +3787,9 @@ class TestCreateLiteLLMClient:
 class TestMaxRetriesClamping:
     """max_retries clamping in _build_completion_params.
 
-    The completion path now forces ``num_retries=0`` on litellm (the fallback
-    list, not same-model retry, is the resilience mechanism — see
-    PYTHON-FASTAPI-62), so the clamped value is no longer forwarded. We assert
+    The completion path forces ``num_retries=0`` on litellm (the fallback
+    list, not same-model retry, is the resilience mechanism), so the clamped
+    value is not forwarded. We assert
     the clamp on the value ``_build_completion_params`` returns, which the
     per-call ``max_retries`` override API still validates.
     """
@@ -4195,8 +4194,8 @@ class TestLitellmIntegration:
         # Expiry before dispatch, during child startup and during the provider
         # call share this typed timeout contract; their diagnostic wording varies.
         assert isinstance(error.value.__cause__, LLMHardTimeoutError)
-        # A single subprocess spawn/kill cycle (the blind same-model hard-timeout
-        # retry was removed) — still far below the 1s the blocked call would take.
+        # A single subprocess spawn/kill cycle (no blind same-model hard-timeout
+        # retry) — still far below the 1s the blocked call would take.
         assert time.perf_counter() - start < 1.0
 
     def test_expired_child_startup_returns_timeout_without_provider_dispatch(
@@ -4362,8 +4361,8 @@ class TestLitellmIntegration:
     def test_hard_timeout_is_per_rung_single_attempt(
         self, monkeypatch, configured_timeout, fixed_rung_clock
     ):
-        """Each rung now owns a per-SINGLE-ATTEMPT hard timeout (not the old
-        ladder-wide ``(1 + len(fallbacks)) * per_attempt``). num_retries is 0 and
+        """Each rung owns a per-SINGLE-ATTEMPT hard timeout (not a ladder-wide
+        ``(1 + len(fallbacks)) * per_attempt``). num_retries is 0 and
         no ``fallbacks`` kwarg is delegated — the walk advances between rungs.
         """
         client = LiteLLMClient(
@@ -4522,11 +4521,12 @@ class TestOwnedFallbackWalk:
         """The provider charged for it, so the run must count it.
 
         `_log_token_usage` -- the single chokepoint that accumulates the
-        run-scoped provider total -- used to run AFTER `_build_model_provenance`
-        and `response.choices[0].message`. A response carrying real usage but an
+        run-scoped provider total -- runs BEFORE `_build_model_provenance` and
+        `response.choices[0].message`. A response carrying real usage but an
         empty or malformed `choices` raises on that read, the walk catches it as
-        a transport failure and advances to the next rung, and the first rung's
-        tokens are silently dropped from the run while the bill includes them.
+        a transport failure and advances to the next rung; were usage logged
+        after that read, the first rung's tokens would be silently dropped from
+        the run while the bill includes them.
 
         The primary below returns usage=(10, 5) with `choices = []`; the
         fallback serves normally with its own usage. Both must land.
@@ -5084,7 +5084,7 @@ def test_generate_chat_response_does_not_mutate_caller_messages() -> None:
     """Merging a ``system_message`` must not mutate the caller's message dicts.
 
     ``final_messages = list(messages)`` is a shallow copy that shares the caller's
-    dict objects, so merging into ``final_messages[0]`` in place used to corrupt
+    dict objects, so merging into ``final_messages[0]`` in place would corrupt
     the caller's list and re-prepend the system message on reuse/retry.
     """
     client = _build_client()

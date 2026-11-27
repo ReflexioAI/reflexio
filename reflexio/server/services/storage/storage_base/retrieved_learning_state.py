@@ -118,10 +118,7 @@ def build_retrieved_learning_state_key(user_id: str, session_id: str) -> str:
       rows for one key by construction. SQLite is single-tenant and has no
       such column.
 
-    This paragraph previously said only "org scoping is unnecessary:
-    ``_operation_state`` is already org-scoped on every backend", which was
-    true but incomplete once the table became project-scoped, and read as
-    though the key were the only thing keeping tenants apart. Do NOT add an org
+    The key is not what keeps tenants apart. Do NOT add an org
     or project component here to "make it safe": that would denormalise
     ownership into a string, where it can disagree with the column the policy
     actually filters on.

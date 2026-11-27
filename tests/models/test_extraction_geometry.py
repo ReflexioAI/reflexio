@@ -66,7 +66,7 @@ def test_explicit_geometry_and_old_field_aliases_keep_precedence(fields, geometr
 
 @pytest.mark.parametrize("preset", ["unknown", 42, {}, False])
 def test_invalid_legacy_shortcuts_are_not_silently_dropped(preset):
-    # Runtime constructors reject ``extraction_preset`` outright (#747); the
+    # Runtime constructors reject ``extraction_preset`` outright; the
     # explicit upgrade must reject an invalid preset rather than drop it.
     payload = {
         "storage_config": None,

@@ -889,17 +889,15 @@ class GenerationService:
     ) -> None:
         """Emit one ``publish_request_succeeded`` event per interaction.
 
-        Replaces the old single aggregate event (``count_value=len(interactions)``)
-        with one entity-backed event per interaction (``count_value=1``,
+        One entity-backed event per interaction (``count_value=1``,
         ``event_key=f"pub:{interaction_id}"``, ``entity_id=interaction_id``) so
         downstream dedup can key on the interaction id. The summed
-        ``count_value`` across the emitted events equals the old aggregate
-        count, so totals are unchanged.
+        ``count_value`` across the emitted events equals the interaction count.
 
         The events are delivered as ONE batch: a durable recorder writes them in
         one transaction rather than one per interaction, which is one metrics
-        round trip set per publish instead of N (issue #2731). Each event keeps
-        its own key, so per-interaction dedup is unchanged.
+        round trip set per publish instead of N. Each event keeps
+        its own key, so per-interaction dedup still holds.
         """
         record_usage_event_batch(
             [

@@ -66,12 +66,11 @@ class TestValidatePublishUserInteractionRequest:
         assert "cannot both be set" in msg
 
     def test_all_fields_empty_with_none_action_is_rejected(self):
-        # Regression: this branch MUST be reachable. It previously could not
-        # fire, because ``UserActionType`` is a ``StrEnum`` with NONE = "none"
-        # — a truthy string — so the old ``not interaction_data.user_action``
-        # test was always False and the whole "all empty" chain was dead code.
-        # A publish of 50 such interactions was accepted with 200 and stored 50
-        # rows with content='', which silently produced no learnings at all.
+        # This branch MUST be reachable. ``UserActionType`` is a ``StrEnum``
+        # with NONE = "none" — a truthy string — so a
+        # ``not interaction_data.user_action`` test is always False and makes
+        # the whole "all empty" chain dead code. Such interactions would then be
+        # accepted and stored with content='', silently producing no learnings.
         # The comparison must be ``!= UserActionType.NONE``, never truthiness.
         interaction = InteractionData(
             content="",

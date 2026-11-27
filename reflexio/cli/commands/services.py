@@ -23,9 +23,9 @@ app = typer.Typer(help="Start and stop Reflexio services.")
 def _ensure_llm_configured(env_path: Path) -> None:
     """Run the first-run LLM + embedding wizard when no key is configured.
 
-    Called by ``services start`` before uvicorn boots. Replaces the ugly
-    ``RuntimeError: No LLM API keys found`` traceback that used to crash the
-    FastAPI lifespan handler on a fresh install.
+    Called by ``services start`` before uvicorn boots, so a fresh install gets
+    the wizard instead of a ``RuntimeError: No LLM API keys found`` traceback
+    from the FastAPI lifespan handler.
 
     Behaviour matrix:
         - At least one LLM key AND an embedding-capable provider in env →

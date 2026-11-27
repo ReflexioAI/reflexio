@@ -1,14 +1,13 @@
-"""OSS route + app-shape golden — Phase-0 safety harness, set-based (Task 0.1 / A2).
+"""OSS route + app-shape golden, set-based.
 
-This is the behavioral backstop for the create_app re-architecture: it pins the
-*observable shape* of the OSS app built by ``create_app()`` so that the A2
-route-module split (75 handlers moved into ``reflexio/server/routes/<domain>.py``
-sub-routers, aggregated back into ``core_router``) is proven behavior-preserving.
+This is the behavioral backstop for ``create_app``: it pins the *observable
+shape* of the OSS app it builds, with handlers in
+``reflexio/server/routes/<domain>.py`` sub-routers aggregated into
+``core_router``.
 
-**Ordered → set (A2 adjustment).** The 75 core handlers were interleaved by
-domain in the old monolithic ``api.py``; clean per-domain modules necessarily
-regroup the global route list (all playbooks together, etc.). An ordered
-comparison would flag that pure reordering as a regression even though routing
+**Set, not ordered.** Per-domain modules group the global route list by domain
+(all playbooks together, etc.). An ordered comparison would flag a pure
+reordering as a regression even though routing
 is unaffected: **all route paths are distinct literal paths with no two
 templates collapsing to the same shape** (proved by
 ``test_no_overlapping_path_templates``), so FastAPI's declaration-order
@@ -20,7 +19,7 @@ otherwise byte-identical.
 Order that DOES matter is still asserted strictly:
 
 * ``app.user_middleware`` class names in order (Starlette applies them
-  outermost-first, so order is load-bearing) — NOT reordered by the split;
+  outermost-first, so order is load-bearing);
 * the exception-handler key set;
 * the ``dependency_overrides`` key set (auth / caller-type / billing-gate seams).
 

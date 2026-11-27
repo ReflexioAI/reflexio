@@ -9,9 +9,8 @@ from reflexio.models.api_schema.service_schemas import (
 
 logger = logging.getLogger(__name__)
 
-# Literals Phase 7 retired. The rebuild's trigger asks TWO questions, not one:
-# "is every required literal present?" (the expand direction, which was all it
-# ever asked) AND "is any retired literal still present?" (the contract
+# Retired literals. The rebuild's trigger asks TWO questions, not one:
+# "is every required literal present?" (the expand direction) AND "is any retired literal still present?" (the contract
 # direction). Without the second, an existing database whose table_sql still
 # holds every SURVIVING literal satisfies the first and returns early -- the
 # rebuild never runs and the permissive CHECK survives forever.

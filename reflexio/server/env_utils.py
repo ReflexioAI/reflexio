@@ -83,10 +83,10 @@ def env_bool(
     Unset or blank resolves to ``default``, matching :func:`env_str`'s
     "set to blank behaves like unset" rule. **Every other value raises.**
 
-    Raising is the point, and it is what this codebase previously lacked. The
-    predecessor (``env_truthy``) was ``value.lower() in {...}``, so anything
-    unrecognised returned ``False`` -- meaning ``REFLEXIO_REQUIRE_DATA_DB=ture``
-    silently DISABLED a guard rather than failing. A typo that switches a safety
+    Raising is the point. The permissive ``reflexio.env_utils.env_truthy`` is
+    ``value.lower() in {...}``, so anything unrecognised returns ``False`` --
+    a knob parsed that way reads ``REFLEXIO_REQUIRE_DATA_DB=ture`` as off,
+    silently DISABLING a guard rather than failing. A typo that switches a safety
     knob off without a word is the same silent-green class as a CI lane that
     never runs.
 

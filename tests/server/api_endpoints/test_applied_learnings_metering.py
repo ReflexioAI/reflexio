@@ -326,8 +326,8 @@ def test_metering_failure_does_not_break_search_response() -> None:
 
     # The emit really was dropped...
     assert [e for e in events if e.event_name == "learning_applied"] == []
-    # ...but NOT silently. This is the half that used to be missing, and its
-    # absence is why a revenue-affecting drop could run indefinitely unnoticed.
+    # ...but NOT silently. Without this anomaly a revenue-affecting drop could
+    # run indefinitely unnoticed.
     assert [name for name, _ in anomalies] == ["search.metering.emit_failed"]
     assert anomalies[0][1]["meter"] == "applied_learnings"
     assert anomalies[0][1]["level"] == "error"

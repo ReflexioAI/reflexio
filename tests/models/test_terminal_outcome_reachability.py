@@ -1,10 +1,10 @@
 """``OptimizationTerminalOutcome`` retains members no path can write.
 
-Phase 7 removed the four replay-named members of the union. Seven more were
-reachable only through that same replay arm and died with it, but removing them
-would narrow the tenant CHECK a second time -- a one-way door this branch has
-already spent once -- and would abort the validating migration on the first
-organization still holding a historical row. So they are RETAINED, exactly the
+The union has no replay-named members. Seven more were reachable only through
+that same replay arm and have no writer, but removing them would narrow the
+tenant CHECK again -- a one-way door -- and would abort the validating
+migration on the first organization still holding a historical row. So they
+are RETAINED, exactly the
 way ``offline_tuner_legacy`` is retained in ``OptimizerKind``.
 
 Retention only stays honest if it is recorded. These assertions pin the retained
@@ -26,10 +26,11 @@ from reflexio.server.services.storage.sqlite_storage.playbook._optimization impo
     _TERMINAL_OUTCOMES_BY_OPTIMIZER,
 )
 
-# The fourteen outcomes that survive Phase 7 with a path that can reach them.
-# Six are written by the stage-advance allowlist below; the other eight are
-# written elsewhere and are named here with their writer so the split is
-# auditable.
+# The sixteen outcomes with a path that can reach them, each named with its
+# writer so the split is auditable. The open-world members are also in the
+# SQLite stage-advance allowlist (OPEN_WORLD_FAILED_TERMINAL_OUTCOMES /
+# OPEN_WORLD_ABSTAINED_TERMINAL_OUTCOMES), which the `writable <=` assertion
+# below checks.
 _REACHABLE_TERMINAL_OUTCOMES = frozenset(
     {
         # commit_user_playbook_publication (tenant 20260830020000:1293)
@@ -40,23 +41,14 @@ _REACHABLE_TERMINAL_OUTCOMES = frozenset(
         "generation_failed",
         # the governance erasure path
         "governance_erased",
-        # the regeneration fence: reflexio_ext open_world/runner.py:251 calls
-        # _converge_terminal_failure with it, and the TENANT stage-advance RPC's
-        # 'failed' arm assigns it (tenant 20260830020000:325-327). It is
-        # deliberately absent from the SQLite allowlist below -- SQLite carries
-        # no open-world fence -- which is why it is named here rather than left
-        # to the `writable <=` assertion to cover.
+        # stage-advance 'failed': the attempt-start regeneration fence
+        # (currently dormant; see open_world/fence.py) refused the attempt
+        # before it spent anything.
         "regeneration_fenced",
-        # the invocation-slot pin: reflexio_ext open_world/runner.py:262-264
-        # calls _converge_terminal_failure with it on
-        # OpenWorldInvocationSlotExhaustedError -- the attempt made NO provider
-        # call because every row identity its question could occupy is owned by
-        # another job. The TENANT stage-advance RPC's 'failed' arm assigns it
-        # (tenant 20260903010000:129-131); the 'abstained' arm deliberately does
-        # not, since nothing was judged. Absent from the SQLite allowlist below
-        # for the same reason as 'regeneration_fenced' -- SQLite carries no
-        # open-world invocation table, so no slot can be pinned -- which is why
-        # it is named here rather than left to the `writable <=` assertion.
+        # stage-advance 'failed': the attempt made NO provider call because
+        # every row identity its question could occupy is owned by another job
+        # (OpenWorldRefusal.SLOT_PINNED). The 'abstained' arm deliberately does
+        # not accept it, since nothing was judged.
         "invocation_slot_pinned",
         # stage-advance: 'failed'
         "infrastructure_failure",
@@ -66,46 +58,23 @@ _REACHABLE_TERMINAL_OUTCOMES = frozenset(
         # stage-advance: 'abstained'
         "no_grounded_hypothesis",
         "heldout_evidence_failed",
-        # the incomplete-view abstention: reflexio_ext
-        # open_world/runner.py `_abstain` passes it when the analyst reached no
-        # grounded hypothesis AND the frozen bundle's skipped-session receipt
-        # is non-empty. The TENANT stage-advance RPC's 'abstained' arm assigns
-        # it (tenant 20260910010000), and unlike 'regeneration_fenced' /
-        # 'invocation_slot_pinned' it IS in the SQLite allowlist below: the
-        # abstain path exists on both engines, so the `writable <=` assertion
-        # covers it rather than this comment.
+        # stage-advance 'abstained': the analyst reached no grounded hypothesis
+        # AND the frozen bundle's skipped-session receipt is non-empty.
         "evidence_view_incomplete",
-        # the stale-bundle refusal: reflexio_ext open_world/runner.py calls
-        # _converge_terminal_failure with it on
-        # OpenWorldEvidenceSchemaUnsupportedError -- the frozen bundle declares
-        # an evidence-bundle schema version this image cannot derive, so it is
-        # unloadable and no retry can help. The TENANT stage-advance RPC's
-        # 'failed' arm assigns it (tenant 20260910010000); the 'abstained' arm
-        # deliberately does not, since the refusal is before derivation and
-        # nothing was judged. Absent from the SQLite allowlist below for the
-        # same reason as 'regeneration_fenced' / 'invocation_slot_pinned' --
-        # SQLite carries no open-world bundle store, so nothing can be frozen
-        # there to go stale -- which is why it is named here rather than left
-        # to the `writable <=` assertion.
+        # stage-advance 'failed': the frozen bundle declares an evidence-bundle
+        # schema version this image cannot derive, so it is unloadable and no
+        # retry can help (OpenWorldRefusal.BUNDLE_SCHEMA_UNSUPPORTED). The
+        # 'abstained' arm deliberately does not accept it, since the refusal is
+        # before derivation and nothing was judged.
         "bundle_schema_unsupported",
-        # the abandoned freeze: reflexio_ext
-        # supabase_storage/playbook/_open_world_evidence_freeze.py
-        # `_retake_stranded_job` terminalizes a prior day's stranded row with
-        # it, BEFORE `_validate_job_request` compares the rolled
-        # discovery/attempt keys -- the ordering fix that made the row
-        # reachable at all. The TENANT stage-advance RPC's 'failed' arm assigns
-        # it (tenant 20260910010000). Absent from the SQLite allowlist below
-        # for the same reason as 'regeneration_fenced' -- SQLite carries no
-        # open-world freeze -- which is why it is named here.
+        # stage-advance 'failed': the evidence freeze's stranded-job retake
+        # terminalizes a prior day's stranded row with it, BEFORE the rolled
+        # discovery/attempt keys are compared.
         "abandoned",
-        # the recorded manifest conflict: reflexio_ext open_world/runner.py's
-        # OpenWorldInvocationManifestError handler calls
-        # _converge_terminal_failure with it when a second tick's attempt is
-        # refused at the manifest-membership check, having made no provider
-        # call. The TENANT stage-advance RPC's 'failed' arm assigns it (tenant
-        # 20260910010000); the 'abstained' arm deliberately does not, since
-        # nothing was judged. Absent from the SQLite allowlist for the same
-        # reason -- SQLite carries no open-world invocation table.
+        # stage-advance 'failed': a second tick's attempt was refused at the
+        # manifest-membership check, having made no provider call
+        # (OpenWorldRefusal.MANIFEST_CONFLICT). The 'abstained' arm
+        # deliberately does not accept it, since nothing was judged.
         "evidence_manifest_conflict",
     }
 )
@@ -143,12 +112,12 @@ def test_the_union_is_exactly_the_reachable_set_plus_the_retained_set() -> None:
     a recorded pending-writer reason fails here rather than accumulating
     quietly.
 
-    ``PENDING_WRITER_TERMINAL_OUTCOMES`` is the third bucket and the newest. It
-    exists because the tenant CHECK is shared between two projects and has to
-    land as one migration, so the Literal legitimately runs ahead of the code
-    that writes two of its members. That is a TODO with a name and an owner, not
-    a licence to add unwritten outcomes -- moving a member out of it when its
-    writer lands is the edit this assertion is here to force.
+    ``PENDING_WRITER_TERMINAL_OUTCOMES`` is the third bucket. It exists because
+    the tenant CHECK is shared between two projects and has to land as one
+    migration, so the Literal can run ahead of the code that writes a member.
+    That is a TODO with a name and an owner, not a licence to add unwritten
+    outcomes -- moving a member out of it when its writer lands is the edit
+    this assertion is here to force.
     """
     members = frozenset(get_args(OptimizationTerminalOutcome))
 
@@ -170,11 +139,9 @@ def test_the_union_is_exactly_the_reachable_set_plus_the_retained_set() -> None:
     )
     assert len(members) == 23
     assert len(_REACHABLE_TERMINAL_OUTCOMES) == 16
-    # EMPTY now, and that is the designed exit rather than a dead assertion:
-    # both former members gained writers in reflexio_ext (the retake's
-    # 'abandoned' and the runner's 'evidence_manifest_conflict') and moved into
-    # the reachable set above. Asserting zero is what forces the NEXT
-    # shared-migration handoff to clean up after itself too.
+    # Empty by design: a member stays pending only until its writer lands.
+    # Asserting zero forces each shared-migration handoff to clean up after
+    # itself.
     assert len(PENDING_WRITER_TERMINAL_OUTCOMES) == 0
 
 

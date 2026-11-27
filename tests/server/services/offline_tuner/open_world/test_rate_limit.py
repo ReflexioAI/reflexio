@@ -223,7 +223,7 @@ def test_the_walk_terminates_on_a_self_referential_chain() -> None:
 def test_a_rate_limited_crossing_is_retried_and_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The defect this task fixes: one 429 used to cost the whole day."""
+    """One 429 must not cost the whole day: the crossing is retried."""
     crossings: list[int] = []
 
     def serve(**_params: object) -> MagicMock:

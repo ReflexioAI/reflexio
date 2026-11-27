@@ -69,9 +69,9 @@ def _console_script_modules() -> tuple[str, ...]:
     DERIVED rather than listed, so a console script added later is covered without
     anyone remembering this file. That matters here: the installed entry point is
     `reflexio.cli.__main__:main`, and importing `reflexio.cli.app` does NOT load
-    `reflexio.cli.__main__` -- measured. So a leak in the real entry module would
-    have left every check in this file green while `reflexio --help` died on an OSS
-    install. Raised by Codex on ReflexioAI/reflexio#554.
+    `reflexio.cli.__main__` -- measured. So without this, a leak in the real entry
+    module would leave every check in this file green while `reflexio --help` died
+    on an OSS install.
     """
     config = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
     targets = config["project"]["scripts"]

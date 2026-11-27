@@ -815,7 +815,6 @@ class PlaybookExtractor:
         Returns:
             StructuredPlaybookList: Mock structured playbook list with one entry
         """
-        # Extract flat interactions from sessions
         interactions = extract_interactions_from_request_interaction_data_models(
             request_interaction_data_models
         )

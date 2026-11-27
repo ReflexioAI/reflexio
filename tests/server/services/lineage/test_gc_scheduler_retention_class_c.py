@@ -213,7 +213,7 @@ def test_the_scheduler_starts_for_retention_with_every_other_gate_off(monkeypatc
     The production change this must catch: dropping retention from
     `maybe_start_lineage_gc`'s start conditions. With `lineage_gc`,
     `expiry_reclamation` and `governance_retention` all off and no sweep hook
-    registered, the scheduler previously returned None and the caps went
+    registered, the scheduler would return None and the caps would go
     unenforced with no signal.
     """
     started: list[object] = []
@@ -272,16 +272,15 @@ def test_the_scheduler_declines_when_caps_and_required_sweeps_are_absent(
 # after boot, which is exactly when PostgREST's schema cache is cold after a
 # deploy -- so the boot tick is the MOST likely to hit it, not the least.
 #
-# On the old publish path a transient cost one publish and retried ~300s later.
-# Here `_run_once` returned `poll_interval_seconds` (86400s by default) whether
-# the tick worked or not, so one boot transient cost a DAY of retention -- and a
-# service redeployed more often than daily would never sweep at all.
+# If `_run_once` returned `poll_interval_seconds` (86400s by default) whether
+# the tick worked or not, one boot transient would cost a DAY of retention --
+# and a service redeployed more often than daily would never sweep at all.
 #
 # The retry is bounded: after `_MAX_CONSECUTIVE_FAST_RETRIES` failed ticks the
 # cadence falls back to the poll interval. A persistently broken dependency is
 # already firing anomalies on every tick, and hammering it every 5 minutes
-# forever would reintroduce exactly the repeated-probe cost this whole change
-# removed from the publish path.
+# forever would reintroduce the repeated-probe cost that keeping the sweep off
+# the publish path avoids.
 
 
 def _failing_ctx():

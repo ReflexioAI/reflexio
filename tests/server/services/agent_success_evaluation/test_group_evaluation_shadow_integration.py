@@ -1,4 +1,4 @@
-"""Regression tests for group evaluation no longer dispatching shadow comparison."""
+"""Group evaluation must not dispatch shadow comparison."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Pure F1 outcome helpers — position randomization + win/loss/tie derivation.
+"""Pure shadow-comparison outcome helpers — position randomization + win/loss/tie derivation.
 
 These functions are deliberately DB-free and LLM-free so they can be unit
 tested in milliseconds and exercised by mutmut.

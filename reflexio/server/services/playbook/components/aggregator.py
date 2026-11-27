@@ -1112,8 +1112,7 @@ class PlaybookAggregator:
         The scoped payload is canonical JSON rather than a delimiter-joined
         string, because org and project are both unconstrained: joining them
         with any separator means some pair of ids renders identically to
-        another and keeps colliding. Raised by Codex and CodeRabbit on
-        reflexio#517.
+        another and keeps colliding.
 
         Read through the ``work_scope`` seam, not from ``request_context``,
         which has no project attribute. ``current_project_id()`` is inert in
@@ -1371,7 +1370,6 @@ class PlaybookAggregator:
         # never a selection filter on the read queries below.
         playbook_name = SINGLETON_USER_PLAYBOOK_NAME
 
-        # get playbook aggregator config
         playbook_aggregator_config = self._get_playbook_aggregator_config()
         if (
             not playbook_aggregator_config
@@ -1956,7 +1954,7 @@ class PlaybookAggregator:
 
             # Remove archived playbooks after successful aggregation. ALWAYS soft-supersede
             # (never hard-delete) so the removal is reconstructable from lineage — mirrors the
-            # profile dedup always-soft path (#206).
+            # profile dedup always-soft path.
             archived_ids_without_overlapping_changed_cluster: set[int] = set()
             if new_playbooks and prev_fingerprints:
                 archived_id_set = set(archived_playbook_ids)

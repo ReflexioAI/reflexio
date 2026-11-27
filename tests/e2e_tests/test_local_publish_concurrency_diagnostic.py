@@ -1,4 +1,4 @@
-"""Portable regression/diagnostic for the storage slice of Windows issue #295."""
+"""Portable diagnostic: concurrent local publishes persist while reads are served."""
 
 import json
 import os

@@ -241,7 +241,6 @@ def check_string_token_overlap(str1: str, str2: str, threshold: float = 0.7) -> 
     # Calculate Jaccard similarity
     intersection = len(tokens1.intersection(tokens2))
 
-    # Calculate overlap ratio
     overlap_ratio = max(intersection / len(tokens1), intersection / len(tokens2))
 
     return overlap_ratio >= threshold

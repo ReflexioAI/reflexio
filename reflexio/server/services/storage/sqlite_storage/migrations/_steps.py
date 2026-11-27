@@ -1638,7 +1638,7 @@ class SQLiteSchemaMigrationsMixin:
             )
             """.replace("__TERMINAL_OUTCOME_CHECK__", _TERMINAL_OUTCOME_CHECK)
             )
-            # Phase 7 review finding P4-2. The pre-existing legacy sweep in
+            # The legacy sweep in
             # _classify_legacy_playbook_optimization_jobs retires every ACTIVE
             # 'offline_tuner_legacy' / 'optimizer_legacy_unknown' job, but it
             # runs BEFORE this relabel. Without this statement the relabel below
@@ -1821,18 +1821,17 @@ class SQLiteSchemaMigrationsMixin:
             # 'replay_manifest' onto. Local development SQLite only -- no tenant
             # Postgres row is touched by this path.
             #
-            # Phase 7 review finding P4-3: this is the OPPOSITE strategy from the
+            # This is the OPPOSITE strategy from the
             # sibling optimizer_kind vocabulary in
-            # _enforce_playbook_optimization_job_constraints, where OQ-1 option A
+            # _enforce_playbook_optimization_job_constraints, which
             # RETAINS 'offline_tuner_legacy' / 'optimizer_legacy_unknown'
             # permanently as historical labels precisely so historical rows
             # survive. Retention was available here too and was rejected: the
-            # tenant contract (supabase/data/tenant/20260830020000, constraint
+            # tenant contract (constraint
             # playbook_optimization_artifacts_artifact_kind_check) drops
             # 'replay_manifest' outright, so retaining it on SQLite alone would
             # leave the two backends disagreeing about the artifact
-            # vocabulary -- the dual-expression divergence the rest of
-            # Phase 7 exists to remove. The rows are destroyed rather than
+            # vocabulary -- a dual-expression divergence. The rows are destroyed rather than
             # migrated, so the deletion is logged with its count instead of being
             # silent.
             deleted_replay_manifests = self.conn.execute(
@@ -1910,15 +1909,13 @@ class SQLiteSchemaMigrationsMixin:
     def _migrate_retire_profile_change_logs(self) -> None:
         """Retire the frozen ``profile_change_logs`` table via a reversible RENAME.
 
-        Lineage B3 Task 8: the legacy change log is fully de-referenced (no
-        readers, writers, or GDPR delete callers remain) and the view is served
-        from reconstruction. We rename the table out of the way now and DROP it
-        in a later migration after the recovery window — keeping the data
-        recoverable in the interim.
+        The change log has no readers, writers, or GDPR delete callers, and the
+        view is served from reconstruction. The table is renamed out of the way
+        rather than dropped, keeping the data recoverable.
 
         Idempotent: SQLite has no ``RENAME ... IF EXISTS``, so we guard on the
         source table's presence and no-op once it has been renamed. The
-        ``CREATE TABLE`` for ``profile_change_logs`` was deleted from ``_DDL`` so
+        ``_DDL`` has no ``CREATE TABLE`` for ``profile_change_logs``, so
         ``executescript(_DDL)`` does not recreate an empty table after the rename.
         """
         with self._lock:
@@ -1951,16 +1948,14 @@ class SQLiteSchemaMigrationsMixin:
     def _migrate_retire_playbook_aggregation_change_logs(self) -> None:
         """Retire the frozen ``playbook_aggregation_change_logs`` table via a reversible RENAME.
 
-        Lineage Track B Task 4: the legacy change log is fully de-referenced (no
-        readers, writers, or GDPR delete callers remain) and the view is served
-        from reconstruction. We rename the table out of the way now and DROP it
-        in a later migration after the recovery window — keeping the data
-        recoverable in the interim.
+        The change log has no readers, writers, or GDPR delete callers, and the
+        view is served from reconstruction. The table is renamed out of the way
+        rather than dropped, keeping the data recoverable.
 
         Idempotent: SQLite has no ``RENAME ... IF EXISTS``, so we guard on the
         source table's presence and no-op once it has been renamed. The
-        ``CREATE TABLE`` for ``playbook_aggregation_change_logs`` was deleted from
-        ``_DDL`` so ``executescript(_DDL)`` does not recreate an empty table after
+        ``_DDL`` has no ``CREATE TABLE`` for ``playbook_aggregation_change_logs``,
+        so ``executescript(_DDL)`` does not recreate an empty table after
         the rename.
         """
         with self._lock:

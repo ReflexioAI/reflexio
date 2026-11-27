@@ -80,7 +80,7 @@ REVIEW_USER_PLAYBOOKS_TIMEOUT_SECONDS = (
     _SERVER_SYNC_BUDGET_SECONDS + _CLIENT_TRANSPORT_MARGIN_SECONDS
 )
 # grade_on_demand runs the LLM judge inline on a cache miss; a large session takes
-# minutes, so the 300s client default gave up first (claude-smart#162).
+# minutes, longer than the 300s client default.
 GRADE_ON_DEMAND_TIMEOUT_SECONDS = (
     _SERVER_SYNC_BUDGET_SECONDS + _CLIENT_TRANSPORT_MARGIN_SECONDS
 )
@@ -1652,7 +1652,6 @@ class ReflexioClient:
         )
         result = GetProfilesViewResponse(**response)
 
-        # Store in cache
         self._cache.set(
             "get_profiles",
             result,
@@ -1874,8 +1873,8 @@ class ReflexioClient:
         Useful when the running config has been mutated through a
         channel the server can't observe (sibling-replica writes,
         direct DB updates, hand-edited config files on backends that
-        don't support cheap version probing). Phase 1 mtime-based
-        auto-invalidation and Phase 3 DB-version probing cover most
+        don't support cheap version probing). Config-file mtime
+        auto-invalidation and DB-version probing cover most
         cases automatically; this is the manual escape hatch.
 
         Cross-org invalidation is intentionally not supported: the
@@ -2315,7 +2314,6 @@ class ReflexioClient:
         )
         result = GetAgentPlaybooksViewResponse(**response)
 
-        # Store in cache
         self._cache.set(
             "get_agent_playbooks",
             result,

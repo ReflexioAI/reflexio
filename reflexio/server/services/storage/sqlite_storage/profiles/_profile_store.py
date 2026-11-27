@@ -506,7 +506,7 @@ class ProfileStoreMixin:
         # Atomic: fts + vec + row + lineage in ONE lock/commit to prevent rowid reuse
         # race. profiles uses implicit (reusable) rowid keyed by TEXT PK — a cleanup
         # running after commit could race with a concurrent INSERT reusing the freed
-        # rowid and delete the NEW profile's vec row. (#196)
+        # rowid and delete the NEW profile's vec row.
         with self._lock:
             rowid_row = self.conn.execute(
                 "SELECT rowid FROM profiles WHERE user_id = ? AND profile_id = ?",
@@ -539,7 +539,7 @@ class ProfileStoreMixin:
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles_for_user(self, user_id: str) -> None:
         # Atomic: fts + vec + row + lineage in ONE lock/commit — rowid reuse race
-        # prevention (see delete_user_profile comment, #196).
+        # prevention (see delete_user_profile comment).
         batch_request_id = uuid.uuid4().hex
         with self._lock:
             rows = self.conn.execute(
@@ -564,7 +564,7 @@ class ProfileStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles(self) -> None:
-        # Also wipe profiles_vec (full-wipe variant of the rowid-race fix, #196).
+        # Also wipe profiles_vec (full-wipe variant of the rowid-race fix).
         batch_request_id = uuid.uuid4().hex
         with self._lock:
             pids = [
@@ -961,7 +961,7 @@ class ProfileStoreMixin:
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles_by_status(self, status: Status) -> int:
         # Atomic: fts + vec + row + lineage in ONE lock/commit — rowid reuse race
-        # prevention (see delete_user_profile comment, #196).
+        # prevention (see delete_user_profile comment).
         batch_request_id = uuid.uuid4().hex
         with self._lock:
             rows = self.conn.execute(
@@ -1014,7 +1014,7 @@ class ProfileStoreMixin:
         if not profile_ids:
             return 0
         # Atomic: fts + vec + row + lineage in ONE lock/commit — rowid reuse race
-        # prevention (see delete_user_profile comment, #196).
+        # prevention (see delete_user_profile comment).
         ph = ",".join("?" for _ in profile_ids)
         batch_request_id = uuid.uuid4().hex
         with self._lock, self.commit_scope():

@@ -527,11 +527,9 @@ class OptimizationJobStoreMixin:
             stage
         )
         terminal_status: str | None = None
-        # The 'applied' stage was reachable only for 'offline_tuner_replay',
-        # whose 'publishing' -> 'applied' predecessor Phase 7 removed. With
-        # no optimizer declaring an 'applied' predecessor the request now
-        # falls through to the "unknown transition" arm below and is
-        # refused -- exactly what the replay-only guard returned.
+        # No optimizer declares an 'applied' predecessor, so an 'applied'
+        # request reaches the ``predecessors is None`` arm below and is
+        # refused.
         if stage in ("failed", "abstained"):
             if terminal_outcome not in _TERMINAL_OUTCOMES_BY_OPTIMIZER.get(
                 optimizer_kind, {}

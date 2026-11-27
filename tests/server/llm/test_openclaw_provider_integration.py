@@ -158,8 +158,8 @@ def test_provider_qualified_model_reaches_the_cli_intact(
 ) -> None:
     """OpenClaw needs ``--model <provider>/<model>``.
 
-    The handler used to drop the first path segment unconditionally, so the
-    LiteLLM-stripped ``openai/gpt-x`` became ``gpt-x`` and OpenClaw refused it
+    A handler that drops the first path segment unconditionally turns the
+    LiteLLM-stripped ``openai/gpt-x`` into ``gpt-x``, which OpenClaw refuses
     with "Model overrides must use the form <provider/model>".
     """
     monkeypatch.delenv(ocp.ENV_DEFAULT_MODEL, raising=False)

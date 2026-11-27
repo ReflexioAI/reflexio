@@ -1,6 +1,6 @@
 """Integration tests: reconstruct_profile_change_log — time-travel-stable model.
 
-Phase B3 / Task 2: Rebuild the ProfileChangeLog view on demand using stable signals:
+Rebuilds the ProfileChangeLog view on demand using stable signals:
   - added(R)   = profiles whose immutable generated_from_request_id == R
                  (includes tombstones — a profile added in R1 and later
                  tombstoned in R2 is STILL added in R1).
@@ -11,7 +11,7 @@ Phase B3 / Task 2: Rebuild the ProfileChangeLog view on demand using stable sign
 Tested scenarios:
   - Dedup run (adds via generated_from_request_id + removes via supersede_profiles_by_ids)
     produces correct added/removed sets field-by-field — parity with legacy shape.
-  - TIME-TRAVEL regression (F3): profile added in R1, tombstoned in R2 → still
+  - TIME-TRAVEL regression: profile added in R1, tombstoned in R2 → still
     classified as added in R1, removed in R2.
   - Empty request_id group is skipped (never merged with unrelated runs).
   - Purged tombstone → blank removed content, no crash.
@@ -185,17 +185,17 @@ def test_parity_with_legacy_shape(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# TIME-TRAVEL regression (F3): the core stability guarantee
+# TIME-TRAVEL regression: the core stability guarantee
 # --------------------------------------------------------------------------
 
 
 def test_time_travel_added_in_r1_tombstoned_in_r2(tmp_path):
     """TIME-TRAVEL: profile added in R1, tombstoned in R2 -> still 'added in R1'.
 
-    This is the F3 regression test. The old current-status model had a bug:
-    if a profile added in run R1 was later superseded in run R2, it would be
-    classified as 'removed in R1' (wrong). The stable column model is correct:
-    generated_from_request_id never changes, so the profile is always 'added in R1'.
+    A current-status model would classify a profile added in run R1 and later
+    superseded in run R2 as 'removed in R1' (wrong). The stable column model is
+    correct: generated_from_request_id never changes, so the profile is always
+    'added in R1'.
     """
     s = _store(tmp_path)
 
@@ -605,7 +605,7 @@ def test_get_distinct_generated_from_request_ids_excludes_empty(tmp_path):
 
 
 def test_reconstruct_resolves_adds_in_one_bulk_read_not_per_candidate(tmp_path):
-    """F1 perf-regression guard: the "added" side is one bulk read, not N.
+    """Perf-regression guard: the "added" side is one bulk read, not N.
 
     Regardless of how many runs exist, reconstruct must call
     get_all_generated_profiles exactly once and never the per-id

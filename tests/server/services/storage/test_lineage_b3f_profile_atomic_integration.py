@@ -1,16 +1,15 @@
-"""Integration tests for B3f: atomic profile deletes (close rowid-reuse race, #196).
+"""Integration tests: atomic profile deletes (rowid-reuse race).
 
-B3c moved search cleanup to AFTER commit (outside the lock). This left a rowid-reuse
-race for profiles: profiles.profile_id is a TEXT PK backed by SQLite's IMPLICIT
-(reusable) rowid. In the window between commit and cleanup re-acquiring the lock, a
-concurrent INSERT can reuse the freed rowid. The cleanup then deletes the NEW profile's
-profiles_vec row.
+profiles.profile_id is a TEXT PK backed by SQLite's IMPLICIT (reusable) rowid. If
+search cleanup ran after the commit (outside the lock), a concurrent INSERT could
+reuse the freed rowid in the window between commit and cleanup re-acquiring the
+lock, and the cleanup would then delete the NEW profile's profiles_vec row.
 
-B3f fixes all 4 profile-delete methods and delete_all_profiles to perform
+So all 4 profile-delete methods and delete_all_profiles perform
 fts + vec + row + lineage in ONE `with self._lock:` / single `conn.commit()`.
-No cleanup runs outside the lock. This mirrors the B3d interaction pattern.
+No cleanup runs outside the lock. This mirrors the interaction-delete pattern.
 
-Also verifies delete_all_profiles now cleans profiles_vec (it leaked before B3f).
+Also verifies delete_all_profiles cleans profiles_vec.
 """
 
 from __future__ import annotations
@@ -294,7 +293,7 @@ class TestDeleteProfilesByIdsAtomic:
 
 
 # ---------------------------------------------------------------------------
-# delete_all_profiles: vec is now also wiped (previously leaked, #196)
+# delete_all_profiles: vec is also wiped
 # ---------------------------------------------------------------------------
 
 

@@ -217,10 +217,9 @@ class TestProfilesDelete:
         """A ``success=False`` envelope must surface as a CLI error, not a fake
         'Deleted' confirmation.
 
-        Regression guard: the server rejects an empty ``profile_id`` with
-        "Profile id or search query is required", but the CLI previously
-        printed "Deleted profiles for user <id>" unconditionally, masking the
-        no-op.
+        The server rejects an empty ``profile_id`` with "Profile id or search
+        query is required"; a CLI that printed "Deleted profiles for user <id>"
+        unconditionally would mask the no-op.
         """
         mock_client.delete_profile.return_value = MagicMock(
             success=False, message="Profile id or search query is required"
@@ -232,7 +231,7 @@ class TestProfilesDelete:
 
 
 class TestProfilesRegenerate:
-    """Tests for the renamed 'user-profiles regenerate' command."""
+    """Tests for the 'user-profiles regenerate' command."""
 
     def test_regenerate_profile(self, runner, app, mock_client) -> None:
         mock_client.rerun_profile_generation.return_value = MagicMock()
@@ -245,7 +244,7 @@ class TestProfilesRegenerate:
         )
 
     def test_old_generate_name_removed(self, runner, app, mock_client) -> None:
-        """The old 'generate' verb should no longer exist (no alias)."""
+        """There is no 'generate' alias for 'regenerate'."""
         result = runner.invoke(app, ["user-profiles", "generate", "--user-id", "alice"])
         assert result.exit_code != 0
 

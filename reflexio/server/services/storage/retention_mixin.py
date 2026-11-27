@@ -94,7 +94,7 @@ def probe_retention_targets_individually(
 
     Takes ``Any`` rather than ``RetentionMixin`` because the sweep also falls
     back to it for a storage that never mixed the hook in (test doubles, a
-    backend without retention), exactly as it used to call these methods.
+    backend without retention).
 
     Args:
         storage (Any): Provides ``count_retention_target_rows`` and, optionally,

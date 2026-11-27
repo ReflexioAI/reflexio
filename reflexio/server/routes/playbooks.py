@@ -679,7 +679,6 @@ def manual_playbook_generation_endpoint(
     # Create Reflexio instance
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
 
-    # Call manual_playbook_generation
     return reflexio.manual_playbook_generation(payload)
 
 

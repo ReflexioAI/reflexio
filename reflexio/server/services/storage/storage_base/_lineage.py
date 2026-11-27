@@ -225,8 +225,8 @@ class LineageEventMixin:
             list[str]: Distinct org ids, order unspecified.
 
         Raises:
-            NotImplementedError: If the backend has not yet implemented this
-                method (enterprise backends owe this in B2 Task 6).
+            NotImplementedError: If the backend does not implement this
+                method.
         """
         raise NotImplementedError(
             f"{type(self).__name__} does not implement list_org_ids"

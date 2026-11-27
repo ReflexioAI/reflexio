@@ -842,7 +842,6 @@ class ProfileConsolidator(BaseDeduplicator):
             request_id,
         )
 
-        # Build deduplicated result
         return self._build_deduplicated_results(
             new_profiles=new_profiles,
             existing_profiles=existing_profiles,
@@ -895,7 +894,6 @@ class ProfileConsolidator(BaseDeduplicator):
             request_id=request_id,
         )
 
-        # Process duplicate groups
         for group in dedup_output.duplicate_groups:
             group_new_indices: list[int] = []
             group_existing_indices: list[int] = []

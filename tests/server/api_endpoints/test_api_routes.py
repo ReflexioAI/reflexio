@@ -68,11 +68,9 @@ class TestPublishInteraction:
     @staticmethod
     def _publish_payload():
         # Every key inside interaction_data_list must be a real InteractionData
-        # field. This fixture previously sent user_message/agent_message/
-        # interaction_type -- none of which exist on the model -- so it posted
-        # an interaction that bound to nothing and stored content=''. It still
-        # asserted 200, which is exactly the silent failure this suite now
-        # guards against.
+        # field. Keys the model lacks (e.g. user_message/agent_message/
+        # interaction_type) bind to nothing, so the interaction carries no
+        # content -- the silent failure this suite guards against.
         return {
             "user_id": "user-1",
             "session_id": "sess-1",
@@ -85,9 +83,9 @@ class TestPublishInteraction:
     def test_sync_publish_returns_200(self, client, patched_reflexio):
         """``wait_for_response=true`` waits for coverage, then reports it.
 
-        The publish limiter no longer wraps this call: the route owns admission
+        The publish limiter does not wrap this call: the route owns admission
         capacity itself (``acquire_ingestion``) and the ingest always runs with
-        ``use_publish_limiter=False``. What ``wait_for_response`` now buys the
+        ``use_publish_limiter=False``. What ``wait_for_response`` buys the
         caller is the coverage wait, so that is what this asserts.
         """
         mock_response = PublishUserInteractionResponse(
@@ -172,8 +170,8 @@ class TestPublishInteraction:
         This is the regression that matters most: the async path returns 200
         "queued" before the publisher runs, and discards the publisher's result,
         so a rejection there is invisible to the caller. Validating on the
-        request model is what makes this path fail loudly. Previously this
-        returned 200 and silently stored rows with content=''.
+        request model is what makes this path fail loudly instead of returning
+        200 and storing rows with content=''.
         """
         payload = self._publish_payload()
         payload["interaction_data_list"] = [{"role": "User"}]
@@ -199,16 +197,11 @@ class TestPublishInteraction:
     def test_publish_rejection_reaches_the_caller(self, client, patched_reflexio):
         """A rejected publish is reported to the caller, not just logged.
 
-        Replaces ``test_background_publish_rejection_is_logged``. That test
-        guarded a real hazard in the old design: the async path answered 200
-        "queued" *before* the publisher ran and discarded its return value, so a
-        server-side ERROR log was the only evidence a rejection ever produced,
-        and the log deliberately withheld the unbounded ``str(e)`` reason.
-
-        There is no background hand-off left to lose the result in — the route
-        awaits admission and returns the publisher's own response — so the
-        stronger property now holds and is asserted directly: the caller sees
-        the rejection. The reason is the publisher's own ``message``, which
+        A path that answered 200 "queued" *before* the publisher ran and
+        discarded its return value would leave a server-side ERROR log as the
+        only evidence of a rejection. The route instead awaits admission and
+        returns the publisher's own response, so the caller sees the
+        rejection. The reason is the publisher's own ``message``, which
         travels in the response body to the caller who submitted it rather than
         into a shared multi-tenant log stream.
         """
@@ -488,8 +481,8 @@ class TestPublishInteraction:
     ):
         """A worker that hits the deadline before committing admitted nothing.
 
-        It used to fold into a 200 ``success=False`` body logged at ERROR. It is
-        the capacity refusal above, reached one step later, so it must carry the
+        It must not fold into a 200 ``success=False`` body logged at ERROR. It
+        is the capacity refusal above, reached one step later, so it must carry the
         same reason -- not the 504, whose meaning is "admission may have
         happened" -- and must hand its ingestion slot back.
         """
@@ -997,7 +990,7 @@ class TestUpdateConfigRoute:
     def test_retired_shadow_patch_is_rejected_without_writing(
         self, client, patched_reflexio, mock_reflexio
     ):
-        """API writes reject retired names; only explicit upgrades drop them (#747).
+        """API writes reject retired names; only explicit upgrades drop them.
 
         The whole patch is refused, so its canonical half is not applied and
         the live customization is neither saved over nor invalidated.

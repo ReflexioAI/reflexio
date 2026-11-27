@@ -359,7 +359,7 @@ class TestLiteLLMClientEdgeCases:
     def test_dict_based_response_format_raises_error(self):
         """Test that dict-based response_format raises error."""
         client = create_litellm_client(model="gpt-5.4-mini")
-        # Dict-based formats are no longer supported - must use Pydantic models
+        # Dict-based formats are not supported - must use Pydantic models
         with pytest.raises(
             LiteLLMClientError,
             match="response_format must be a Pydantic BaseModel class",

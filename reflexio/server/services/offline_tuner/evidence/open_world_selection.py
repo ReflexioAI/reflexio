@@ -185,8 +185,8 @@ def _measure_analyst_payload(
     interaction -- ``content`` and ``role`` -- so those are the two this
     measures. An interaction whose ``content`` is empty is skipped, because
     ``_spans_for_event`` skips it too and it therefore never reaches the
-    model; measuring a turn the analyst will not be shown would re-introduce
-    the same class of error this change exists to remove, just smaller.
+    model; measuring a turn the analyst will not be shown would be a smaller
+    instance of measuring the storage row instead of the payload.
 
     The raw stored ``role`` is measured rather than the ``classify_turn_speaker``
     label the span actually carries. That over-counts slightly, which is the
@@ -306,12 +306,11 @@ def _trajectory_state_reason(event: OpenWorldEvidenceEvent) -> str | None:
     if event.trajectory is not None and _trajectory_request_ids(event) is None:
         return "correlation_mismatch"
     if _valid_trajectory_input_limit_exceeded(event):
-        # SKIPPED, not returned, and this is where capacity stopped being an
-        # integrity answer. It still has to be tested HERE rather than simply
-        # deleted, because it guards the arm below: the loader's byte cap
+        # SKIPPED, not returned: capacity is not an integrity answer. It still
+        # has to be tested HERE, because it guards the arm below: the loader's byte cap
         # discards content mid-stream, so a whitespace-pathological session
         # arrives with no trajectory at all, and falling through would report a
-        # SIZE refusal as a LOST one. What excludes it now is
+        # SIZE refusal as a LOST one. What excludes it is
         # ``is_capacity_excluded``.
         return None
     if event.trajectory is None:
@@ -377,12 +376,11 @@ def reconstructability_reason(event: OpenWorldEvidenceEvent) -> str | None:
         and event.request_id not in trajectory_request_ids
     ):
         return "correlation_mismatch"
-    # THE INTEGRITY HALF OF SITE 2, AND ONLY THAT HALF. This clause used to
-    # answer the capacity question too, through the same reason string, so a
-    # blanket reclassification here would have reported a negative or
+    # THE INTEGRITY HALF OF SITE 2, AND ONLY THAT HALF. Capacity is answered
+    # elsewhere; a blanket reclassification here would report a negative or
     # non-``int`` count as "merely large" and let corruption read as a covered
-    # session -- the exact inversion the split exists to prevent. Site 1 never
-    # conflated the two: it GATES on these counts being well formed.
+    # session -- the exact inversion the split exists to prevent. Site 1 does
+    # not conflate the two: it GATES on these counts being well formed.
     if _malformed_trajectory_counts(event):
         return "malformed_trajectory_counts"
     label_reason = _optional_outcome_reason(event)
@@ -676,15 +674,13 @@ def _select_open_world_evidence(
       the tighter bound anyway, so nothing is lost.
 
     That second bullet is only true because the GC is bounded to make it true.
-    It USED to be argued from ``lineage_gc.tombstone_grace_window_days``
-    defaulting to 90 days, "far outside a 14-day scan". That argument was
-    invalid on two counts. The 90 is a DEFAULT, not a floor
-    (``config_schema.py``: ``Field(default=90, gt=0)``), so an org may legally
-    run a one-day grace; and keep-unless-revised made the reclaim REACHABLE
-    where it previously was not, because the two unreleased retention holds
-    that used to pin the row against GC are no longer written at all. A 7-day
-    grace would have dropped the anchor on day eight and attributed five days
-    of PREDECESSOR-served sessions to the successor.
+    It cannot be argued from ``lineage_gc.tombstone_grace_window_days``
+    defaulting to 90 days, "far outside a 14-day scan", on two counts. The 90
+    is a DEFAULT, not a floor (``config_schema.py``: ``Field(default=90,
+    ge=0)``), so an org may legally run a one-day grace; and under
+    keep-unless-revised no retention hold pins the row against GC, so the
+    reclaim is REACHABLE. A 7-day grace would drop the anchor on day eight and
+    attribute five days of PREDECESSOR-served sessions to the successor.
 
     So the guarantee is carried by the GC instead of asserted about it:
     ``_retention_gc_retired_optimization_jobs`` refuses any job whose lifecycle
@@ -699,9 +695,9 @@ def _select_open_world_evidence(
     ``published_at`` exists only for the tuner's own publications, but every
     persisted field feeds the full-version fingerprint, so a human edit, the
     auto-tagger or the governance backfill re-fingerprints the playbook with no
-    lifecycle row -- and every earlier exposure then carried the old
-    fingerprint and vetoed tuning categorically until it aged out of the scan,
-    up to fourteen days. So the bound is
+    lifecycle row -- and every earlier exposure then carries the prior
+    fingerprint and, unbounded, would veto tuning categorically until it aged
+    out of the scan, up to fourteen days. So the bound is
     ``max(scan_start, published_at, version_started_at)``, where the version
     start is the first exposure served under the incumbent fingerprint and
     counts ONLY when every exposure served under another version precedes it

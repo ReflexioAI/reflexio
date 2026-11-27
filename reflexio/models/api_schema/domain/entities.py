@@ -479,15 +479,13 @@ OptimizationJobStage = Literal[
     "failed",
 ]
 
-# Phase 7 removed the four members whose NAMES contain 'replay'. Seven more were
-# reachable only through that same replay arm and are now equally dead: no
-# writer, no reader, no tenant routine that can set them. They are RETAINED
+# Seven members were reachable only through the retired replay arm: no
+# writer, no reader, no tenant routine can set them. They are RETAINED
 # rather than removed, the way 'offline_tuner_legacy' is retained above -- and
-# for the same two reasons. Removing them narrows the tenant CHECK a second
-# time, and a CHECK narrowing is a one-way door this branch has already spent
-# once; and historical rows written before the replay retirement still carry
-# them, so a narrowed CHECK would abort the validating migration on the first
-# organization holding one.
+# for the same two reasons. Removing them narrows the tenant CHECK, and a
+# CHECK narrowing is a one-way door; and historical rows written before the
+# replay retirement still carry them, so a narrowed CHECK would abort the
+# validating migration on the first organization holding one.
 #
 # Read a member of this set as "an outcome an earlier era could record", never
 # as a state the current tuner can reach. Pinned by
@@ -513,10 +511,8 @@ OptimizationJobStage = Literal[
 #: lands it moves into the reachable set in
 #: ``tests/models/test_terminal_outcome_reachability.py`` and out of here.
 #:
-#: EMPTY, and that is the healthy state rather than a deleted set. Both former
-#: members -- ``abandoned`` and ``evidence_manifest_conflict`` -- now have
-#: writers in reflexio_ext and were moved into the reachable set, which is the
-#: exit this set was designed to have. It stays declared because the next
+#: EMPTY, and that is the healthy state rather than a deleted set: a member
+#: leaves once its writer exists. It stays declared because the next
 #: shared-migration handoff will need it again, and because the reachability
 #: test asserts all three classifications are disjoint and cover the union: an
 #: empty third bucket keeps that assertion honest instead of removing it.
@@ -552,25 +548,21 @@ OptimizationTerminalOutcome = Literal[
     "stale_incumbent",
     "governance_invalidated",
     "infrastructure_failure",
-    # Written by reflexio_ext offline_tuner/open_world/runner.py:251
-    # (_converge_terminal_failure, behind the regeneration fence) and assigned
-    # by the tenant stage-advance RPC's 'failed' arm
-    # (supabase/data/tenant/20260830020000:325-327). Admitted by
-    # playbook_optimization_jobs_terminal_outcome_check since 20260827040000.
-    # An attempt REFUSED before spending, not a fault -- see
-    # reflexio_ext open_world/models.py:210-227.
+    # The attempt-start regeneration fence (currently dormant; see
+    # offline_tuner/open_world/fence.py) refused the attempt. Assigned by the
+    # tenant stage-advance RPC's 'failed' arm and admitted by
+    # playbook_optimization_jobs_terminal_outcome_check (tenant
+    # 20260827040000). An attempt REFUSED before spending, not a fault -- see
+    # the note in offline_tuner/open_world/models.py.
     "regeneration_fenced",
-    # Written by reflexio_ext offline_tuner/open_world/runner.py
-    # (_converge_terminal_failure, from the slot-exhausted handler) when EVERY
-    # durable row identity the discovery question could occupy is already owned
+    # Mapped from OpenWorldRefusal.SLOT_PINNED (TERMINAL_REASON_BY_REFUSAL in
+    # offline_tuner/open_world_invocations.py) when EVERY durable row identity the discovery question could occupy is already owned
     # by a different optimization job -- so the attempt made NO provider call at
-    # all. Split out of 'infrastructure_failure', which it was previously
-    # indistinguishable from, hiding the fact that a failed attempt was burning
-    # its playbook's identity for the rest of the UTC day. See
-    # reflexio_ext open_world/models.py and identity.attempt_invocation_identity.
+    # all. Kept distinct from 'infrastructure_failure' so it is visible that a
+    # failed attempt is burning its playbook's identity for the rest of the UTC
+    # day. See offline_tuner/open_world/models.py.
     "invocation_slot_pinned",
-    # Written by reflexio_ext offline_tuner/open_world/runner.py (`_abstain`,
-    # from the discovery-abstention branch) when the analyst reached no
+    # Recorded by the discovery-abstention branch when the analyst reached no
     # grounded hypothesis AND the frozen bundle's skipped-session receipt is
     # non-empty -- i.e. the evidence view the analyst was shown was not the
     # whole corpus. Assigned by the tenant stage-advance RPC's 'abstained' arm
@@ -583,9 +575,8 @@ OptimizationTerminalOutcome = Literal[
     # more). A reader could not tell them apart, so the second read as the
     # first and the corpus was never widened.
     "evidence_view_incomplete",
-    # Written by reflexio_ext offline_tuner/open_world/runner.py
-    # (_converge_terminal_failure, from the schema-unsupported handler) when the
-    # frozen evidence bundle declares an evidence-bundle schema version older
+    # Mapped from OpenWorldRefusal.BUNDLE_SCHEMA_UNSUPPORTED
+    # (TERMINAL_REASON_BY_REFUSAL) when the frozen evidence bundle declares an evidence-bundle schema version older
     # than the image reading it. The bundle is validated as the EXACT derivation
     # of its manifest, so an older bundle is UNLOADABLE rather than degraded and
     # no retry on any host can change that. Assigned by the tenant stage-advance
@@ -597,35 +588,22 @@ OptimizationTerminalOutcome = Literal[
     # row (the deploy precondition inherited from tenant 20260903010000) or
     # terminalize it deliberately.
     "bundle_schema_unsupported",
-    # The two below are admitted AHEAD OF THEIR WRITERS. Both belong to the
-    # scheduled-execution project, whose Python lands separately, and both are
-    # here now because their tenant CHECK is here now: one shared migration
-    # carries the vocabulary for two projects (see the header of
-    # supabase/data/tenant/20260910010000), and
-    # test_the_enterprise_tree_agrees_with_the_contracted_oss_vocabulary
-    # asserts this union is SET-EQUAL to that CHECK. Leaving them out of the
-    # Literal would make reading back a job row that carries one raise
-    # ValidationError -- surfacing, through handle_exceptions, as the
-    # 'infrastructure_failure' that gap has already produced once.
-    # The two below were admitted AHEAD OF THEIR WRITERS, from the shared
-    # migration that carries the vocabulary for two projects (see the header of
-    # supabase/data/tenant/20260910010000); both writers have since landed in
-    # reflexio_ext, and both moved out of PENDING_WRITER_TERMINAL_OUTCOMES when
-    # they did.
+    # The tenant CHECK carrying the two below (tenant 20260910010000) must stay
+    # SET-EQUAL to this union: a job row carrying a member missing from the
+    # Literal raises ValidationError on read, which surfaces through
+    # handle_exceptions as 'infrastructure_failure'.
     #
-    # 'abandoned': a freeze that was abandoned rather than attempted. Written by
-    # reflexio_ext supabase_storage/playbook/_open_world_evidence_freeze.py
-    # (`_retake_stranded_job`), which terminalizes a prior day's stranded row
+    # 'abandoned': a freeze that was abandoned rather than attempted. Stamped by
+    # the evidence freeze's stranded-job retake (`_retake_stranded_job_locked`
+    # in the SQLite backend), which terminalizes a prior day's stranded row
     # BEFORE identity validation compares the rolled discovery/attempt keys.
-    # It replaces the FALSE 'generation_failed' the retention sweep used to
-    # stamp on such a row -- nothing was generated. Assigned by the tenant
+    # It is not 'generation_failed': nothing was generated. Assigned by the tenant
     # stage-advance RPC's 'failed' arm.
     "abandoned",
     # 'evidence_manifest_conflict': two sweep ticks collided on one playbook's
     # frozen evidence and the loser was refused at the manifest-membership
-    # check, with no provider call. Written by reflexio_ext
-    # open_world/runner.py (`run`'s OpenWorldInvocationManifestError handler,
-    # via _converge_terminal_failure). Recorded rather than skipped silently,
+    # check, with no provider call (OpenWorldRefusal.MANIFEST_CONFLICT in
+    # TERMINAL_REASON_BY_REFUSAL). Recorded rather than skipped silently,
     # because the conflict IS the concurrency signal. Also the 'failed' arm.
     "evidence_manifest_conflict",
 ]
@@ -1431,9 +1409,9 @@ class InteractionData(CapturesUnknownFields):
         are fatal to the request. Emptiness is deliberately NOT one of them --
         see ``PublishUserInteractionRequest.validate_interaction_shapes``.
 
-        Both rules used to live only in ``precondition_checks``, which on the
-        default ``wait_for_response=False`` path runs inside a background task
-        whose result is discarded, so neither was ever reportable. Keeping them
+        They cannot live only in ``precondition_checks``: on the default
+        ``wait_for_response=False`` path that runs inside a background task
+        whose result is discarded, so neither would be reportable. Keeping them
         here lets the request model raise a 422 on both paths while
         ``precondition_checks`` delegates, so the two cannot diverge.
 

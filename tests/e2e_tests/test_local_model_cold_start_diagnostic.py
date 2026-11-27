@@ -1,4 +1,4 @@
-"""Opt-in, keyless real-model probe for the startup slice of Windows #482.
+"""Opt-in, keyless real-model probe: a cold model must be ready before the backend launches.
 
 Downloads the ~79MB MiniLM archive into a throwaway cache. No paid LLM calls.
 The backend child is a launch marker, not the full extraction pipeline.

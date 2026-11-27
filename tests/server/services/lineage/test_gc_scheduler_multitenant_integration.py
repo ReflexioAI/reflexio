@@ -1,9 +1,9 @@
-"""Integration tests: managed-tenant reclamation via org_id_provider (Task 3.4).
+"""Integration tests: managed-tenant reclamation via org_id_provider.
 
 In managed multi-tenant mode ``storage.list_org_ids()`` raises
-``NotImplementedError`` on Supabase, so ``_discover_org_ids`` degrades to the
-bootstrap org only and tenant orgs' expired rows leak. Task 3.4 makes org
-discovery injectable: when an ``org_id_provider`` is supplied (the enterprise
+``NotImplementedError`` on Supabase, so without a provider ``_discover_org_ids``
+degrades to the bootstrap org only and tenant orgs' expired rows would leak. Org
+discovery is injectable: when an ``org_id_provider`` is supplied (the enterprise
 supplies a tenant-enumerating one), the profile expiry sweep (Class A) and the
 plain-row sweeps (Class B: pending tool calls, and — in enterprise — share
 links) reach EVERY tenant.
@@ -14,7 +14,7 @@ These tests prove:
 2. The provider is actually consulted (the enterprise enumeration path), and
    ``storage.list_org_ids()`` is NOT used when a provider is present.
 3. Per-org failure isolation still holds under the provider path.
-4. The default (no provider) path is unchanged: ``storage.list_org_ids()`` is used.
+4. The default (no provider) path uses ``storage.list_org_ids()``.
 5. ``maybe_start_lineage_gc`` picks up a module-level provider hook.
 """
 

@@ -154,9 +154,9 @@ def _rehydrate_frozen_evidence(
                 trajectory_digest=session.trajectory_digest,
                 spans=spans,
                 # Selection already adjudicated this session's outcome and
-                # froze it on the manifest; this is where it used to be
-                # dropped, leaving the discovery analyst asked for a
-                # failed-vs-successful contrast over unlabelled sessions.
+                # froze it on the manifest; carry it here, or the discovery
+                # analyst is asked for a failed-vs-successful contrast over
+                # unlabelled sessions.
                 # Held-out and safety-only stay unlabelled on purpose -- see
                 # EvidenceDocument.
                 session_outcome=(

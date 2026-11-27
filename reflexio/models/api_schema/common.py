@@ -148,10 +148,9 @@ class ToolUsed(CapturesUnknownFields):
     def coerce_status(cls, value: object) -> str:
         """Accept whatever the caller sent; never reject the batch over it.
 
-        Declaring this strictly (``str`` with ``max_length``) turned five
-        previously-harmless values -- an int, None, a bool, a dict, an over-long
-        string -- into a 422 rejecting the WHOLE publish, where before they were
-        silently ignored and the publish returned 200. The plugin adapters
+        Declaring this strictly (``str`` with ``max_length``) would turn
+        harmless values -- an int, None, a bool, a dict, an over-long string --
+        into a 422 rejecting the WHOLE publish. The plugin adapters
         swallow that and never advance their watermark, so the batch retries
         forever: the exact failure ``CapturesUnknownFields`` exists to avoid.
         Declaring a field must not be a backdoor to the strictness we rejected.

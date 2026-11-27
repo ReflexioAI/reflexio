@@ -1,6 +1,6 @@
 """A storage failure must not be indistinguishable from an empty answer.
 
-Before this (the pooled-connection incident of 2026-09-27) a dead pooled connection
+In the pooled-connection incident of 2026-09-27, a dead pooled connection
 reached ``/api/search`` two ways, and both looked like "this user has nothing":
 
 * a TOTAL failure answered HTTP 200, with ``success=False`` only in the body, so

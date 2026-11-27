@@ -254,7 +254,6 @@ def run_group_evaluation(
         logger.info("No interactions found for session %s, skipping", session_id)
         return GroupEvaluationOutcome("not_applicable", "skipped")
 
-    # Group interactions by request_id
     interactions_by_request: dict[str, list] = defaultdict(list)
     for interaction in all_interactions:
         interactions_by_request[interaction.request_id].append(interaction)

@@ -727,7 +727,7 @@ def test_a_turn_that_swallows_its_setup_failure_does_not_end_the_streak(
     monkeypatch: pytest.MonkeyPatch,
     transient_failure_classifier: type[Exception],
 ) -> None:
-    """Codex repro: setup keeps failing while deferral alternately fails and
+    """Setup keeps failing while deferral alternately fails and
     succeeds. A successful deferral is a retry being scheduled, not a
     completed turn, so the streak must keep growing and escalate."""
     from reflexio.server import background_work

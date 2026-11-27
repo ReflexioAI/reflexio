@@ -791,7 +791,7 @@ class TestCrossFieldValidators:
     def test_pending_tool_calls_allow_managed_none_storage(self):
         """None storage_config is deployment-managed (enterprise) and is allowed.
 
-        The removed ``disk`` backend is no longer representable, so a ``None``
+        There is no ``disk`` backend, so a ``None``
         storage_config always denotes a database-backed, deployment-managed
         backend — enabling pending tool calls must not raise.
         """

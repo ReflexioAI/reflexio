@@ -351,7 +351,7 @@ def test_initial_uncached_recovery_preserves_original_bookmark(
     original = saved.committed_output
     assert not base._learnings(storage, kind)
     # The exited actual owner is already released; only business retry due
-    # is adjusted. Logical claim age no longer controls adoption.
+    # is adjusted. Logical claim age does not control adoption.
     storage._execute(
         "UPDATE _agent_runs SET next_resume_at=NULL WHERE id=?", (saved.id,)
     )

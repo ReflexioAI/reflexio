@@ -1,4 +1,4 @@
-"""F1 per-turn shadow comparison judge service.
+"""Per-turn shadow comparison judge service.
 
 Stateless beyond construction. Routes every LLM call through
 ``LiteLLMClient`` and every prompt through ``PromptManager`` per project

@@ -1,4 +1,4 @@
-"""Integration tests: Class B direct-delete sweep in _gc_tick (Task 2.1).
+"""Integration tests: Class B direct-delete sweep in _gc_tick.
 
 Key invariant: Class B (pending-tool-call reclamation — and, in enterprise,
 share-link reclamation) runs even when ``lineage_gc.enabled=False``. Class A
@@ -180,11 +180,10 @@ def test_class_b_runs_when_lineage_gc_disabled(tmp_path, org_id):
 def test_scheduler_does_not_start_when_both_disabled(tmp_path, org_id, monkeypatch):
     """maybe_start_lineage_gc returns None when NO class of work is configured.
 
-    Row-count retention became a third start condition when the sweep moved off
-    the publish path (Class C), and required source-authorized profile deadlines
-    became an unconditional one, so the two flags below no longer decide this on
-    their own. Disabling every row limit and removing the required sweeps keeps
-    this test on its original subject instead of on the old list of conditions;
+    Row-count retention (Class C) is a third start condition and required
+    source-authorized profile deadlines are an unconditional one, so the two
+    flags below do not decide this on their own. Disabling every row limit and
+    removing the required sweeps isolates the two flags;
     ``test_required_profile_deadlines_start_scheduler_without_optional_work``
     pins the unconditional start.
     """

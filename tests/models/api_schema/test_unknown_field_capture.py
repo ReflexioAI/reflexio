@@ -1,8 +1,8 @@
 """The capture foundation for reporting unrecognised publish fields.
 
-A publish whose interaction objects never bound was accepted with 200 and stored
-rows with ``content=''``. The incident fix (#384) makes a wholly empty batch a
-422; this layer tells the caller *which field* they mis-keyed, which is what
+A publish whose interaction objects never bind would store rows with
+``content=''``. A wholly empty batch is rejected with 422; this layer tells the
+caller *which field* they mis-keyed, which is what
 turns "no learnings appeared" from a mystery into a one-line correction.
 
 Everything here is bounded and content-free by construction, because the inputs
@@ -65,7 +65,7 @@ class TestCaptureAndStrip:
 
 
 class TestToolUsedStatus:
-    """`status` is real signal both plugins send, previously discarded."""
+    """`status` is real signal both plugins send; it must bind, not be discarded."""
 
     def test_status_binds(self):
         assert ToolUsed.model_validate(

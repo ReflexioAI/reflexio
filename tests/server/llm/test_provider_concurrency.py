@@ -184,7 +184,7 @@ def test_provider_wait_is_bounded_without_a_search_deadline(monkeypatch, scoped)
 
 
 # ---------------------------------------------------------------------------
-# Custom providers must be visible to the cap (claude-smart#162)
+# Custom providers must be visible to the cap
 # ---------------------------------------------------------------------------
 
 
@@ -222,10 +222,10 @@ def test_declared_custom_providers_are_discoverable() -> None:
 def test_registered_custom_provider_is_visible_to_the_cap(monkeypatch) -> None:
     """Every registered custom provider must resolve to a cap key.
 
-    Regression for claude-smart#162: litellm.get_llm_provider RAISES for a
-    custom provider even once it is in custom_provider_map, so _provider_key
-    returned None and provider_slot yielded UNCAPPED. The providers affected are
-    both CLI bridges -- the ones least able to tolerate concurrency.
+    litellm.get_llm_provider RAISES for a custom provider even once it is in
+    custom_provider_map, so a _provider_key that relied on it would return None
+    and provider_slot would yield UNCAPPED. The providers affected are both CLI
+    bridges -- the ones least able to tolerate concurrency.
     """
     import litellm
 

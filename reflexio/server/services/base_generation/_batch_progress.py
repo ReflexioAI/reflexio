@@ -140,7 +140,6 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
                     )
                     continue
 
-            # Get generated count and finalize
             total_generated = self._get_generated_count(
                 request, processed_user_ids=generated_user_ids
             )

@@ -1,7 +1,7 @@
-"""Characterization tests: remaining uncovered SQLite playbook methods (Tier-1 Task 2).
+"""Characterization tests: SQLite playbook CRUD / getter methods.
 
-Behavioral / round-trip tests for the methods marked NONE or INDIRECT in the
-Task-1 coverage audit.  These are simple CRUD / getter methods — no atomicity
+Behavioral / round-trip tests for methods with no direct (NONE) or only
+service-level (INDIRECT) storage coverage elsewhere.  These are simple CRUD / getter methods — no atomicity
 crash-window testing needed unless the method emits a lineage event (checked
 per method; none of these do).
 

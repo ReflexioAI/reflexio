@@ -521,7 +521,7 @@ def test_the_scan_accounts_for_every_mention() -> None:
         )
         assert _name_tokens(source, set(aliases)) == accounted, path
         total_calls += sum(c.kind == _FAILURE for c in module.calls)
-    assert total_calls >= 25  # the floor: the #582 sites plus the converted loops
+    assert total_calls >= 25  # the floor: the paired sites plus the converted loops
 
 
 # --- the rules fail on the shapes they exist to catch ------------------------

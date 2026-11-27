@@ -1,12 +1,11 @@
 """Tests for per-record ``publish_request_succeeded`` usage events.
 
-Task A2 of the BYOC metering redesign: the publish path must emit ONE
-``publish_request_succeeded`` event per published interaction (each
-``count_value=1``, keyed by ``event_key=f"pub:{interaction_id}"`` /
-``entity_id=interaction_id``) instead of a single aggregate event with
-``count_value=len(new_interactions)``. Totals must be preserved: the sum of
-``count_value`` across the per-interaction events must equal the old
-aggregate count.
+The publish path must emit ONE ``publish_request_succeeded`` event per
+published interaction (each ``count_value=1``, keyed by
+``event_key=f"pub:{interaction_id}"`` / ``entity_id=interaction_id``), not a
+single aggregate event with ``count_value=len(new_interactions)``. Totals must
+be preserved: the sum of ``count_value`` across the per-interaction events must
+equal the number of published interactions.
 
 Uses a real ``GenerationService.run()`` call over a temp-dir SQLite storage
 (mirroring the pattern in ``test_generation_service.py`` /
@@ -115,7 +114,7 @@ class _BatchCapturingRecorder:
 
 
 def test_publish_success_events_are_delivered_as_one_batch(publish_fixture):
-    """Issue #2731: one recorder batch per publish, not one write per interaction."""
+    """One recorder batch per publish, not one write per interaction."""
     recorder = _BatchCapturingRecorder()
     request = PublishUserInteractionRequest(
         user_id="publish_events_test_user",

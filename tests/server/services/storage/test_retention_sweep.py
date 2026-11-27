@@ -775,9 +775,8 @@ def test_one_target_failing_still_does_not_fail_the_pass(storage, granted_lock):
 def test_the_library_entry_point_throttles_per_org(storage, granted_lock, monkeypatch):
     """The embedded path has no scheduler, so it sweeps itself -- but not every publish.
 
-    Regression guard for the P1 on #535: moving the sole sweep invocation onto
-    `LineageGCScheduler` removed row caps entirely for `Reflexio.publish_interaction`,
-    because `maybe_start_lineage_gc` is only ever called from the FastAPI lifespan.
+    `maybe_start_lineage_gc` is only called from the FastAPI lifespan, so without
+    this self-sweep `Reflexio.publish_interaction` would enforce no row caps at all.
     """
     monkeypatch.setattr(retention_sweep, "_library_last_sweep", {})
     storage.count_retention_target_rows.return_value = 0

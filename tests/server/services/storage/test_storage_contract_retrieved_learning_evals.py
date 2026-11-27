@@ -154,9 +154,9 @@ def test_snapshot_covers_every_interaction_and_ref(storage) -> None:
 def test_content_only_edit_invalidates_fingerprint(storage) -> None:
     """An in-place content edit (same id + refs) must invalidate the cache.
 
-    The fingerprint used to cover only interaction ids + refs, so replacing an
-    interaction's transcript while keeping its id and attachments left stale
-    verdicts cached against an unchanged digest.
+    A fingerprint covering only interaction ids + refs would leave stale
+    verdicts cached against an unchanged digest when an interaction's
+    transcript is replaced while its id and attachments stay the same.
     """
     refs = [RetrievedLearning(kind="profile", learning_id="prof-1")]
     _seed_session(storage, refs=refs)

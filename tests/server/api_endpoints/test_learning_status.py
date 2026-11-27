@@ -1,4 +1,4 @@
-"""Tests for the learning_status API surface (Task 7).
+"""Tests for the learning_status API surface.
 
 Covers:
 - Deferred publish response carries learning_status="deferred".

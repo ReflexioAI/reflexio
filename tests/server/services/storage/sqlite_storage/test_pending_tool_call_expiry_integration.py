@@ -1,4 +1,4 @@
-"""Task 2.3: delete_expired_pending_tool_calls deletes only terminal 'expired' rows.
+"""delete_expired_pending_tool_calls deletes only terminal 'expired' rows.
 
 RESOLVED rows (with live valid_until) are never deleted, even if their
 expires_at is in the past — they hold cached results used by resumable

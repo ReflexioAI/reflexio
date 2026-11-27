@@ -356,11 +356,11 @@ def _raised_from_none(
     ],
 )
 def test_from_none_sites_on_moved_paths_classify_as_before(site, make, context):
-    """The old walks followed ``__context__`` past ``from None``; this one stops.
+    """Stopping at ``from None`` gives the verdict following ``__context__`` would.
 
     Each ``raise ... from None`` that can reach a moved caller severs a context
-    that is itself Terminal, so following it (the old walk) and stopping (the
-    traceback rule) give the same verdict.
+    that is itself Terminal, so following it and stopping (the traceback rule)
+    give the same verdict.
     """
     _open()
     raised = _raised_from_none(make, _routed(context))

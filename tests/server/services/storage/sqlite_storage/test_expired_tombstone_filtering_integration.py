@@ -1,4 +1,4 @@
-"""Task 1.2: get_profile_by_id hides EXPIRED profiles by default."""
+"""get_profile_by_id hides EXPIRED profiles by default."""
 
 from __future__ import annotations
 

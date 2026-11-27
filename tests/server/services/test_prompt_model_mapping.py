@@ -50,11 +50,10 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     # sessions publishing interactions with ``retrieved_learnings``.
     "retrieved_learning_relevance": ("v1.0.0", "retrieved_learning_relevance"),
     "retrieved_learning_impact": ("v1.1.0", "retrieved_learning_impact"),
-    # F1 cleanup: the session-level shadow comparison branch was retracted.
-    # The prompt directories remain on disk (marked active: false in their
-    # frontmatter) as historical records, but they no longer drive any
-    # production code path, and the ``agent_success_evaluation_comparison``
-    # registry key was removed, so they are mapped without a registry key.
+    # There is no session-level shadow comparison branch. The prompt
+    # directories remain on disk (marked active: false in their frontmatter)
+    # as historical records, but they do not drive any production code path
+    # and have no registry key, so they are mapped without one.
     "agent_success_evaluation_with_comparison": ("v1.0.0", None),
     "shadow_content_evaluation": ("v1.0.0", None),
     # v2.1.0: structured output + source-language/script preservation (window,
@@ -147,7 +146,7 @@ def _get_latest_prompt_version(prompt_id: str) -> str:
         return active_versions[-1].stem.split(".prompt")[0]
 
     # No active version: the directory holds only deprecated/historical
-    # records (every file is ``active: false``). Such dirs no longer drive a
+    # records (every file is ``active: false``). Such dirs do not drive a
     # runtime code path, but ``test_all_prompt_dirs_are_mapped`` still requires
     # them in the mapping. Pin them to their latest on-disk version so the
     # trip-wire stays meaningful (a new version file is still detected) without

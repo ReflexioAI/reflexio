@@ -1,7 +1,7 @@
 """Migration test: ``playbook_aggregation_change_logs`` is retired via a reversible RENAME.
 
 Covers ``SQLiteStorageBase._migrate_retire_playbook_aggregation_change_logs`` plus
-the deletion of the table's ``CREATE TABLE`` from ``_DDL`` (Lineage Track B Task 4).
+the deletion of the table's ``CREATE TABLE`` from ``_DDL``.
 The two invariants under test:
 
   (a) an existing legacy ``playbook_aggregation_change_logs`` table is renamed to

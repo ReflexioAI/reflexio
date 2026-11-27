@@ -94,8 +94,9 @@ def test_invalid_operational_override_is_not_a_deletion_default(
 
 @pytest.mark.parametrize("shared", [0, 7, 500000])
 def test_old_default_and_custom_shared_cap_require_disambiguation(monkeypatch, shared):
-    # The consolidation previously ignored this old default. Do not silently
-    # turn an inherited zero/high cap into a smaller deleting override.
+    # A per-table override equal to the default (250000) beside a custom
+    # shared cap is ambiguous. Do not silently turn an inherited zero/high cap
+    # into a smaller deleting override.
     monkeypatch.setenv("REFLEXIO_ROW_LIMIT_SHARE_LINKS", "250000")
     monkeypatch.setenv(SHARED, str(shared))
     with pytest.raises(ValueError, match="REFLEXIO_ROW_LIMIT_SHARE_LINKS.*ambiguous"):

@@ -183,7 +183,7 @@ class TestSchemaCompliance:
     def test_guard_finder_ignores_property_named_like_a_keyword(self):
         """The mock guard's finder must not flag a field NAMED oneOf/discriminator.
 
-        Those are property names, not schema keywords (CodeRabbit false-positive fix).
+        Those are property names, not schema keywords.
         """
         from pydantic import BaseModel
 

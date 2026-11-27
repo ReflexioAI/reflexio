@@ -24,9 +24,9 @@ _MAX_ANALYST_CONTENT_BYTES_PER_TOKEN = 8
 #     before    671    1 066   4 603   16 428    40 132     ~394 per span
 #     after     677      964   3 494   11 934    28 875     ~281 per span
 #
-# The hoist is worth ~1.5x per span, NOT the order of magnitude this comment
-# previously anticipated, and the reason is worth recording so nobody re-does
-# the measurement expecting the larger number: what dominates a span is now the
+# The hoist is worth ~1.5x per span, NOT an order of magnitude, and the reason
+# is worth recording so nobody re-does the measurement expecting a larger
+# number: what dominates a span is the
 # 129-character ``span_id``, which alone renders ~142 tokens once base64 has
 # expanded it. Only hoisting the document-constant ``trajectory_digest`` half of
 # that id out of the payload would reach 3x, and that is a deliberate
@@ -50,9 +50,8 @@ _MAX_ANALYST_CONTENT_BYTES_PER_TOKEN = 8
 # per payload. That over-counts a multi-session bundle by a few hundred tokens
 # per session, which is again the safe direction and keeps the estimate a
 # function of the session alone -- the only unit the frozen manifest carries.
-# It moved 700 -> 750 because the old value was fitted to short identifiers
-# only and already under-counted a realistic UUID-identified session's framing
-# (measured 727) before this change.
+# It is 750 rather than a value fitted to short identifiers only, because a
+# realistic UUID-identified session's framing measures 727.
 #
 # THESE TRACK THE RENDERER AND MUST MOVE WITH IT.
 # A test re-measures the live path and fails if the estimate drifts outside
@@ -67,21 +66,21 @@ _ANALYST_PAYLOAD_CONTENT_TOKENS_PER_BYTE = 1
 # real input window is not confirmed anywhere in this repository, so this
 # number is not derived from one.
 #
-# It is sized against what the sessions this change exists to READMIT actually
+# It is sized against what long sessions, which must stay ADMITTED, actually
 # cost at today's rendering. A long session of ~150 interactions can carry
 # about 5,000 conversation tokens yet render ~80,000 tokens as one call. A
 # number chosen against a context window -- 64,000, say -- would refuse exactly
-# that session, reintroducing the
-# exclusion this change removes, one layer down. So the budget sits above the
+# that session, reintroducing their
+# exclusion one layer down. So the budget sits above the
 # whole measured envelope of a legal session and bounds only what could not fit
 # any plausible window: a discovery arm of five maximal sessions (~315,000) and
 # a session of a thousand single-character turns (~490,000), which measures
 # under 5,000 conversation tokens and passes every content meter.
 #
-# STILL TO BE RE-DERIVED, and by LESS than this note used to promise. Constant
-# span identity has now been hoisted to the document, and it bought ~1.5x per
-# span (394 -> 281 measured), not the order of magnitude anticipated above: the
-# 129-character ``span_id`` is what dominates a span now, and it stays. So the
+# STILL TO BE RE-DERIVED, and by less than an order of magnitude. Constant
+# span identity is hoisted to the document, and it bought ~1.5x per span
+# (394 -> 281 measured): the 129-character ``span_id`` is what dominates a
+# span, and it stays. So the
 # ~80 000-token session that motivated this budget still estimates ~65 000
 # tokens, and a context-window-shaped number such as 64 000 would still refuse
 # it. Tightening remains affordable only alongside recording which sessions the
@@ -93,7 +92,7 @@ def trajectory_input_within_limits(*, byte_count: int, token_count: int) -> bool
     """Whether a stored canonical trajectory fits the fixed storage-row limits.
 
     This measures the STORAGE ROW -- fifteen fields per interaction, including
-    timestamps, identifiers and tool metadata. It is no longer what decides
+    timestamps, identifiers and tool metadata. It is not what decides
     whether a session is usable as evidence; ``analyst_payload_within_limits``
     is. It survives as the stand-in for a session whose content the byte cap
     already discarded. This legacy direct-input predicate does not control the
@@ -205,18 +204,18 @@ class _OpenWorldPolicy:
     #: population of 1,000 exposures into 80+ sessions -- already past the
     #: lease.
     #:
-    #: A SECOND REASON, AND IT IS NARROWER THAN IT WAS. Publication is decided
-    #: over this same population, so N used to drive P(publish) down as p**N --
-    #: a better-instrumented org became LESS able to publish, the incentive
-    #: exactly inverted. The two non-affirming values are now split:
-    #: ``unresolved`` is now held to a 75 percent coverage floor rather than to
+    #: A SECOND, NARROWER REASON. Publication is decided over this same
+    #: population, and under unanimity N would drive P(publish) down as p**N --
+    #: a better-instrumented org LESS able to publish, the incentive exactly
+    #: inverted. The two non-affirming values are split:
+    #: ``unresolved`` is held to a 75 percent coverage floor rather than to
     #: unanimity, which removes the decay ON THAT AXIS. It does NOT remove it
     #: on the other -- ``expanded`` / ``blocker`` / ``refute`` remain "an
     #: absolute existential veto, at any N" (``reducer.py``), so a larger arm
     #: is still strictly more ways to lose.
     #:
     #: So do not read this as the load-bearing argument; the LEASE is. This one
-    #: survives that split only for adverse findings, and the cap would be
+    #: holds only for adverse findings, and the cap would be
     #: right on cost alone.
     #:
     #: PER OUTCOME CLASS, not per arm and not over the union, so that no class

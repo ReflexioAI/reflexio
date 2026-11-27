@@ -116,7 +116,7 @@ def test_historical_database_upgrades_to_current_schema(
         assert stored_version(storage) == LATEST_VERSION
         upgraded = _schema(storage.conn)
         # Every table rebuild must leave what the base DDL declares in place:
-        # the DDL no longer re-runs on each open to repair a dropped index.
+        # the DDL does not re-run on each open to repair a dropped index.
         storage._apply_base_ddl()
         assert _schema(storage.conn) == upgraded
     finally:

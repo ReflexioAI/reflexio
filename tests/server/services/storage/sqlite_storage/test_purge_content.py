@@ -1,4 +1,4 @@
-"""Task 1: has_inbound_lineage_refs query for purge-vs-hard-delete decision."""
+"""has_inbound_lineage_refs query for purge-vs-hard-delete decision."""
 
 from __future__ import annotations
 
@@ -153,16 +153,9 @@ def test_purge_idempotent_on_already_purged_row(storage):
 def test_resolve_current_returns_is_purged_for_purged_survivor(storage):
     """Guard: resolve_current returns is_purged=True when the live survivor was purged.
 
-    Contract lock-in for Task 6 (purge_content companion).  No production consumer
-    currently dereferences the resolved record's content, so no skip-logic is needed
-    today.  This test ensures the signal any future consumer relies on is stable and
-    cannot regress silently.
-
-    Audit finding: as of 2026-06-23 there are ZERO call sites outside of
-    resolve_current itself and test code that call resolve_current and then read
-    the returned RecordRef's content — the function is only consumed by tests and
-    the clear_user_data path (which only uses the resolved id, not the content).
-    No skip-guard was added to any consumer because none read content.
+    No production code in this repository calls resolve_current, so nothing dereferences the resolved
+    record's content and no skip-logic is needed.  This test keeps the signal any
+    future consumer would rely on stable, so it cannot regress silently.
     """
     from reflexio.server.services.lineage.resolve import resolve_current
 

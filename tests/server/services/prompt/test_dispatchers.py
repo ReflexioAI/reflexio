@@ -1,4 +1,4 @@
-"""Tests for the Pattern D heuristic classifier and conditional render path."""
+"""Tests for the Pattern D heuristic classifier."""
 
 from __future__ import annotations
 
@@ -40,11 +40,3 @@ def test_dispatcher_flags_list_questions(query: str) -> None:
 def test_dispatcher_rejects_single_fact_questions(query: str) -> None:
     """Single-fact / non-list shapes must not classify as Pattern D."""
     assert not is_pattern_d_question(query)
-
-
-# NOTE: The agentic search-agent pipeline (``render_search_prompt``, the
-# ``search_agent`` prompt bank, per-pattern A-H recipes, and Pattern D
-# conditional rehydration) was removed during the polarity-aware playbook
-# lifecycle work. The ``is_pattern_d_question``
-# classifier survives, so its tests above are retained; the render-path tests
-# that exercised the deleted ``render_search_prompt`` API were removed.

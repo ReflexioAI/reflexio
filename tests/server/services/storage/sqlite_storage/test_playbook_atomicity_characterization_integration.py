@@ -1,15 +1,12 @@
-"""Characterization tests: SQLite playbook atomicity invariants (Tier-1 Task 1).
+"""Characterization tests: SQLite playbook atomicity invariants.
 
-Day-one invariant guards established BEFORE the PlaybookMixin decomposition. They
-pin the CURRENT commit / lineage-event / no-op behavior of the top-risk,
-atomicity-sensitive methods so a "tidying" reorder during the mixin split is caught
-by a failing test. Modeled on the gold standard
-``test_save_agent_playbooks_integration.py``.
+These pin the commit / lineage-event / no-op behavior of the top-risk,
+atomicity-sensitive methods so a "tidying" reorder is caught by a failing test.
 
 Methods characterized here (SQLite side):
   - ``supersede_user_playbooks_by_ids`` — soft-delete to SUPERSEDED, per-row
     ``rowcount`` guard, single commit, one ``status_change`` event per updated row
-    under a SHARED ``request_id`` (actor=``consolidator``). Uncovered before this file.
+    under a SHARED ``request_id`` (actor=``consolidator``).
   - Crash-window / rollback for the hard-delete family
     (``delete_agent_playbook``, ``delete_all_agent_playbooks``,
     ``delete_all_agent_playbooks_by_playbook_name``,

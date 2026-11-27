@@ -269,7 +269,7 @@ def test_every_backstop_row_exceeds_its_routes_own_deadline():
 
 
 def test_publish_interaction_dispatch_uses_the_backstop(monkeypatch):
-    """``dispatch`` must USE the table, not merely define it beside the old code.
+    """``dispatch`` must USE the table, not merely define it beside inline logic.
 
     Asserting on ``backstop_for()`` alone cannot catch a ``dispatch`` still
     running the inline ``REQUEST_TIMEOUT_SECONDS`` / ``SYNC_REQUEST_PATHS``
@@ -463,9 +463,9 @@ def test_backstop_timeout_body_carries_a_correlation_id():
 def test_grade_on_demand_dispatch_uses_the_synchronous_budget(monkeypatch):
     """grade_on_demand must not get the 60s default.
 
-    Regression for claude-smart#162: the route runs the LLM judge inline, a
-    large session takes 2+ minutes, and every attempt 504'd at exactly 60.0s
-    with ``reason: backstop_timeout``. Drives the real ``dispatch`` and reads the
+    The route runs the LLM judge inline and a large session takes 2+ minutes;
+    under the default every attempt 504s at exactly 60.0s with
+    ``reason: backstop_timeout``. Drives the real ``dispatch`` and reads the
     timeout ``asyncio.wait_for`` was actually handed, like the sibling tests.
     """
     observed: dict[str, float | None] = {}
@@ -505,7 +505,7 @@ def test_every_timeout_exemption_names_a_real_route():
 
     Both tables match on the exact route path, so a renamed or mistyped key
     does not fail -- the request just falls back to the 60s default, which is
-    the claude-smart#162 failure again. Derive the valid set from the app
+    the grade_on_demand 504 failure above. Derive the valid set from the app
     rather than trusting the keys.
     """
     from fastapi.routing import APIRoute

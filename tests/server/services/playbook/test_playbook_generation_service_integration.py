@@ -552,7 +552,6 @@ def test_multimodal_playbook_generation_with_storage(
         auto_run=False,  # Skip stride check for testing
     )
 
-    # Run playbook generation
     playbook_generation_service.run(request)
 
     # Verify storage was called with correct playbook
@@ -587,7 +586,6 @@ def test_playbook_generation_with_empty_interactions(
         auto_run=False,  # Skip stride check for testing
     )
 
-    # Run playbook generation
     playbook_generation_service.run(request)
 
     # Verify storage was not called
@@ -625,7 +623,6 @@ def test_playbook_generation_with_no_playbook_config(
         auto_run=False,  # Skip stride check for testing
     )
 
-    # Run playbook generation
     playbook_generation_service.run(request)
 
     # Verify storage was not called
@@ -668,7 +665,6 @@ def test_multimodal_playbook_generation_with_should_not_generate(
         auto_run=True,
     )
 
-    # Run playbook generation
     playbook_generation_service.run(request)
 
     playbook_generation_service.client.generate_chat_response.assert_called_once()

@@ -1,13 +1,11 @@
-"""Characterization tests: SQLite interaction-search + profile status lookup (Tier-1 Task 1).
+"""Characterization tests: SQLite interaction-search + profile status lookup.
 
-Phase-A characterization net established BEFORE the ``ProfileMixin`` decomposition
-(``_profiles.py`` -> ProfileStore / InteractionStore / Search). These pin the CURRENT
-behavior of two methods that had ZERO storage-level coverage in the OSS suite, so a
-later VERBATIM code move into the Search / ProfileStore buckets is provably safe.
+These pin the storage-level behavior of two methods so a code move or refactor
+of the Search / ProfileStore buckets is caught if it changes them.
 
 Methods characterized here (SQLite side):
-  - ``search_interaction`` — the keystone of the Search bucket. Only ever exercised via
-    the service layer before this file. Pins the main filter/ranking paths: FTS query,
+  - ``search_interaction`` — the keystone of the Search bucket. Pins the main
+    filter/ranking paths: FTS query,
     user-id isolation, ``request_id`` filter, ``most_recent_k`` recency fetch, the
     no-query/no-``most_recent_k`` empty result, and the HYBRID-without-embedding
     fallback to FTS.

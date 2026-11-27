@@ -6,11 +6,7 @@ These tests guard the central invariant of the "always soft" dedup fix:
     superseded lineage event under the run's request_id), OR nothing happens —
     never a hard_delete for a dedup removal. The change log is then rebuilt from
     those lineage events (reconstruct_profile_change_log); the legacy
-    ``profile_change_logs`` table is no longer written.
-
-They replace the deleted ``test_dedup_soft_delete_integration.py`` (which was
-built around the now-removed ``is_dedup_soft_delete_enabled`` flag and the
-hard-delete fallback).
+    ``profile_change_logs`` table is not written.
 
 Test groups:
 - A: happy-path with REAL SQLiteStorage → soft tombstone + one superseded event,
@@ -315,8 +311,7 @@ def test_empty_request_id_skips_removal_and_fires_anomaly() -> None:
     """Empty request_id: supersede NOT called, delete_user_profile NOT called,
     capture_anomaly fires, and the legacy log records NO removal.
 
-    Replaces the old test_empty_request_id_falls_back_to_hard_delete — an empty
-    request_id must NEVER trigger a destructive hard-delete.
+    An empty request_id must NEVER trigger a destructive hard-delete.
     """
     mock_storage = _mock_storage()
 

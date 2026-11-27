@@ -1,4 +1,4 @@
-"""Integration tests: reconstruct_playbook_aggregation_change_log — B3b Task 2.
+"""Integration tests: reconstruct_playbook_aggregation_change_log.
 
 Verifies the read-side reconstruction of PlaybookAggregationChangeLog from
 lineage events, mirroring the profile reconstruction model.
@@ -15,10 +15,6 @@ Covered scenarios:
   9. run_mode defaults to "incremental" when event reason has no "aggregate:" prefix.
   10. H2: reason="aggregate:" (empty suffix) → run_mode="incremental", no crash.
   11. H2: reason="aggregate:bogus" (unknown suffix) → run_mode="incremental", no crash.
-
-Note: the S3 parity-gate test (formerly Test 3) was retired with the legacy
-``playbook_aggregation_change_logs`` table (Track B Task 4). Parity is moot
-once the legacy write path is stopped.
 """
 
 from __future__ import annotations
