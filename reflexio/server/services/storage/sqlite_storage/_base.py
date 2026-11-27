@@ -285,14 +285,12 @@ class SQLiteStorageBase(
         publication claim, and retention refuses both. Only jobs whose lease has
         expired are touched, so live work is never interrupted. Runs at migrate
         and before every capacity cleanup, because a lease can expire after the
-        database was opened. Selection and both updates share one writer
-        transaction, and each update re-checks the lease predicate, so a claim
-        taken by another connection is never cleared. Idempotent. Reuses an
+        database was opened. A read-only probe skips clean datasets. If work
+        is present, selection and both updates share one writer transaction
+        and re-check the lease so a claim taken after the probe is safe. Reuses an
         existing terminal outcome, so no CHECK is rebuilt.
         """
-        # Never commits outside commit_scope(): the scope takes the connection
-        # lock, so another thread's open transaction finishes first.
-        with self.commit_scope():
+        with self._lock:
             tables = {
                 row["name"]
                 for row in self.conn.execute(
@@ -301,7 +299,6 @@ class SQLiteStorageBase(
             }
             if "playbook_optimization_jobs" not in tables:
                 return
-            now = int(time.time())
             claims = "user_playbook_publication_claims" in tables
             unconsumed = (
                 " OR EXISTS (SELECT 1 FROM user_playbook_publication_claims c "
@@ -312,15 +309,26 @@ class SQLiteStorageBase(
                 else ""
             )
             expired = "(lease_expires_at IS NULL OR lease_expires_at <= ?)"
+
+            candidates = (
+                "SELECT job_id FROM playbook_optimization_jobs "  # noqa: S608
+                f"WHERE optimizer_kind = 'gepa' AND {expired} "
+                "AND (status IN ('pending', 'running') "
+                f"OR stage = 'publishing'{unconsumed})"
+            )
+            if (
+                self.conn.execute(
+                    f"{candidates} LIMIT 1",  # noqa: S608
+                    (int(time.time()),),
+                ).fetchone()
+                is None
+            ):
+                return
+
+        with self.commit_scope():
+            now = int(time.time())
             job_ids = [
-                int(row["job_id"])
-                for row in self.conn.execute(
-                    "SELECT job_id FROM playbook_optimization_jobs "  # noqa: S608
-                    f"WHERE optimizer_kind = 'gepa' AND {expired} "
-                    "AND (status IN ('pending', 'running') "
-                    f"OR stage = 'publishing'{unconsumed})",
-                    (now,),
-                )
+                int(row["job_id"]) for row in self.conn.execute(candidates, (now,))
             ]
             for job_id in job_ids:
                 guard = f"job_id = ? AND optimizer_kind = 'gepa' AND {expired}"
