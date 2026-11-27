@@ -970,6 +970,14 @@ class SearchRuntimeMiddleware:
         finalized = asyncio.Event()
         status = 500
         response_at: float | None = None
+        response_started = False
+
+        async def send_response(message: Message) -> None:
+            nonlocal response_started
+            await send(message)
+            response_started = (
+                response_started or message["type"] == "http.response.start"
+            )
 
         async def buffered_send(message: Message) -> None:
             nonlocal status
@@ -1029,7 +1037,7 @@ class SearchRuntimeMiddleware:
                     status = 503
                     await JSONResponse(
                         {"detail": "Search capacity exhausted"}, status_code=status
-                    )(scope, receive, send)
+                    )(scope, receive, send_response)
                     return
                 task = asyncio.create_task(run())
                 self.tasks.add(task)
@@ -1055,12 +1063,12 @@ class SearchRuntimeMiddleware:
                 if state.cancelled:
                     return
                 for message in messages:
-                    await send(message)
+                    await send_response(message)
             except _RequestBodyTooLargeError:
                 status = 413
                 await JSONResponse(
                     {"detail": "Request body too large"}, status_code=status
-                )(scope, receive, send)
+                )(scope, receive, send_response)
             except (TimeoutError, SearchDeadlineError):
                 if state.response_accepted:
                     # A transport send failure cannot become a new 504 after
@@ -1075,7 +1083,7 @@ class SearchRuntimeMiddleware:
                         "correlation_id": state.timing_id,
                     },
                     status_code=504,
-                )(scope, receive, send)
+                )(scope, receive, send_response)
             except asyncio.CancelledError:
                 state.cancel("disconnected")
                 raise
@@ -1090,21 +1098,34 @@ class SearchRuntimeMiddleware:
                 incoming.wake()
                 receiver.cancel()
                 await asyncio.gather(receiver, return_exceptions=True)
-            _emit(state, response_at, status)
+            # A disconnect can precede the response or discard a buffered response.
+            emitted_status = (
+                status if response_started or state.outcome != "disconnected" else None
+            )
+            _emit(state, response_at, emitted_status)
             scope.setdefault("state", {})["search_outcome"] = state.outcome
             _scope.reset(token)
 
 
-def _emit(state: SearchScope, response_at: float, status: int) -> None:
-    if status >= 400 and state.outcome not in {
-        "timeout",
-        "disconnected",
-        "capacity",
-        "application_failure",
-    }:
+def _emit(state: SearchScope, response_at: float, status: int | None) -> None:
+    if (
+        status is not None
+        and status >= 400
+        and state.outcome
+        not in {
+            "timeout",
+            "disconnected",
+            "capacity",
+            "application_failure",
+        }
+    ):
         state.outcome = "http_failure"
     fields = state.snapshot(response_at)
-    record_health("search.requests", outcome=state.outcome, status=str(status))
+    record_health(
+        "search.requests",
+        outcome=state.outcome,
+        status=str(status) if status is not None else "no_response",
+    )
     record_health(
         "search.duration",
         (response_at - state.started),
@@ -1124,7 +1145,8 @@ def _emit(state: SearchScope, response_at: float, status: int) -> None:
     timing_logger.info(
         "event=search_timing %s",
         json.dumps(
-            {**_log_fields(fields), "status_code": status}, separators=(",", ":")
+            {**_log_fields(fields), "status_code": status},
+            separators=(",", ":"),
         ),
     )
 
