@@ -3,6 +3,8 @@
 from copy import deepcopy
 from typing import Any
 
+from reflexio.server.llm._litellm_types import ExtractionInputIntegrityError
+
 from .models import ContractError, ResultVerdict, Review, Verdict
 
 CHECKS = (
@@ -33,7 +35,9 @@ def _expand_provenance(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(value, dict):
             continue
         if set(value) != {"verbatim_concatenation"}:
-            raise ContractError("Invalid review provenance representation")
+            raise ExtractionInputIntegrityError(
+                "Invalid review provenance representation"
+            )
         pieces = []
         for piece in value["verbatim_concatenation"]:
             if set(piece) == {"literal"} and isinstance(piece["literal"], str):
@@ -45,10 +49,12 @@ def _expand_provenance(payload: dict[str, Any]) -> dict[str, Any]:
                     or row["user_playbook_id"] not in record.get("replaces", [])
                     or not isinstance(row.get("source_span"), str)
                 ):
-                    raise ContractError("Review provenance needs an exact incumbent")
+                    raise ExtractionInputIntegrityError(
+                        "Review provenance needs an exact incumbent"
+                    )
                 pieces.append(row["source_span"])
             else:
-                raise ContractError("Invalid review provenance part")
+                raise ExtractionInputIntegrityError("Invalid review provenance part")
         record["source_span"] = "".join(pieces)
     return restored
 
@@ -87,7 +93,9 @@ def input_view(payload: dict[str, Any]) -> dict[str, Any]:
             parts.append({"literal": suffix})
         record["source_span"] = {"verbatim_concatenation": parts}
     if _expand_provenance(view) != payload:
-        raise ContractError("Review provenance projection changed original evidence")
+        raise ExtractionInputIntegrityError(
+            "Review provenance projection changed original evidence"
+        )
     return view
 
 

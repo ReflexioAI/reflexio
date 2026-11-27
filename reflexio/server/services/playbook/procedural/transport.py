@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, JsonValue, ValidationError, create_model
 
 from reflexio.server.llm._litellm_text_generation import _uses_native_transport
 from reflexio.server.llm._litellm_types import (
+    ExtractionInputIntegrityError,
     ModelProvenance,
     ProviderRequestGuardError,
     completion_metadata,
@@ -96,7 +97,9 @@ def _input_content(stage: str, body: dict[str, Any]) -> str:
         width=1_000_000,
     )
     if yaml.safe_load(rendered) != view:
-        raise ContractError("Procedural input encoding changed supplied evidence")
+        raise ExtractionInputIntegrityError(
+            "Procedural input encoding changed supplied evidence"
+        )
     return rendered
 
 

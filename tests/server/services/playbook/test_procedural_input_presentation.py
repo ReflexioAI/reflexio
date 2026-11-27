@@ -6,9 +6,9 @@ from copy import deepcopy
 import pytest
 import yaml
 
+from reflexio.server.llm._litellm_types import ExtractionInputIntegrityError
 from reflexio.server.services.playbook.procedural import review
 from reflexio.server.services.playbook.procedural.models import (
-    ContractError,
     Create,
     Revise,
 )
@@ -118,7 +118,7 @@ def test_review_view_checks_distinct_result_copies_and_rejects_foreign_reference
     view["proposed_records"]["W0"]["source_span"]["verbatim_concatenation"][0][
         "incumbent_source_span"
     ] = "https://untrusted.invalid"
-    with pytest.raises(ContractError, match="exact incumbent"):
+    with pytest.raises(ExtractionInputIntegrityError, match="exact incumbent"):
         review._expand_provenance(view)
 
 
@@ -158,5 +158,5 @@ def test_encoder_mismatch_refuses_before_supplied_evidence_can_be_dispatched(
     monkeypatch.setattr(
         transport.yaml, "dump", lambda *_args, **_kwargs: "source_span: changed\n"
     )
-    with pytest.raises(ContractError, match="encoding changed"):
+    with pytest.raises(ExtractionInputIntegrityError, match="encoding changed"):
         _input_content("maintain", {"source_span": "Original exact source."})

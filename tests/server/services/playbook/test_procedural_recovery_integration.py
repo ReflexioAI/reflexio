@@ -194,11 +194,12 @@ def test_operator_retirement_preserves_terminal_failure_and_unblocks_future_wind
     )
 
 
+@pytest.mark.parametrize("failure_kind", ["capacity", "presentation"])
 def test_compiler_input_hold_rearms_without_rerolling_reader_or_refunding_attempts(
-    pipeline, monkeypatch
+    pipeline, monkeypatch, failure_kind
 ):
     from reflexio.server.llm import input_budget
-    from reflexio.server.services.playbook.procedural import native
+    from reflexio.server.services.playbook.procedural import native, transport
     from tests.server.services.playbook.test_procedural_window_integration import setup
 
     _, storage, window, token, client, calls, _ = setup(pipeline, monkeypatch)
@@ -212,8 +213,11 @@ def test_compiler_input_hold_rearms_without_rerolling_reader_or_refunding_attemp
 
     def capacity(request, **kwargs):
         original_guard(request, **kwargs)
-        if not repaired and "source_observations" in yaml.safe_load(
-            request["messages"][1]["content"]
+        if (
+            failure_kind == "capacity"
+            and not repaired
+            and "source_observations"
+            in yaml.safe_load(request["messages"][1]["content"])
         ):
             raise input_budget.InputBudgetExceededError(
                 "synthetic pre-dispatch compiler hold"
@@ -223,13 +227,34 @@ def test_compiler_input_hold_rearms_without_rerolling_reader_or_refunding_attemp
         "reflexio.server.services.extraction.overflow_coordinator.check_request_input_budget",
         capacity,
     )
-    _drain_once(worker, storage)
+    real_dump = transport.yaml.dump
+
+    def broken_renderer(body, **kwargs):
+        if (
+            failure_kind == "presentation"
+            and not repaired
+            and "source_observations" in body
+        ):
+            return "owner: wrong-source\n"
+        return real_dump(body, **kwargs)
+
+    monkeypatch.setattr(transport.yaml, "dump", broken_renderer)
+    for _ in range(MAX_EXTRACTION_WINDOW_ATTEMPTS + 2):
+        _drain_once(worker, storage)
+        if _cursor(storage)["retry_at"] == float("inf"):
+            break
     held = storage.get_agent_run(f"window:{window.window_id}")
     assert _cursor(storage)["retry_at"] == float("inf")
-    assert _cursor(storage)["last_error"] == "input_budget_exceeded"
+    reason = (
+        "input_budget_exceeded"
+        if failure_kind == "capacity"
+        else "input_budget_configuration_error"
+    )
+    assert reason in _cursor(storage)["last_error"]
     assert len(calls) == 1
     frozen = deepcopy(held.generation_request_snapshot["overflow"])
     assert len(frozen["attempts"]) == 1
+    assert not frozen["checkpoint"][native.KEY].get("failed_steps")
     reader = deepcopy(frozen["checkpoint"][native.KEY]["reader_steps"])
     receipt = plan_input_budget_recovery(storage, window.window_id, action="rearm")
     assert receipt["recoverable"]

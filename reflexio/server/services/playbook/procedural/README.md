@@ -73,6 +73,8 @@ oversized request still holds before quota reservation and dispatch. Use the
 existing input-recovery preview/apply owner to rearm a repaired hold; preserve
 completed work and all consumed attempts. Never clear a checkpoint or retire a
 new window merely to work around capacity.
+Code-owned presentation mismatches use the existing input-integrity retry owner;
+they are not cached as terminal model-contract failures.
 
 ## Source and retrieval adaptation
 
