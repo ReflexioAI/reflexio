@@ -6,7 +6,7 @@ from inspect import getattr_static
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import litellm
@@ -925,3 +925,182 @@ def test_minimax_m3_documented_thinking_modes_are_preserved(
         == "done"
     )
     assert requests[0][1]["thinking"] == thinking
+
+
+@pytest.mark.parametrize("effort", [None, "low", "medium", "high", "xhigh", "max"])
+@pytest.mark.parametrize("bare_catalog", [False, True])
+def test_procedural_maintain_reasoning_reaches_real_minimax_payload_without_dispatch(
+    effort, bare_catalog, monkeypatch
+):
+    """Exercise the real builder and LiteLLM mapper, never HTTP or completion."""
+    import socket
+
+    from litellm._logging import verbose_logger
+    from litellm.llms.minimax.chat.transformation import MinimaxChatConfig
+    from litellm.utils import get_optional_params
+
+    from reflexio.server.llm.input_budget import request_input_capacity
+    from reflexio.server.services.playbook.procedural.transport import StageClient
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Offline request mapping attempted provider dispatch")
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-placeholder")
+    monkeypatch.setattr(litellm, "completion", forbidden)
+    monkeypatch.setattr(httpx.Client, "send", forbidden)
+    monkeypatch.setattr(httpx.AsyncClient, "send", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    entry = None
+    registration = Mock(side_effect=AssertionError("Existing catalog was shadowed"))
+    if bare_catalog:
+        # Synthetic full catalog data; these sentinels are never production prices.
+        entry = {
+            "litellm_provider": "minimax",
+            "mode": "chat",
+            "supports_reasoning": True,
+            "max_input_tokens": 1000000,
+            "max_output_tokens": 128000,
+            "input_cost_per_token": 0.000123,
+            "output_cost_per_token": 0.000456,
+        }
+        monkeypatch.delitem(
+            litellm.model_cost, "minimax/MiniMax-M3.1-Flash", raising=False
+        )
+        monkeypatch.setitem(litellm.model_cost, "MiniMax-M3.1-Flash", entry)
+        monkeypatch.setattr(litellm, "register_model", registration)
+    client = LiteLLMClient(
+        LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=[])
+    )
+    stages = StageClient(client, "minimax/MiniMax-M3")
+    options = dict(stages.profiles["maintain"])
+    if effort is not None:
+        options["reasoning_effort"] = effort
+    expected = effort or "low"
+    params = client._build_completion_params(
+        [{"role": "user", "content": "Offline request mapping."}], **options
+    )[0]
+    model, provider, _, _ = litellm.get_llm_provider(params["model"])
+    assert (model, provider) == ("MiniMax-M3.1-Flash", "minimax")
+    with patch.object(verbose_logger, "warning") as warning:
+        optional = get_optional_params(
+            model=model,
+            custom_llm_provider=provider,
+            reasoning_effort=params["reasoning_effort"],
+            allowed_openai_params=params.get("allowed_openai_params"),
+            drop_params=params["drop_params"],
+            max_tokens=params["max_tokens"],
+        )
+        payload = MinimaxChatConfig().transform_request(
+            model=model,
+            messages=params["messages"],
+            optional_params=optional,
+            litellm_params={},
+            headers={},
+        )
+    assert payload.get("reasoning_effort") == expected
+    warning.assert_not_called()
+    assert payload["model"] == model
+    assert payload["max_tokens"] == stages.profiles["maintain"]["max_tokens"]
+    if bare_catalog:
+        registration.assert_not_called()
+        assert "minimax/MiniMax-M3.1-Flash" not in litellm.model_cost
+        assert litellm.model_cost["MiniMax-M3.1-Flash"] is entry
+        assert entry is not None
+        assert entry["max_input_tokens"] == 1000000
+        assert entry["input_cost_per_token"] == 0.000123
+        assert entry["output_cost_per_token"] == 0.000456
+        assert request_input_capacity(
+            params, context_limits={}, prompt_target=None
+        ) == (1000000 - params["max_tokens"])
+
+
+@pytest.mark.parametrize("extra_body", [False, True])
+@pytest.mark.parametrize(
+    "knob",
+    [
+        {"thinking": {"type": "disabled"}},
+        {"reasoning_effort": "none"},
+        {"reasoning_effort": "minimal"},
+        {"reasoning_effort": "invalid"},
+        {"reasoning_effort": {"effort": "low"}},
+        {"reasoning_split": False},
+    ],
+)
+def test_stable_minimax_invalid_reasoning_refuses_before_dispatch(knob, extra_body):
+    client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3.1-Flash"))
+    with patch("litellm.completion") as completion, pytest.raises(LiteLLMClientError):
+        client._build_completion_params(
+            [{"role": "user", "content": "Offline request mapping."}],
+            **({"extra_body": knob} if extra_body else knob),
+        )
+    completion.assert_not_called()
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+def test_stable_minimax_extra_body_effort_keeps_caller_precedence(effort):
+    client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3.1-Flash"))
+    extra = {"reasoning_effort": effort, "thinking": {"type": "adaptive"}}
+    params = client._build_completion_params(
+        [{"role": "user", "content": "Offline request mapping."}],
+        reasoning_effort="low",
+        extra_body=extra,
+    )[0]
+    assert params["extra_body"] == extra
+    assert params["reasoning_effort"] == "low"
+    assert params["allowed_openai_params"].count("reasoning_effort") == 1
+    omitted = client._build_completion_params(
+        [{"role": "user", "content": "Offline request mapping."}]
+    )[0]
+    assert "reasoning_effort" not in omitted
+    assert "thinking" not in omitted
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openrouter/minimax/MiniMax-M3.1-Flash",
+        "openai/MiniMax-M3.1-Flash",
+        "minimax/MiniMax-M3.1-Flash-unknown",
+    ],
+)
+def test_stable_minimax_policy_does_not_claim_unknown_routes(model, monkeypatch):
+    from reflexio.server.llm._model_compat import (
+        apply_model_request_policy,
+        qualified_model_id,
+    )
+
+    monkeypatch.delitem(litellm.model_cost, model, raising=False)
+    params = {"model": model, "reasoning_effort": "low"}
+    assert qualified_model_id(model) is None
+    ensure_model_capabilities(model)
+    apply_model_request_policy(params)
+    assert model not in litellm.model_cost
+    assert params == {"model": model, "reasoning_effort": "low"}
+
+
+def test_stable_minimax_capability_fallback_preserves_existing_prices(monkeypatch):
+    model = "minimax/MiniMax-M3.1-Flash"
+    entry = {"supports_reasoning": True, "input_cost_per_token": 0.000123}
+    monkeypatch.setitem(litellm.model_cost, model, entry)
+    ensure_model_capabilities(model)
+    assert litellm.model_cost[model] is entry
+    assert entry == {"supports_reasoning": True, "input_cost_per_token": 0.000123}
+
+
+def test_stable_minimax_does_not_shadow_unprefixed_catalog_data(monkeypatch):
+    model = "minimax/MiniMax-M3.1-Flash"
+    bare = model.split("/", 1)[1]
+    entry = {
+        "litellm_provider": "minimax",
+        "mode": "chat",
+        "supports_reasoning": True,
+        "max_input_tokens": 1000000,
+        "input_cost_per_token": 0.000123,
+    }
+    monkeypatch.delitem(litellm.model_cost, model, raising=False)
+    monkeypatch.setitem(litellm.model_cost, bare, entry)
+    ensure_model_capabilities(model)
+    assert model not in litellm.model_cost
+    assert litellm.model_cost[bare] is entry
+    assert entry["max_input_tokens"] == 1000000
+    assert entry["input_cost_per_token"] == 0.000123
