@@ -74,20 +74,15 @@ PROFILE_EXTRACTION_MAX_RETRIES = 2
 MAX_EXISTING_PROFILES_FOR_CONTEXT = 5
 
 
-def _is_transient_extraction_failure(exc: BaseException) -> bool:
-    """Whether a profile extraction failure is an expected transient outage.
-
-    Args:
-        exc (BaseException): The failure raised by profile generation.
-
-    Returns:
-        bool: True for a provider timeout / connection / rate-limit / overload
-        failure, which the durable window retries; False for semantic, parse
-        or repair-exhausted failures and anything unclassified.
-    """
+def _extraction_failure_kind(exc: BaseException) -> str:
+    """Return a fixed diagnostic label without reading exception text."""
     if isinstance(exc, ExtractionIncompleteError):
-        return exc.error_detail == "transient"
-    return describe_tool_loop_error(exc)[1] == "transient"
+        detail = exc.error_detail
+    else:
+        _, detail = describe_tool_loop_error(exc)
+    if detail in ("transient", "non_transient", "parse", "semantic", "refusal"):
+        return detail
+    return "unclassified"
 
 
 def profile_source_evidence_texts(
@@ -350,14 +345,15 @@ class ProfileExtractor:
         except Exception as e:
             # A transient provider failure is retried by the durable window, so
             # it is expected noise; semantic / repair-exhausted failures stay ERROR.
-            log = (
-                logger.warning if _is_transient_extraction_failure(e) else logger.error
-            )
+            failure_kind = _extraction_failure_kind(e)
+            log = logger.warning if failure_kind == "transient" else logger.error
             log(
-                "event=profile_extract_failed user_id=%s extractor_name=%s error_type=%s error=%s",
+                "event=profile_extract_failed user_id=%s extractor_name=%s "
+                "error_type=%s failure_kind=%s error=%s",
                 self.service_config.user_id,
                 get_extractor_name(self.config),
                 type(e).__name__,
+                failure_kind,
                 str(e),
             )
             raise RuntimeError(

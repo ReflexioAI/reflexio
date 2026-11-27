@@ -550,7 +550,7 @@ class TestRun:
         request_context.storage.upsert_operation_state.assert_not_called()
 
     @pytest.mark.parametrize(
-        ("error", "level"),
+        ("error", "level", "expected_kind"),
         [
             # The window retry owns transient provider failures: expected noise.
             (
@@ -560,6 +560,7 @@ class TestRun:
                     error_detail="transient",
                 ),
                 "WARNING",
+                "transient",
             ),
             (
                 ExtractionIncompleteError(
@@ -568,6 +569,7 @@ class TestRun:
                     error_detail="non_transient",
                 ),
                 "ERROR",
+                "non_transient",
             ),
             (
                 ExtractionIncompleteError(
@@ -576,19 +578,32 @@ class TestRun:
                     error_detail="semantic",
                 ),
                 "ERROR",
+                "semantic",
             ),
-            (ExtractionIncompleteError("max_steps", error_detail=None), "ERROR"),
-            (TimeoutError("provider hung"), "WARNING"),
+            (
+                ExtractionIncompleteError("max_steps", error_detail=None),
+                "ERROR",
+                "unclassified",
+            ),
+            (
+                ExtractionIncompleteError(
+                    "incomplete", error_detail="arbitrary detail"
+                ),
+                "ERROR",
+                "unclassified",
+            ),
+            (TimeoutError("provider hung"), "WARNING", "transient"),
             # Decision 3A: a saturated local provider cap was ERROR; it is an
             # expected uncharged wait now (OutageWait), so WARNING.
-            (ProviderCapSaturatedError("no permit"), "WARNING"),
-            (RuntimeError("boom"), "ERROR"),
+            (ProviderCapSaturatedError("no permit"), "WARNING", "transient"),
+            (RuntimeError("boom"), "ERROR", "non_transient"),
         ],
         ids=[
             "transient",
             "non_transient",
             "semantic",
             "no_detail",
+            "unknown_detail",
             "raw",
             "cap_saturated",
             "bug",
@@ -604,6 +619,7 @@ class TestRun:
         sample_request_interaction_models,
         error,
         level,
+        expected_kind,
     ):
         request_context.storage.get_last_k_interactions_grouped.return_value = (
             sample_request_interaction_models,
@@ -627,6 +643,7 @@ class TestRun:
             if "event=profile_extract_failed" in r.getMessage()
         ]
         assert [r.levelname for r in records] == [level]
+        assert f"failure_kind={expected_kind} " in records[0].getMessage()
 
     def test_incomplete_window_extraction_carries_failure_detail(
         self,
