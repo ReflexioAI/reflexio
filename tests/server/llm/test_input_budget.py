@@ -495,6 +495,7 @@ def test_native_output_config_schema_counts_before_quota(counter):
 
 
 @pytest.mark.parametrize("nested", ["$defs", "anyOf"])
+@pytest.mark.unit
 def test_complete_tool_schema_growth_is_counted_before_quota(nested):
     # The installed provider formatter ignores these nested schema forms. The
     # transmitted schema still occupies context and cannot bypass admission.
@@ -527,6 +528,7 @@ def test_complete_tool_schema_growth_is_counted_before_quota(nested):
     assert reserve.call_count == 1
 
 
+@pytest.mark.unit
 def test_complete_tool_floor_preserves_larger_native_estimate(counter):
     tools = [{"type": "function", "function": {"name": "observe"}}]
     # Native provider framing can cost more than JSON. Keep the larger estimate.
@@ -535,6 +537,7 @@ def test_complete_tool_floor_preserves_larger_native_estimate(counter):
     assert json.loads(counter.call_args_list[1].kwargs["text"])["tools"] == tools
 
 
+@pytest.mark.unit
 def test_complete_tool_floor_keeps_named_choice_even_without_native_tool_format(
     counter,
 ):

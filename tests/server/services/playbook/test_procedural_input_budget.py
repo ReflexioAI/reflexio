@@ -32,6 +32,8 @@ from reflexio.server.services.playbook.procedural.models import (
     Text,
 )
 
+pytestmark = pytest.mark.unit
+
 MODEL = "minimax/MiniMax-M3"
 CAPACITY = 65_536
 # Fictional provenance includes the quotes, slashes and line breaks that JSON

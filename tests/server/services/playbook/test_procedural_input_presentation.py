@@ -17,6 +17,8 @@ from reflexio.server.services.playbook.procedural.transport import (
     _single_call_schema,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def payload(spans, replacements=None, suffix="\n\nNew source witness."):
     replacements = (
