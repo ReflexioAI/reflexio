@@ -988,13 +988,13 @@ def test_one_fatal_code_slip_does_not_cost_the_whole_batch():
     """A self-contradictory decision must not invalidate its siblings.
 
     This is the defect the coercion exists to prevent, asserted end-to-end
-    rather than on the model alone. The pairing raised during parse of the whole
-    PlaybookCandidateReviewOutput, so a single slip lost every candidate in the
-    request -- including healthy ones -- and `service.py` reviews all candidates
-    for a request in one call. The repair turn could not recover it either: the
-    error text is reduced to "decisions.N: value_error" before it reaches the
-    model, and a model_validator never appears in the JSON schema, so the rule
-    it broke was never stated to it.
+    rather than on the model alone. Without it, the pairing raises during parse
+    of the whole PlaybookCandidateReviewOutput, so a single slip loses every
+    candidate in the request -- including healthy ones -- and `service.py`
+    reviews all candidates for a request in one call. The repair turn cannot
+    recover it either: the error text is reduced to "decisions.N: value_error"
+    before it reaches the model, and a model_validator never appears in the
+    JSON schema, so the rule it broke is never stated to it.
 
     Asserts the survivor by content, not by count, so the test cannot pass by
     dropping the wrong candidate.
@@ -1018,8 +1018,8 @@ def test_one_fatal_code_slip_does_not_cost_the_whole_batch():
     # Parsed from raw dicts through the BATCH model, which is the path a
     # provider response actually takes. Building the decisions individually
     # would coerce each one before the output model ever saw it, so the
-    # whole-output parse -- the step that used to lose every sibling decision --
-    # would never be exercised.
+    # whole-output parse -- the step that would lose every sibling decision
+    # without the coercion -- would never be exercised.
     output = PlaybookCandidateReviewOutput.model_validate(
         {
             "decisions": [

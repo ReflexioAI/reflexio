@@ -359,7 +359,6 @@ def _stream_output(
         with lock:
             sys.stdout.write(formatted + "\n")
             sys.stdout.flush()
-        # Check for ready patterns
         if not ready_event.is_set() and any(p in line for p in ready_patterns):
             ready_event.set()
 

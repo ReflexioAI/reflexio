@@ -344,23 +344,21 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
     reports ``RECORDED_UNCORRELATED`` -- the recorder did accept it -- but
     raises no anomaly, because it persisted no row to be uncorrelated about.
 
-    This reverses the refusal that shipped in #488, and the reason is a
-    measurement rather than an argument. #488 reasoned that such a row is
+    Such a row is accepted rather than refused, and the reason is a
+    measurement rather than an argument. Refusing looks protective: the row is
     worthless to a reader and lowers the org's reconstructability ratio without
-    ever raising it, so refusing it protects the ratio. That is true for an org
-    that correlates. Measured against production on 2026-09-27, no org does:
-    across all 93 tenant schemas on the shared data plane, rows carrying a
-    ``request_id`` numbered **zero**, and every one of the 95,481 stored rows
-    had BOTH correlation columns NULL. So #488's predicate matched 100% of live
-    traffic, the refusal protected no ratio that existed, and exposure intake
-    went to zero fleet-wide two days after it deployed -- three unrelated orgs
-    stopped on the same day and nothing was written for the following 16 days.
+    ever raising it. That holds for an org that correlates. Measured against
+    production, no org did: across all 93 tenant schemas on the shared data
+    plane, rows carrying a ``request_id`` numbered **zero**, and every one of
+    the 95,481 stored rows had BOTH correlation columns NULL. A refusal
+    predicate matches 100% of such traffic, protects no ratio that exists, and
+    takes exposure intake to zero fleet-wide.
 
     The trade being made, stated plainly because it is real: an org that DOES
     correlate and occasionally omits an id will take a proportional dent in its
     ratio that it can never undo, exposure being append-only
     (``reject_exposure_event_mutation`` blocks DELETE). That is strictly better
-    than the alternative this replaces, which was losing the entire audit trail
+    than refusing, which loses the entire audit trail
     -- which playbooks were served, under which fingerprints -- for every
     uncorrelated search. A proportional dent beats total loss.
 
@@ -406,12 +404,10 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
     bounded in time by the outage that causes it, and it is precisely what an
     operator should be paged about.
 
-    The anomaly report stays exactly as it was, and is now the only mechanism
-    telling an operator that a caller is not correlating -- the condition is no
-    longer visible as an absence of rows, because the rows are there. The signal
-    is what made this diagnosable at all: intake went to zero on 2026-09-11 and
-    stayed there for 16 days, and the bounded report is what eventually named
-    it. Do not remove it on the grounds that the rows now land.
+    The anomaly report is the only mechanism telling an operator that a caller
+    is not correlating -- the condition is not visible as an absence of rows,
+    because the rows are there. Do not remove it on the grounds that the rows
+    land.
 
     Args:
         batch (SearchExposureBatch): The final served user-playbook set.

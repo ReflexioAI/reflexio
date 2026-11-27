@@ -125,12 +125,10 @@ def test_distinct_request_ids_produce_two_separate_rows(tmp_path):
 def test_empty_request_id_group_is_skipped(tmp_path):
     """GUARD: profiles with generated_from_request_id='' produce no reconstruction row.
 
-    The new time-travel-stable model explicitly skips the empty-string
+    The time-travel-stable model explicitly skips the empty-string
     generated_from_request_id so unrelated runs can never be merged under "".
     The distinct-column query excludes empty-string values at the DB level.
-
-    This replaces the old "collapse" documentation: the new behavior is a
-    hard skip, enforced in reconstruct_profile_change_log.
+    The skip is hard, enforced in reconstruct_profile_change_log.
 
     Seeds rows with TRULY empty generated_from_request_id (bypassing the
     _make_profile helper's ``or`` fallback by constructing directly) to ensure

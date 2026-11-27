@@ -417,7 +417,7 @@ class TestProcessResults:
 
         The change log is served by reconstruction from lineage events (see
         reconstruct_profile_change_log); the legacy ``profile_change_logs`` table
-        is no longer part of the storage write interface.
+        is not part of the storage write interface.
         """
         self._setup_service_config(service)
 

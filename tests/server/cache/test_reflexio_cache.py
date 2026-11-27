@@ -615,26 +615,21 @@ class TestGetCachedRequestContext:
     ) -> None:
         """Different orgs under one root resolve to different files.
 
-        This test used to assert the opposite -- ``max_active == 1``, cold
-        misses sharing ONE SQLite file and therefore serializing their
-        migrations. Dataset isolation made that premise false on purpose:
-        ``_create_sqlite_storage`` now resolves the path from the org identity,
-        so four orgs under one ``storage_base_dir`` get four files
-        (``reflexio_org-0.db`` ...), four locks, and no contention.
+        Dataset isolation: ``_create_sqlite_storage`` resolves the path from
+        the org identity, so four orgs under one ``storage_base_dir`` get four
+        files (``reflexio_org-0.db`` ...), four locks, and no contention.
 
-        Rewritten rather than deleted, because the property worth pinning
-        survived the change and got MORE important: one org's rows must never
-        live in another org's file. The 28 tenant tables here carry no
+        The property worth pinning: one org's rows must never live in another
+        org's file. Most tenant tables here carry no
         ``org_id`` column, so the file boundary IS the tenancy boundary.
 
-        The concurrency assertion is kept as the negative half -- if these ever
+        The concurrency assertion is the negative half -- if these ever
         collapse back onto one file they will serialize again, and
         ``max_active`` is what notices. It is asserted as ``>= 2`` rather than
         ``== len(org_ids)``: any overlap disproves serialization, and demanding
         that all four overlap would make the test a timing bet.
 
-        Same-org serialization -- the property the original test was really
-        protecting -- is still covered, by the sibling
+        Same-org serialization is covered by the sibling
         ``assert_called_once_with(org_id="org-1", ...)`` case above.
         """
         import reflexio.server.cache.reflexio_cache as cache_mod

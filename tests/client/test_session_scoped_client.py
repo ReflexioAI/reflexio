@@ -765,7 +765,7 @@ def test_per_call_session_id_still_works_on_the_unscoped_client(monkeypatch) -> 
 
 
 def test_unscoped_search_may_still_omit_the_session(monkeypatch) -> None:
-    """The old permissive behaviour is unchanged -- this change adds, never breaks."""
+    """An unscoped search may omit the session; session scoping is opt-in."""
     client = _make_client()
     captured = _capture_sync(monkeypatch, client)
 

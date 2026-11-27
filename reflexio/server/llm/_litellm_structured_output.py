@@ -8,7 +8,7 @@ post-hoc parse orchestrator (``_maybe_parse_structured_output``), plus the
 
 SINK-1 (patch-where-used): ``assert_provider_safe_schema`` is imported HERE, so
 tests patch it at ``_litellm_structured_output.assert_provider_safe_schema``
-(the real guard raises under pytest; patching the old facade namespace would
+(the real guard raises under pytest; patching the facade namespace would
 no-op). ``litellm.supports_response_schema``/``get_llm_provider`` are called via
 the shared ``litellm`` module attr.
 
@@ -327,14 +327,13 @@ class StructuredOutputMixin:
     # Providers that ignore ``response_format`` outright, so the schema has to
     # travel in the prompt or the model never sees it at all.
     #
-    # ``minimax`` was previously in the json-schema allowlist above, on the
-    # belief that it accepts a ``json_schema`` response_format that LiteLLM
-    # merely under-reports. Measured against the live API, it does not: two
-    # identical calls differing only in ``drop_params`` both returned free
-    # prose rather than JSON, so the response_format is discarded whatever we
-    # send. The visible symptom was an analyst inventing a DIFFERENT set of
-    # field names on every run -- it was answering from the prompt alone,
-    # having never been given a schema. With the schema in the prompt the same
+    # ``minimax`` does not belong in the json-schema allowlist above, although
+    # it can look like a provider whose ``json_schema`` support LiteLLM merely
+    # under-reports. Measured against the live API, it discards the
+    # response_format: two identical calls differing only in ``drop_params``
+    # both returned free prose rather than JSON. Without the schema in the
+    # prompt, an analyst invents a DIFFERENT set of field names on every run --
+    # it answers from the prompt alone, never having been given a schema. With the schema in the prompt the same
     # model returns exact conforming JSON.
     _PROMPT_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset({"zai", "minimax"})
 

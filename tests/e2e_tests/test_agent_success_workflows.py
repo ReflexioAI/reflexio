@@ -436,13 +436,11 @@ def test_multiple_agent_versions_evaluation(
             assert result.created_at > 0
 
 
-# F1 cleanup: ``test_evaluate_regular_vs_shadow_content`` was removed along
-# with the session-level shadow comparison branch in
-# ``AgentSuccessEvaluator``. The session-level comparison was retracted because
+# ``AgentSuccessEvaluator`` has no session-level regular-vs-shadow comparison:
 # multi-turn shadow content suffers from trajectory contamination (turn 2+ user
 # messages react to the regular response, not the shadow), so the two
-# trajectories are not apples-to-apples. Per-turn shadow comparison has its own
-# e2e coverage under ``tests/e2e_tests/`` for the ``shadow_comparison`` service.
+# trajectories are not apples-to-apples. Per-turn shadow comparison is covered
+# under ``tests/server/services/shadow_comparison/``.
 
 
 @skip_in_precommit

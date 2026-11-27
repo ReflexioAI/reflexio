@@ -1,9 +1,4 @@
-"""Interactive setup wizard for Reflexio integrations.
-
-Note: a previous ``claude-code`` subcommand was removed; see the
-submodule README migration notes for cleanup of legacy hook entries
-in ``~/.claude/settings.json``.
-"""
+"""Interactive setup wizard for Reflexio integrations."""
 
 from __future__ import annotations
 

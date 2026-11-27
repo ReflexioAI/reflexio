@@ -71,7 +71,6 @@ class DashboardMixin(ReflexioBase):
             if isinstance(request, dict):
                 request = GetDashboardStatsRequest(**request)
 
-            # Get stats from storage layer
             stats_dict = self._get_storage().get_dashboard_stats(
                 days_back=request.days_back or 30
             )

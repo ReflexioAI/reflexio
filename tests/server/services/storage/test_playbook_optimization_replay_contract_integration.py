@@ -112,8 +112,8 @@ def _durable_job(
 ) -> schemas.PlaybookOptimizationJob:
     """A generic durable optimizer job for the identity/lease/artifact contracts.
 
-    Phase 7 retired 'offline_tuner_replay'; 'offline_tuner_open_world' is the
-    surviving non-GEPA kind, and none of the contracts below are replay-specific.
+    'offline_tuner_open_world' is the non-GEPA durable kind, and none of the
+    contracts below are replay-specific.
     """
     return schemas.PlaybookOptimizationJob(
         optimizer_kind="offline_tuner_open_world",
@@ -819,10 +819,9 @@ def test_applied_terminal_stage_is_unreachable_after_the_replay_retirement(
 ) -> None:
     """The 'publishing' -> 'applied' transition was replay-only.
 
-    Phase 7 removed the only optimizer that declared an 'applied' predecessor,
-    so this transition is now refused from every stage, 'publishing' included,
-    and the job is left exactly as it was. Replaces the success-path test that
-    covered the retired path.
+    No optimizer declares an 'applied' predecessor, so this transition is
+    refused from every stage, 'publishing' included, and the job is left
+    exactly as it was.
     """
     job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     claim = storage.claim_playbook_optimization_job(
@@ -1106,8 +1105,8 @@ def test_optimizer_kind_terminal_outcome_matrix_is_exact(
                     optimizer_kind=cast(schemas.OptimizerKind, optimizer_kind),
                     target_id=30_000 + case,
                 )
-                # Phase 7 retired the only optimizer that declared an 'applied'
-                # predecessor, so no (kind, stage, outcome) triple reaches it.
+                # No optimizer declares an 'applied' predecessor, so no
+                # (kind, stage, outcome) triple reaches it.
                 expected = False
                 before = (
                     _optimization_job_row(storage, job_id) if not expected else None

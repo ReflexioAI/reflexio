@@ -263,10 +263,9 @@ def playbooks_without_progress_today(
     convenient. Fleet-wide ordering is not something the daemon can recover
     from ids: storage is per-org tenant schema, so no single global query
     exists, and a merge across orgs is the only shape available -- which needs
-    a comparable key from each org to merge ON. An earlier revision of this
-    function returned ``tuple[int, ...]``; with that shape the fleet-wide
-    property the sweep is specified against was unachievable, not merely
-    unimplemented.
+    a comparable key from each org to merge ON. Returning ids alone
+    (``tuple[int, ...]``) would make the fleet-wide property the sweep is
+    specified against unachievable, not merely unimplemented.
 
     Args:
         org_id (str): The organization to read.

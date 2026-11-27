@@ -1,4 +1,4 @@
-"""Task 2.1: optional source_span/notes/reader_angle on ProfileAddItem."""
+"""Optional source_span/notes/reader_angle on ProfileAddItem."""
 
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileAddItem,

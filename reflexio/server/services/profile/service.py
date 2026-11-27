@@ -334,8 +334,7 @@ class ProfileGenerationService(
         (``skip_embedding=True`` — embeddings were precomputed in compute) then
         soft-supersedes the dedup'd existing ids. NO LLM / embedding / dedup.
         The soft-supersede emits the lineage events the profile change log is
-        reconstructed from (the legacy ``profile_change_logs`` table is no longer
-        written — see reconstruct_profile_change_log).
+        reconstructed from (see reconstruct_profile_change_log).
 
         On a write failure this **re-raises** (symmetric with playbook
         ``_persist_write_plan``): on the durable path the raise rolls back the
@@ -372,7 +371,7 @@ class ProfileGenerationService(
                         user_id,
                     )
                 # Re-raise so the bookmark advance is skipped / the fence rolls
-                # back (F1 symmetry with playbook persist) — never advance the
+                # back (symmetric with playbook persist) — never advance the
                 # extractor bookmark over a window whose rows failed to write.
                 raise
 

@@ -134,13 +134,11 @@ class AgentSuccessEvaluator:
         """
         Evaluate agent success for the entire session.
 
-        F1 cleanup: session-level shadow comparison was retracted because
-        multi-turn shadow content suffers from trajectory contamination
-        (turn 2+ user messages react to the regular response, not the
-        shadow). Per-turn shadow comparison lives in
-        services/shadow_comparison/ — see the F1 spec. The legacy
-        combined-prompt branch is gone; this method now always runs the
-        standalone is_success evaluation.
+        There is no session-level shadow comparison: multi-turn shadow
+        content suffers from trajectory contamination (turn 2+ user messages
+        react to the regular response, not the shadow). Per-turn shadow
+        comparison lives in services/shadow_comparison/. This method always
+        runs the standalone is_success evaluation.
 
         Args:
             request_interaction_data_models: All request interaction data models in the group
@@ -245,9 +243,9 @@ class AgentSuccessEvaluator:
         """
         Build an AgentSuccessEvaluationResult from LLM evaluation response and session data.
 
-        F1 cleanup: ``regular_vs_shadow`` is always ``None`` on rows produced by
+        ``regular_vs_shadow`` is always ``None`` on rows produced by
         this evaluator. The column is preserved on the result row for historical
-        audit purposes, but per-turn shadow comparison now writes its verdicts
+        audit purposes; per-turn shadow comparison writes its verdicts
         to a dedicated table — see ``services/shadow_comparison/``.
 
         Args:
@@ -334,7 +332,3 @@ class AgentSuccessEvaluator:
                 if interaction.role.lower() not in agent_roles:
                     count += 1
         return count
-
-    # F1 cleanup: ``_map_comparison_to_enum`` was retracted along with
-    # ``_evaluate_with_shadow_comparison``. Per-turn shadow comparison has its
-    # own mapping helpers in ``services/shadow_comparison/``.

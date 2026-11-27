@@ -22,9 +22,9 @@ Production keeps the root logger at WARNING, so an ordinary INFO record from
 here would be dropped. The timing lines therefore go to the operational-event
 channel (``reflexio/server/ops_log.py``): ``reflexio.ops.publish_timing`` at
 INFO, which ``configure_logging`` keeps enabled in every profile with no
-per-deployment switch. They used to be WARNING for visibility alone, which put
-228 routine lines into production's WARNING stream in 14 hours (2026-09-30). The message text is
-unchanged -- the ``reflexio-publish-timing-slow`` metric filter matches
+per-deployment switch. They are not WARNING: at that level they put 228 routine
+lines into production's WARNING stream in 14 hours. Keep the message text
+stable -- the ``reflexio-publish-timing-slow`` metric filter matches
 ``event=publish_timing`` as a substring, whatever the level.
 
 Volume is bounded by suppression, not by level: a fast

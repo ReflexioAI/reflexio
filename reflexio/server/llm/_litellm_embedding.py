@@ -10,9 +10,8 @@ alongside them at module scope.
 SINK-1 (patch-where-used): the provider/router names this module references
 (``resolve_model_name``, ``get_service_embeddings``, and
 ``should_use_embedding_service``) are imported HERE,
-so tests patch them at ``_litellm_embedding.<name>`` — patching the old facade
-namespace would no-op and a no-op would hit the real embedder/137M model/network
-(the P0). ``litellm.get_model_info``/``litellm.embedding`` are called via the shared
+so tests patch them at ``_litellm_embedding.<name>`` — patching the facade
+namespace would no-op and a no-op would hit the real embedder/137M model/network. ``litellm.get_model_info``/``litellm.embedding`` are called via the shared
 ``litellm`` module attr so the global mock and ``get_model_info`` patch still apply.
 
 SINK-2 (identity): ``_TRUNCATION_WARNED_MODELS`` and the three test-imported budget

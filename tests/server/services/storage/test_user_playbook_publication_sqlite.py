@@ -43,11 +43,11 @@ _EPOCH_NOW_PATCH = (
 
 
 def test_publication_source_is_explicitly_mapped() -> None:
-    """Phase 7 left 'gepa' as the only kind the legacy path publishes.
+    """'gepa' is the only kind the legacy path publishes.
 
-    The 'offline_optimizer' source was produced solely for
-    'offline_tuner_replay'; with that kind retired the mapping is total and
-    every other kind is refused rather than silently mapped.
+    No live optimizer kind produces the 'offline_optimizer' source, so the
+    mapping is total and every other kind is refused rather than silently
+    mapped.
     """
     assert publication_source_for_optimizer("gepa") == "gepa"
     for retired_or_unpublishable in (
@@ -332,12 +332,11 @@ def test_publish_commits_exact_staged_projection_and_terminal_result(
 def test_non_gepa_optimizer_cannot_claim_the_legacy_publication_path(
     tmp_path: Path,
 ) -> None:
-    """Replaces the retired 'offline_optimizer' source round-trip.
+    """A non-GEPA job is refused at the claim.
 
-    'offline_tuner_replay' was the only kind that produced
-    ``user_playbooks.source = 'offline_optimizer'`` through this path. Phase 7
-    retired it, so what this path must now do with a non-GEPA job is refuse it
-    at the claim, before any successor row exists.
+    No live optimizer kind produces ``user_playbooks.source = 'offline_optimizer'``
+    through this path, so a non-GEPA job must be refused at the claim, before
+    any successor row exists.
     """
     storage = _store(tmp_path)
     _, job = _seed(storage, optimizer_kind="offline_tuner_open_world")

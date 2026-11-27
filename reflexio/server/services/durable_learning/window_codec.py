@@ -2,12 +2,12 @@
 
 **Adding a field to a persisted payload is a cross-version contract change.**
 A window written by a new image can be decoded by an OLD one mid-rollout, and
-``decode_plan`` used to splat ``token_totals`` straight into ``RunTokenTotals``
-kwargs — so a new field raised ``TypeError`` inside ``window_executor.execute``,
+an older ``decode_plan`` splats ``token_totals`` straight into ``RunTokenTotals``
+kwargs — so a new field raises ``TypeError`` inside ``window_executor.execute``,
 unguarded, on a durable-learning path. Two defences, and they point in opposite
 directions on purpose:
 
-* :func:`decode_plan` now IGNORES keys it does not know, so any *future* field
+* :func:`decode_plan` IGNORES keys it does not know, so any *future* field
   addition is safe to decode.
 * :data:`_PERSISTED_TOKEN_FIELDS` pins what :func:`encode_plan` *writes*, so an
   old image (which does not have the tolerance above) never sees a key it cannot

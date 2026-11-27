@@ -168,7 +168,7 @@ class TestRegisterIfEnabled:
     def test_registers_with_local_dependencies_only(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Env var is no longer required — ONNX dependencies alone are sufficient."""
+        """Env var is not required — ONNX dependencies alone are sufficient."""
         monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: MagicMock())
         assert register_if_enabled() is True

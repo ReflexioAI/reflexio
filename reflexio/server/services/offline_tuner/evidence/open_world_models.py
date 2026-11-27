@@ -50,8 +50,7 @@ if TYPE_CHECKING:
 
 #: Why an exposure could not be tied to the request that produced it.
 #:
-#: ``session_only`` is deliberately DISTINCT from ``missing_request``, which it
-#: was previously reported as. The two send an operator to opposite places. A
+#: ``session_only`` is deliberately DISTINCT from ``missing_request``. The two send an operator to opposite places. A
 #: genuinely uncorrelated exposure carries neither id and is the client's to
 #: fix. A session-only exposure carries enough: the exposure row holds a
 #: ``session_id``, and ``requests`` records one too, so the row is correlatable
@@ -102,9 +101,9 @@ COVERAGE_NEUTRAL_REASONS: frozenset[str] = frozenset({AWAITING_REACTION_REASON})
 #: the auto-tagger or the governance backfill re-fingerprints the playbook and
 #: every earlier exposure then mismatches. Where post-edit traffic exists the
 #: selection starts the window at it (``version_start_bound``); where none does
-#: yet, this replaces the categorical
+#: yet, this is reported instead of the categorical
 #: ``incumbent_full_version_fingerprint_mismatch``, which reads as a fault and
-#: used to hold tuning off for as long as one pre-edit exposure stayed inside
+#: would hold tuning off for as long as one pre-edit exposure stayed inside
 #: the 14-day scan. The sweep records it as
 #: ``ineligible_incumbent_revised_awaiting_evidence``, an ``ineligible_*`` label
 #: the same-day re-attempt can re-admit once new traffic arrives.
@@ -182,11 +181,11 @@ EVIDENCE_FAULT_REASONS: frozenset[str] = frozenset(
 # The two abstentions the analyst can reach BEFORE a candidate exists, and the
 # reason they are one set rather than two call sites.
 #
-# `no_grounded_hypothesis` used to carry both of these, and they are OPPOSITE
-# operator instructions: "the evidence carries no agent-side contrast" says
-# stop tuning this playbook, while "the deciding session was not shown" says
-# widen the corpus and try again. A reader could not tell them apart, so the
-# second read as the first for as long as the string was shared.
+# They must not share `no_grounded_hypothesis`: they are OPPOSITE operator
+# instructions. "The evidence carries no agent-side contrast" says stop tuning
+# this playbook, while "the deciding session was not shown" says widen the
+# corpus and try again. Under one shared string a reader cannot tell them
+# apart, and the second reads as the first.
 #
 # What they DO share is the structural fact three separate guards depend on:
 # neither has generated anything, so neither may bind a candidate digest or a
@@ -291,8 +290,7 @@ OPEN_WORLD_EVIDENCE_BUNDLE_SCHEMA = "offline-tuner-open-world-evidence-v12"
 class OpenWorldEvidenceSchemaUnsupportedError(ValueError, OpenWorldRefusalError):
     """A frozen bundle declares a schema version this image cannot derive.
 
-    A DISTINCT class, not the bare ``ValueError`` this refusal used to raise,
-    because the two converge on opposite operator instructions. Every other
+    A DISTINCT class, not a bare ``ValueError``, because the two converge on opposite operator instructions. Every other
     ``ValueError`` out of the derivation says "something about this bundle is
     wrong and the attempt failed" -- retryable, and reported as
     ``infrastructure_failure``. This one says the bundle was frozen by an
@@ -379,17 +377,16 @@ def classify_turn_speaker(role: object) -> TurnSpeaker:
     agent behaviour -- inventing agent conduct out of plumbing, in the exact
     field the discovery contrast is read from.
 
-    Narrow is not the same as SHORT. An earlier version of this function
-    recognised only ``assistant`` on the agent side, which is what the OSS CLI
-    and the local replay corpora happen to write. The product's documented
-    contract, its own demo publisher, and both production corpora write
-    ``Agent`` -- so every production agent turn classified as ``other``, the
-    discovery gate excluded every session as ``no_agent_turn``, and every
-    attempt abstained ``insufficient_discovery_agent_evidence``, fleet-wide.
-    The user side only worked by accident of case-folding ``"User"``. The
-    lesson encoded here is that the allowlist must be justified against the
-    roles the product actually WRITES, not against the corpus nearest to hand;
-    see ``_AGENT_TURN_ROLES`` for per-entry provenance.
+    Narrow is not the same as SHORT. The OSS CLI and the local replay corpora
+    write ``assistant`` on the agent side, but the product's documented
+    contract, its own demo publisher, and production corpora write ``Agent``.
+    Recognising only ``assistant`` would classify every production agent turn
+    as ``other``, the discovery gate would exclude every session as
+    ``no_agent_turn``, and every attempt would abstain
+    ``insufficient_discovery_agent_evidence``, fleet-wide. The allowlist must
+    be justified against the roles the product actually WRITES, not against
+    the corpus nearest to hand; see ``_AGENT_TURN_ROLES`` for per-entry
+    provenance.
 
     Anything this does not recognise is therefore ``"other"``: a VISIBLE third
     category, never quietly folded into one of the two real speakers. The
@@ -1457,7 +1454,7 @@ def _expected_session_exclusion_reason(
     if len({event.outcome_contract_digest for event in events}) != 1:
         return "conflicting_session_outcome_contract"
     # LAST, so genuine corruption always wins the label. Capacity is not an
-    # integrity failure -- it no longer lowers either coverage ratio -- but it
+    # integrity failure -- it does not lower either coverage ratio -- but it
     # is still an exclusion: the session is too large to render into an analyst
     # payload, and admitting it here would put a 9,001-token conversation in
     # front of the model, which is the failure the content meter exists to

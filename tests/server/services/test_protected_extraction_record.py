@@ -420,7 +420,7 @@ def test_invalid_shared_quote_view_never_freezes_a_receipt_or_checkpoint(
         value=proposed, provenance=None
     )
     if not cached:
-        # A quote-shaped value is no longer the live provider response contract.
+        # A quote-shaped value is not the live provider response contract.
         # Invalid legacy receipts still take the precise ambiguity/capacity path.
         expected = ValueError
     with pytest.raises(expected):

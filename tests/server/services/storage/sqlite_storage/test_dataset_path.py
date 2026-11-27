@@ -1,7 +1,4 @@
-"""Unit coverage for dataset-file resolution.
-
-Design: ``docs/superpowers/specs/2026-09-02-oss-dataset-isolation-fix-design.md``
-"""
+"""Unit coverage for dataset-file resolution."""
 
 from __future__ import annotations
 

@@ -66,7 +66,7 @@ def test_lifecycle_terminal_result_is_derived_from_the_state_literal() -> None:
             terminal_reason="not_a_reason",
             terminal_at=1_700_000_000,
         )
-    # Phase 6 made 'confirmed' representable: the SQL CHECK
+    # 'confirmed' is representable: the SQL CHECK
     # (20260827070000) admits 'confirmed_online_support', so a terminal tuple
     # read back from an idempotent replay may carry it and this set must too.
     confirmed = LifecycleTerminalResult(
@@ -315,7 +315,7 @@ def test_publication_request_binds_content_optimizer_and_canonical_epochs() -> N
             revised_content="new content",
             subject_epochs_json=json.dumps({"subjects": []}),
         )
-    # The legacy publication path admits 'gepa' alone after Phase 7.
+    # The legacy publication path admits 'gepa' alone.
     with pytest.raises(ValueError, match="not publishable"):
         PublicationRequest(
             **{**common, "optimizer_kind": "offline_tuner_open_world"},
@@ -532,7 +532,7 @@ def test_publication_service_requires_explicit_verifier() -> None:
 
 
 def test_the_optimizer_vocabularies_carry_no_replay_literal() -> None:
-    """Phase 7 removed the replay path; its literals leave the public surface.
+    """There is no replay path; its literals must stay off the public surface.
 
     Asserted as EQUALITIES, so a re-added replay literal fails here as loudly as
     a missing survivor. A subset assertion would pass against a surface that

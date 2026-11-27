@@ -26,7 +26,7 @@ Pending tool calls (single-pass guarantee):
     is true, which requires a positive ``config.pending_tool_call_config.pending_ttl_seconds``. That
     lifetime defaults to zero on the auto-wired ``Config``, so by default
     only ``finish_extraction`` is registered and the loop runs a single
-    forced-tool pass -- equivalent to the old single-shot structured call. No
+    forced-tool pass -- effectively a single-shot structured call. No
     extra turns, no resume chain. We therefore do NOT need to disable anything
     explicitly; the default config already yields a single extraction pass.
 """

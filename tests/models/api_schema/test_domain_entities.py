@@ -1,4 +1,4 @@
-"""Task 2.3: optional source_span/notes/reader_angle on UserProfile and UserPlaybook."""
+"""Optional source_span/notes/reader_angle on UserProfile and UserPlaybook."""
 
 from datetime import UTC, datetime
 

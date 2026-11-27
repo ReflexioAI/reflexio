@@ -35,8 +35,7 @@ The prefix is a sound key for the full digest only because the design pins the
 analyst to deterministic sampling: identical evidence yields an identical
 hypothesis and candidate, so identical prefix implies identical full digest.
 
-No lifecycle state fences today. ``restored`` was the only one that ever did
-and is no longer reachable. ``confirmed`` never fenced -- a kept successor is an
+No lifecycle state fences. ``restored`` would, but is not reachable. ``confirmed`` never fenced -- a kept successor is an
 ordinary incumbent and a later failure starts a fresh cycle -- and ``displaced``
 and ``erased`` need no fence: a manual edit moves the incumbent fingerprint and
 erasure destroys the evidence, so both already produce a different digest.

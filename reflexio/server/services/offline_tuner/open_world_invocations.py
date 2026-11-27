@@ -15,9 +15,8 @@ maps any :class:`OpenWorldRefusalError` through :func:`terminal_reason_for`
 instead of keeping one ``except`` arm per class, where a subclass arm placed
 after its parent silently never fired.
 
-**The invocation records.** The three durable invocation calls used to take
-sixteen-odd loose keyword arguments, rebuilt at four call sites by one
-private helper. :class:`OpenWorldInvocationBinding` is the identity every call
+**The invocation records.** The three durable invocation calls take records,
+not loose keyword arguments. :class:`OpenWorldInvocationBinding` is the identity every call
 rechecks, :class:`ExpectedProvenance` what a prepare promises, and
 :class:`CompletionRecord` what a completion observed. Field names are the
 tenant RPC payload keys, so storage serializes a record without renaming

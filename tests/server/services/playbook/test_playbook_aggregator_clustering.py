@@ -142,7 +142,6 @@ class TestAgglomerativeClustering:
         self, mock_playbook_aggregator
     ):
         """Test that dissimilar playbooks are not clustered together."""
-        # Create 4 dissimilar embeddings
         embeddings = create_dissimilar_embeddings(4)
         user_playbooks = create_user_playbooks_with_embeddings(embeddings)
 
@@ -500,7 +499,6 @@ class TestEdgeCases:
 
     def test_min_threshold_of_three(self, mock_playbook_aggregator):
         """Test clustering with min_threshold=3."""
-        # Create 5 similar embeddings
         embeddings = create_similar_embeddings(5)
         user_playbooks = create_user_playbooks_with_embeddings(embeddings)
 

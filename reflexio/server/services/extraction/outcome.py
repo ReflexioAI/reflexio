@@ -22,7 +22,7 @@ class ExtractionOutcome[T]:
     items: list[T] = field(default_factory=list)
     run_id: str | None = None
     token_totals: RunTokenTotals | None = None
-    # The stride-bookmark advance the extractor no longer applies itself (F1);
+    # The stride-bookmark advance the extractor does not apply itself;
     # applied downstream in persist (durable) or ``.run()``'s persist half.
     bookmark_advance: ExtractorBookmarkAdvance | None = None
     model_provenance: ModelProvenance | None = None

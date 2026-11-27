@@ -413,8 +413,8 @@ def test_ordinary_projection_keeps_tool_content_but_omits_tools_used_metadata():
 
 
 def test_a_whitespace_only_turn_is_skipped_rather_than_failing_rehydration() -> None:
-    # EvidenceSpan refuses blank text, so projecting a blank turn used to fail
-    # the whole frozen attempt even when the rest of the session was citable.
+    # EvidenceSpan refuses blank text, so projecting a blank turn would fail
+    # the whole frozen attempt even when the rest of the session is citable.
     frozen, _ = _frozen()
     event = _event(
         session_id="session-1", outcome="unknown", content="Observed agent action"

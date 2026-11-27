@@ -1,4 +1,4 @@
-"""Integration tests: gc_expired_tombstones + legal-hold stub (Lineage Phase B2).
+"""Integration tests: gc_expired_tombstones + legal-hold stub.
 
 Tests cover:
   (a) Aged tombstone (MERGED) with retired_at past cutoff is GC'd: row deleted + hard_delete event.

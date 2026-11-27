@@ -600,11 +600,11 @@ def unified_search_endpoint(
             order=30,
         )
     if not resp.success:
-        # A TOTAL storage failure used to answer 200 with empty lists and
-        # ``success=False`` only in the body, so a caller checking the status
-        # code -- or just reading the result lists -- saw a backend outage as
-        # "this user has no profile and no playbooks" and could not retry
-        # (the pooled-connection incident). ``success=False`` has exactly one
+        # A TOTAL storage failure must not answer 200 with empty lists and
+        # ``success=False`` only in the body: a caller checking the status
+        # code -- or just reading the result lists -- would see a backend
+        # outage as "this user has no profile and no playbooks" and could not
+        # retry. ``success=False`` has exactly one
         # producer, the total-failure branch in ``unified_search_service``, so
         # this cannot fire on an ordinary empty result.
         #

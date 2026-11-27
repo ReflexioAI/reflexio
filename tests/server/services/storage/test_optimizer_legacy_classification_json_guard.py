@@ -128,16 +128,15 @@ def test_malformed_metadata_does_not_stop_the_upgrade(
 ) -> None:
     """A malformed value must be classified, not crash the constructor.
 
-    The two JOB cases are regression tests: against the old AND guards they
-    raised "malformed JSON", because those guards were result columns and
-    SQLite evaluates both operands there.
+    The two JOB cases are regression tests: an AND guard in a result column
+    raises "malformed JSON", because SQLite evaluates both operands there.
 
     The two CANDIDATE cases are hardening, and are labelled so rather than
     claimed as regressions: that guard sits in a subquery WHERE clause, which
-    short-circuited on SQLite 3.53.4, so these pass against the old code too.
-    SQLite does not promise an evaluation order for WHERE terms, though, and a
+    short-circuits on SQLite 3.53.4, so an AND guard passes them too. SQLite
+    does not promise an evaluation order for WHERE terms, though, and a
     planner change would turn the same row into a startup crash -- these pin
-    the behaviour that the CASE rewrite now guarantees.
+    the behaviour that the CASE form guarantees.
     """
     db_path = _legacy_db(tmp_path, job_metadata, candidate_metadata)
 

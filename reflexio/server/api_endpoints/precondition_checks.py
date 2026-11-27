@@ -28,10 +28,9 @@ def validate_publish_user_interaction_request(
 
     # Delegates to InteractionData.shape_error(), the single definition of
     # the per-interaction rules, so this guard and PublishUserInteractionRequest's
-    # validator cannot diverge. The emptiness rule in particular used to be dead
-    # code here: it ended in `not interaction_data.user_action`, and UserActionType
-    # is a StrEnum whose NONE member is the truthy string "none", so the branch
-    # could never fire and a publish of entirely empty interactions was accepted.
+    # validator cannot diverge. Do not test emptiness with
+    # `not interaction_data.user_action`: UserActionType is a StrEnum whose NONE
+    # member is the truthy string "none", so such a branch never fires.
     for index, interaction_data in enumerate(request.interaction_data_list):
         if reason := interaction_data.shape_error():
             return False, f"interaction_data_list[{index}] {reason}"

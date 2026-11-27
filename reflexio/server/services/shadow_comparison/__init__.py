@@ -1,1 +1,1 @@
-"""F1 per-turn shadow comparison service."""
+"""Per-turn shadow comparison service."""

@@ -155,8 +155,8 @@ def test_provider_request_guard_error_is_re_exported_from_llm_package():
 
 
 # ---------------------------------------------------------------------------
-# SINK-2 identity asserts. Skipped until the owning module exists (Task 1/2),
-# then enforce that the facade re-export IS the same object the moved code uses.
+# SINK-2 identity asserts: the facade re-export IS the same object the moved
+# code uses.
 # ---------------------------------------------------------------------------
 
 _SNAPSHOT_CLASSES = [

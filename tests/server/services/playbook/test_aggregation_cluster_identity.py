@@ -116,11 +116,6 @@ def test_a_colon_in_an_id_cannot_forge_another_tenant() -> None:
     org "a" + project "b" and org "a:b" + project "c" are different tenants.
     Joined with a colon they render "a:b" and "a:b:c" — and org "a" with
     project "b:c" renders "a:b:c" too, so that pair collides with the second.
-    Both reviewers on reflexio#517 named it; an earlier revision of this file
-    pinned it as accepted, on the reasoning that fixing it meant re-deriving
-    every id a second time. That reasoning was wrong: this change already
-    re-derives every enterprise id, so the fix rides along for free and the ids
-    move once rather than twice.
     """
     register_service(WORK_SCOPE_PROVIDER, _StubScopeProvider("b:c"))
     left = _cluster_id("a", "agent-v0", "fp")

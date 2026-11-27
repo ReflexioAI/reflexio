@@ -591,8 +591,8 @@ class TestDashboardPlaybooksTimeSeries:
         stats = storage.get_dashboard_stats(days_back=30)
 
         assert stats["current_period"]["total_playbooks"] == 2
-        # The series must count BOTH playbooks (regression: it previously
-        # queried only user_playbooks and would undercount this bucket).
+        # The series must count BOTH playbooks (querying only user_playbooks
+        # would undercount this bucket).
         assert sum(point["value"] for point in stats["playbooks_time_series"]) == 2
 
 

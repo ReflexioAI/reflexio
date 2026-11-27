@@ -1,7 +1,7 @@
-"""Isolated publish/read probe for #295; invoked by a bounded parent test.
+"""Isolated publish/read probe; invoked by a bounded parent test.
 
 Real ASGI handlers and temporary SQLite. Inference and background extraction
-are excluded, so a pass cannot establish that the original Windows hang is fixed.
+are excluded, so a pass cannot establish that a Windows publish hang is fixed.
 """
 
 import asyncio

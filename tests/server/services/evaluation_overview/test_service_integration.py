@@ -89,11 +89,10 @@ def test_service_returns_full_response_with_shadow_enabled_and_data() -> None:
 
 
 def test_service_hero_shadow_fields_always_null_after_direct_grade_removal() -> None:
-    """Direct shadow grading was removed; hero's shadow_success_rate_pp / delta_pp
+    """There is no direct shadow grading; hero's shadow_success_rate_pp / delta_pp
     must always be None until a methodologically sound replacement ships.
 
-    See docs/superpowers/specs/2026-05-27-shadow-mode-validity-and-alternatives.md
-    for the rationale (multi-turn trajectory contamination + applicability gap).
+    The reasons are multi-turn trajectory contamination and an applicability gap.
     """
     storage = _storage_with_results(
         [

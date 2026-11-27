@@ -170,11 +170,10 @@ _MAX_CORRECTION_CHARS = 8000
 # outlives the guard is abandoned by its caller anyway, while still holding a
 # provider slot.
 #
-# This used to be advisory: the walk summed the per-rung hard timeouts on every
-# call and warned when the sum exceeded the budget, never enforcing it. With a
-# 300 s generation timeout on two rungs that sum was 610 s, so production logged
-# `llm_ladder_budget_exceeded` on every structured call (376 in 14 h) while the
-# real worst case -- repair turns get their own timeouts -- was higher still.
+# It is enforced, not advisory. Summing the per-rung hard timeouts and only
+# warning when the sum exceeds the budget fires on every structured call -- with
+# a 300 s generation timeout on two rungs that sum is 610 s -- while the real
+# worst case (repair turns get their own timeouts) is higher still.
 _LADDER_WALL_CLOCK_BUDGET_SECONDS = 600.0
 
 StructuredOutputValidator = Callable[[BaseModel], Sequence[str]]
@@ -744,8 +743,8 @@ def _run_isolated_completion(params: dict[str, Any], deadline: float) -> Any:
         # deadlock the parent against a child that finished but is wedged on a
         # full pipe, tripping a *false* hard timeout (a large-but-successful
         # result reported as a wall-clock kill). Reading here unblocks the
-        # feeder so the child can exit. The read is bounded by the same
-        # ``hard_timeout`` budget the join used to enforce.
+        # feeder so the child can exit. The read is bounded by the
+        # ``hard_timeout`` budget.
         # Startup spends this same budget. An already available response
         # may be drained after expiry so the caller can record its usage;
         # public acceptance below rejects the late output after accounting.
@@ -915,7 +914,6 @@ class TextGenerationMixin:
                 f"got {type(response_format).__name__}"
             )
 
-        # Build user message content
         user_content = self._build_user_content(prompt, images, image_media_type)
 
         # Build messages list
@@ -1621,9 +1619,8 @@ class TextGenerationMixin:
     ) -> None:
         """Record that a fallback rung served the request (authoritative, loop-driven).
 
-        The reflexio-owned walk knows exactly which rung served the call, so this
-        replaces the old response-model-diffing heuristic (which never fired once
-        fallbacks left litellm). Preserves the pre-existing wire format —
+        The reflexio-owned walk knows exactly which rung served the call, so no
+        response-model diffing is needed. Keeps the wire format —
         ``event=llm_fallback_used`` plus the ``llm.fallback_used`` /
         ``llm.primary_model`` / ``llm.fallback_model`` error-reporting tags — so
         dashboards and alerts keep working; adds ``llm.fallback_reason`` so alerting can page
@@ -2356,12 +2353,12 @@ class TextGenerationMixin:
             The retry is CORRECTIVE whenever the parse failure produced
             content-free validation errors: the rung's original messages plus a
             bounded turn naming the field paths and pydantic error tags that
-            failed. It was previously byte-identical, which at ``temperature=0``
-            is two identical attempts at a schema the model has already misread
-            -- the second could only fail the same way. When the failure names
+            failed. A byte-identical retry at ``temperature=0`` would be two
+            identical attempts at a schema the model has already misread -- the
+            second could only fail the same way. When the failure names
             nothing (the deliberate "appears truncated" diagnostic, or an empty
             or whitespace-only body, whose ``validation_errors`` are empty), the
-            retry stays the byte-identical re-issue it always was.
+            retry is a byte-identical re-issue.
 
             Raises ``StructuredOutputParseError`` when both attempts return a
             malformed body (the walk catches it and advances), or

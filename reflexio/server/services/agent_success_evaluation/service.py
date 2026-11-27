@@ -259,15 +259,15 @@ class AgentSuccessEvaluationService(
     def _resolve_write_plan(self, results: list) -> None:
         """Compute-half — write the evaluation results HERE (never durable-split).
 
-        Agent-success evaluation was never split into a durable compute/persist
-        pair: its results never flow through the durable worker's fence, so the
-        save stays inline in compute exactly as before, routed through the
-        permanent ``_finalize_extracted_items`` -> ``_process_results`` path
+        Agent-success evaluation has no durable compute/persist split: its
+        results never flow through the durable worker's fence, so the save
+        stays inline in compute, routed through the
+        ``_finalize_extracted_items`` -> ``_process_results`` path
         (which has its own retry/backoff + EvalHealth accounting). Returns
         ``None`` so ``persist_generation`` invokes no further write. This is the
-        concrete default that keeps ``AgentSuccessEvaluationService`` instantiable
-        after ``BaseGenerationService`` flipped ``_resolve_write_plan`` /
-        ``_persist_write_plan`` to ``@abstractmethod`` (gate b, Task 8).
+        concrete implementation that keeps ``AgentSuccessEvaluationService``
+        instantiable, since ``BaseGenerationService`` declares
+        ``_resolve_write_plan`` / ``_persist_write_plan`` as ``@abstractmethod``.
         """
         for result in results:
             if result:

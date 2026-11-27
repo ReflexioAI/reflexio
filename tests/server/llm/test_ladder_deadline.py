@@ -126,7 +126,7 @@ def test_no_fallback_is_attempted_once_the_budget_is_spent(monkeypatch, caplog) 
 def test_a_long_configuration_is_not_re_warned_on_every_call(
     monkeypatch, caplog
 ) -> None:
-    """The old per-call `llm_ladder_budget_exceeded` warning is gone."""
+    """No per-call `llm_ladder_budget_exceeded` warning is emitted."""
     client = LiteLLMClient(
         LiteLLMConfig(model="primary/a", timeout=300, fallback_models=["fallback/b"])
     )
@@ -180,7 +180,7 @@ def test_a_provider_slot_wait_is_charged_to_the_budget(
     dispatched_hard: float | None,
     provider_timeout: int,
 ) -> None:
-    """Codex on reflexio#568: a saturated provider can hold a turn in the slot
+    """A saturated provider can hold a turn in the slot
     queue after `_prepare_turn` sized it. The turn is re-clamped once the slot is
     held, and not dispatched at all if the wait spent the budget."""
     from contextlib import contextmanager

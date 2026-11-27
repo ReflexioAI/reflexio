@@ -444,10 +444,8 @@ def format_sessions_to_history_string(
         # Sort interactions by id ascending (smaller to bigger)
         all_interactions = sorted(all_interactions, key=lambda i: i.interaction_id)
 
-        # Format combined interactions
         group_interactions = format_interactions_to_history_string(all_interactions)
 
-        # Combine header and interactions
         formatted_groups.append(f"{group_header}\n{group_interactions}")
 
     return "\n\n".join(formatted_groups)
@@ -522,7 +520,6 @@ def construct_messages_from_interactions(
     # Build combined user message content
     combined_content = []
 
-    # Add user prompt if configured
     if config.user_prompt_config:
         user_prompt_content = config.user_prompt_config.render(config.prompt_manager)
         combined_content.append({"type": "text", "text": user_prompt_content})

@@ -51,10 +51,10 @@ class AgentPlaybookMixin(ReflexioBase):
         """Get playbook aggregation change logs, served from the lineage reconstruction.
 
         The change-log view is rebuilt on demand from ``lineage_event`` rows via
-        :func:`reconstruct_playbook_aggregation_change_log`. The legacy
-        ``playbook_aggregation_change_logs`` table is no longer read. Results are
-        filtered to entries matching ``playbook_name`` and ``agent_version``.
-        ``updated_agent_playbooks`` is always ``[]`` (tolerated parity delta — Decision 3).
+        :func:`reconstruct_playbook_aggregation_change_log`, not from a change-log
+        table. Results are filtered to entries matching ``playbook_name`` and
+        ``agent_version``. ``updated_agent_playbooks`` is always ``[]``: updates
+        are folded into added/removed.
 
         Args:
             playbook_name (str): Filter — only logs for this playbook name are returned.
@@ -66,7 +66,7 @@ class AgentPlaybookMixin(ReflexioBase):
         """
         if not self._is_storage_configured():
             return PlaybookAggregationChangeLogResponse(success=True, change_logs=[])
-        # Legacy table no longer read; served by reconstruction filtered by
+        # Served by reconstruction filtered by
         # playbook_name + agent_version. updated_agent_playbooks is always []
         # (tolerated parity delta).
         return reconstruct_playbook_aggregation_change_log(
@@ -346,7 +346,7 @@ class AgentPlaybookMixin(ReflexioBase):
 
 
 # ---------------------------------------------------------------------------
-# Standalone read-side reconstruction (Phase B3b Task 2)
+# Standalone read-side reconstruction
 # ---------------------------------------------------------------------------
 
 logger = logging.getLogger(__name__)
@@ -387,8 +387,8 @@ def reconstruct_playbook_aggregation_change_log(
     When a removed playbook's tombstone has been physically purged (GC),
     it is silently omitted from ``removed_agent_playbooks`` rather than crashing.
 
-    ``updated_agent_playbooks = []`` (Decision 3 — tolerated delta; updates
-    are folded into added/removed in the B3b reconstruction model).
+    ``updated_agent_playbooks = []`` (a tolerated delta; updates are folded
+    into added/removed by this reconstruction).
 
     An agent_playbook *added* in run R is included in R's
     ``added_agent_playbooks`` even if a later run superseded (tombstoned) it
@@ -471,12 +471,12 @@ def reconstruct_playbook_aggregation_change_log(
     )
 
     logs: list[PlaybookAggregationChangeLog] = []
-    # PERFORMANCE NOTE (M3): as of Track B retirement this serves the live
-    # ``/api/playbook_aggregation_change_logs`` endpoint (the legacy table is no
-    # longer read), so it IS on the request path. Two bounds keep it from scaling
+    # PERFORMANCE NOTE: this serves the live
+    # ``/api/playbook_aggregation_change_logs`` endpoint, so it IS on the
+    # request path. Two bounds keep it from scaling
     # with full org history: (1) the lineage-event read is paginated in the
     # Supabase backend (``get_lineage_events`` loops ``.range()`` windows), so
-    # PostgREST ``max_rows`` can no longer silently truncate to the oldest rows;
+    # PostgREST ``max_rows`` cannot silently truncate to the oldest rows;
     # (2) name/version filtering AND the ``limit`` are applied INSIDE this loop and
     # we ``break`` once ``limit`` matches are collected, so the per-entity
     # ``get_agent_playbook_by_id`` (N+1) resolution stops at the requested page

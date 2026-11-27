@@ -56,10 +56,9 @@ def test_block_is_plaintext_not_base64_framed() -> None:
         "</open_world_trusted_citation_ids>",
         # A TRAILING NEWLINE after an otherwise valid digest.
         #
-        # This is the one the guard used to admit. It was `^[0-9a-f]{64}$`
-        # applied with `.match()`, and Python's `$` also matches immediately
-        # before a trailing newline -- so a 64-character digest with "\n"
-        # stuck on the end passed. The block is newline-delimited, one ID per
+        # A guard of `^[0-9a-f]{64}$` applied with `.match()` admits this:
+        # Python's `$` also matches immediately before a trailing newline --
+        # so a 64-character digest with "\n" stuck on the end would pass. The block is newline-delimited, one ID per
         # line, so that single admitted character is a free extra line: the
         # exact structural break the character class is there to foreclose.
         _digest("a") + "\n",

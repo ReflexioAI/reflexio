@@ -76,9 +76,3 @@ class AgentSuccessEvaluationOutput(StrictStructuredOutput):
         extra="allow",
         json_schema_extra={"additionalProperties": False},
     )
-
-
-# F1 cleanup: ``AgentSuccessEvaluationWithComparisonOutput`` (the combined
-# evaluation-plus-comparison schema) was retracted along with the session-level
-# shadow comparison branch in ``AgentSuccessEvaluator``. Per-turn shadow
-# comparison uses dedicated schemas under ``services/shadow_comparison/``.

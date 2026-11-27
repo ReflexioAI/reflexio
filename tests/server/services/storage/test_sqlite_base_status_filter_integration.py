@@ -1,4 +1,4 @@
-"""Integration tests for Task 3: tombstone status filtering in SQLite storage."""
+"""Integration tests: tombstone status filtering in SQLite storage."""
 
 import pytest
 

@@ -11,10 +11,8 @@ complete, or fail a barrier, does not touch ``purge_operations`` or
 ``audit_events``, and does not construct any governance domain model. The
 public erasure orchestration (begin/complete/fail a barrier, the purge
 lifecycle, the audit trail, ``GovernanceService`` itself) is an
-enterprise-only surface with zero OSS routes/CLI/client consumers and moved
-to ``reflexio_ext`` — see
-``docs/superpowers/specs/2026-09-02-project-scoped-tenancy-design.md`` §9.1.
-This mixin is what stayed behind, because core OSS writes structurally
+enterprise-only surface with zero OSS routes/CLI/client consumers and lives
+in ``reflexio_ext``. This mixin stays in OSS because core OSS writes structurally
 depend on it regardless of whether an erasure feature is reachable at all.
 """
 

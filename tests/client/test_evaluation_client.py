@@ -193,9 +193,8 @@ def test_get_retrieved_learning_evaluation_results_posts_filters(
     assert args[0] == "POST"
     assert args[1].endswith("/api/get_retrieved_learning_evaluation_results")
     # Times go out as ISO strings, not datetime objects: `requests` runs
-    # json.dumps on this body, which cannot serialize a datetime. This
-    # assertion previously expected the raw objects, which is why the
-    # unserializable payload went unnoticed -- see
+    # json.dumps on this body, which cannot serialize a datetime. Asserting on
+    # the raw objects would let an unserializable payload pass unnoticed -- see
     # tests/client/test_request_serialization.py.
     assert kwargs["json"] == {
         "user_id": "user-1",
@@ -222,8 +221,8 @@ def test_evaluation_models_export_from_top_level_package() -> None:
 def test_grade_on_demand_waits_as_long_as_the_server(mock_session_class) -> None:
     """The default client must not give up before the server answers.
 
-    The server now allows grade_on_demand 600s (claude-smart#162); with the
-    client's 300s default, a 300-600s cache miss timed out client-side. Asserts
+    The server allows grade_on_demand 600s; with the client's 300s default, a
+    300-600s cache miss would time out client-side. Asserts
     on the timeout requests actually receives, and that a longer caller timeout
     is kept rather than shortened.
     """

@@ -1,7 +1,7 @@
 """Migration test: ``profile_change_logs`` is retired via a reversible RENAME.
 
 Covers ``SQLiteStorageBase._migrate_retire_profile_change_logs`` plus the
-deletion of the table's ``CREATE TABLE`` from ``_DDL`` (Lineage B3 Task 8). The
+deletion of the table's ``CREATE TABLE`` from ``_DDL``. The
 two invariants under test:
 
   (a) an existing legacy ``profile_change_logs`` table is renamed to

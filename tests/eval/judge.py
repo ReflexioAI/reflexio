@@ -2,7 +2,7 @@
 
 Takes a rubric (prompt template + judge model) and an (expected, actual)
 pair, renders the prompt, and parses the judge response into a
-``JudgeScore``. Used by the comparison harness in Task 5.7.
+``JudgeScore``. Used by the comparison harness.
 """
 
 from __future__ import annotations

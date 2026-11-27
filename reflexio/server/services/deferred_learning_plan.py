@@ -1,9 +1,7 @@
-"""Write-plan dataclasses for the durable-learning compute/persist split (gate b).
+"""Write-plan dataclasses for the durable-learning compute/persist split.
 
 Compute resolves these in-memory plans issuing **no** learning DB write; persist
-applies them inside one short fenced ``commit_scope``. This module starts with the
-extractor stride-bookmark advance and grows additional write-plan dataclasses in the
-later gate-(b) tasks (profile/playbook/generation/deferred plans).
+applies them inside one short fenced ``commit_scope``.
 """
 
 from __future__ import annotations
@@ -44,9 +42,9 @@ class FinalizationResult:
 
 @dataclass(frozen=True)
 class ExtractorBookmarkAdvance:
-    """The extractor stride-bookmark advance, deferred out of the extractor (F1).
+    """The extractor stride-bookmark advance, deferred out of the extractor.
 
-    The extractor no longer self-advances its bookmark inside ``run()`` (a DB
+    The extractor does not advance its bookmark inside ``run()`` (a DB
     write). It emits this on the ``ExtractionOutcome`` instead, so the advance is
     applied later — inside the persist fence on the durable path, or right after
     result-processing on the synchronous ``.run()`` path — keeping the bookmark
@@ -103,7 +101,7 @@ class ProfilePayloadErasure:
 
 @dataclass
 class ProfileWritePlan:
-    """Resolved profile write-plan for the compute/persist split (gate b).
+    """Resolved profile write-plan for the compute/persist split.
 
     ``ProfileGenerationService._resolve_write_plan`` produces this in compute
     (dedup 2nd-LLM call + existing-row reads + source/status assignment +
@@ -140,7 +138,7 @@ class ProfileWritePlan:
 
 @dataclass
 class PlaybookWritePlan:
-    """Resolved playbook write-plan for the compute/persist split (gate b).
+    """Resolved playbook write-plan for the compute/persist split.
 
     ``PlaybookGenerationService._resolve_write_plan`` produces this in compute
     (``dedupe_and_drop_empty`` + the deduplicator's 2nd-LLM call + existing-row
@@ -189,7 +187,7 @@ class PlaybookWritePlan:
 
 @dataclass
 class GenerationComputePlan:
-    """Resolved compute output of one ``BaseGenerationService`` run (gate b).
+    """Resolved compute output of one ``BaseGenerationService`` run.
 
     ``compute_generation`` runs the prepare gate + extractor + dedup/embedding
     resolution (``_resolve_write_plan``), issuing **no** learning DB write and

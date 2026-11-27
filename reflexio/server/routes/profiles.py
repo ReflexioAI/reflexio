@@ -85,9 +85,8 @@ def add_user_profile_endpoint(
 def get_profile_change_log(
     org_id: str = Depends(default_get_org_id),
 ) -> ProfileChangeLogViewResponse:
-    # Serves the reconstructed profile change log (rebuilt from lineage events). The
-    # legacy `profile_change_logs` table is no longer written; see
-    # reconstruct_profile_change_log in lib/_profiles.py.
+    # Serves the reconstructed profile change log (rebuilt from lineage events);
+    # see reconstruct_profile_change_log in lib/_profiles.py.
     response = reflexio_cache.get_reflexio(org_id=org_id).get_profile_change_logs()
     return ProfileChangeLogViewResponse(
         success=response.success,
@@ -378,7 +377,6 @@ def manual_profile_generation_endpoint(
     # Create Reflexio instance
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
 
-    # Call manual_profile_generation
     return reflexio.manual_profile_generation(payload)
 
 

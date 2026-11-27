@@ -266,12 +266,12 @@ def test_gc_tick_never_runs_governance_retention():
     a governance_retention config with audit_events_max_age_days=45 is
     present, _gc_tick must NEVER call gc_governance_retention directly — that
     behavior is only invoked if an enterprise per-org sweep is registered via
-    register_per_org_sweep (Task 1 seam)."""
+    register_per_org_sweep."""
     cfg = LineageGCConfig(tombstone_grace_window_days=10)
     storage = _make_storage(gc_return=0)
     ctx = _make_ctx("org_gov", lineage_gc=cfg, storage=storage)
-    # Attach a governance_retention config that *would* have enabled the
-    # premium path under the old combined scheduler.
+    # Attach a governance_retention config that would enable the premium
+    # path if the OSS scheduler handled it.
     ctx.configurator.get_config.return_value = SimpleNamespace(
         lineage_gc=cfg,
         governance_retention=SimpleNamespace(audit_events_max_age_days=45),
@@ -470,9 +470,8 @@ def test_discover_org_ids_not_implemented_warns_and_falls_back_to_bootstrap(
 def test_discover_org_ids_provider_raises_falls_back_to_bootstrap():
     """When org_id_provider raises, _discover_org_ids falls back to bootstrap-only.
 
-    Regression guard for Task 3.5 fix 1: a provider exception must NOT propagate
-    to _run_loop (which would skip the entire tick). The old NotImplementedError
-    fallback behaviour is restored — bootstrap is always swept.
+    A provider exception must NOT propagate to _run_loop (which would skip the
+    entire tick); the tick falls back to bootstrap, which is always swept.
     """
     bootstrap_ctx = _make_ctx(
         "org_bootstrap", lineage_gc=LineageGCConfig(tombstone_grace_window_days=90)
@@ -993,7 +992,7 @@ def test_transient_org_failure_is_a_warning_and_still_raises_the_anomaly(
 def test_fast_retry_exhaustion_pages_however_the_budget_was_spent(
     caplog, monkeypatch, transient_failure_classifier
 ) -> None:
-    """Codex round 5: two bootstrap failures spend most of the fast-retry
+    """Two bootstrap failures spend most of the fast-retry
     budget, then a per-org sweep outage exhausts it. From there every attempt
     is a day apart -- past the streak idle reset -- so the sweep's own streak
     restarts at 1 each day and never escalates. Exhaustion itself must page.

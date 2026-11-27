@@ -302,17 +302,17 @@ def _assessments_sufficiently_resolved(
     verdict). So the population runs from 3 at the eligibility floor to nearly
     ``maximum_population``. Under an existential rule over an uninformative
     value, P(publish) decays as p^N: a 90-session window at a 95 percent
-    per-memo affirm rate published about 1 percent of the time, against 86
-    percent for a 3-session one. A better-instrumented org became LESS able to
+    per-memo affirm rate publishes about 1 percent of the time, against 86
+    percent for a 3-session one. A better-instrumented org becomes LESS able to
     publish -- the incentive exactly inverted.
 
     The floor is the shared 75 percent ``coverage_passes`` test the selection
     layer already applies to manifest coverage, not a new knob. Two properties
-    are worth stating because they bound the change:
+    are worth stating because they bound the rule:
 
-    * It is NEVER stricter than what it replaces. A population that passed the
-      old rule had zero non-affirming memos, which is 100 percent coverage.
-    * It is IDENTICAL to the old rule for N <= 3, because 75 percent of 3
+    * It is NEVER stricter than a unanimous rule. A population that passes
+      unanimity has zero non-affirming memos, which is 100 percent coverage.
+    * It is IDENTICAL to a unanimous rule for N <= 3, because 75 percent of 3
       rounds up to 3.
 
     THE SECOND IS NOT THE SAME CLAIM AS "nothing changes at the eligibility
@@ -351,14 +351,13 @@ def _has_recurrence_support(
     ``unresolved`` assessments; it must not tolerate them in the two memos the
     acceptance actually rests on. Without this, publication could rest on two
     analysts that supported the hypothesis while being unable to say whether
-    scope was preserved -- a hole the previous unanimous rule closed only as a
-    side effect of abstaining on any ``unresolved`` at all.
+    scope was preserved -- a hole a unanimous rule closes only as a side
+    effect of abstaining on any ``unresolved`` at all.
 
     This costs nothing in population terms: it constrains exactly TWO memos, so
-    it cannot reintroduce the p^N decay. It also keeps the whole change no
-    stricter than what it replaced -- under the old rule every memo in an
-    accepted population was already ``preserved``/``clear``, these two
-    included.
+    it cannot reintroduce the p^N decay. It also keeps the whole rule no
+    stricter than unanimity -- under unanimity every memo in an accepted
+    population is ``preserved``/``clear``, these two included.
     """
     supports_failed = False
     supports_success = False

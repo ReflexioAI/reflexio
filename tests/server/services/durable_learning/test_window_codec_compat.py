@@ -2,11 +2,11 @@
 
 ``token_totals`` is persisted JSON that a *different image* may decode: during a
 rolling deploy, a window written by a new task can be picked up by an old one.
-``decode_plan`` used to splat it straight into ``RunTokenTotals`` kwargs, so
-adding a field raised ``TypeError`` inside ``window_executor.execute`` — on a
-durable-learning path, unguarded.
+Splatting it straight into ``RunTokenTotals`` kwargs would make adding a field
+raise ``TypeError`` inside ``window_executor.execute`` — on a durable-learning
+path, unguarded.
 
-Both halves of the fix are pinned here, because each covers a direction the
+Both halves of the defence are pinned here, because each covers a direction the
 other cannot:
 
 * decode ignores keys it does not know → a NEW window decodes on an old-enough

@@ -1,13 +1,13 @@
 """Resolve which SQLite file a dataset identity owns.
 
-Historically every caller resolved to one file, ``<LOCAL_STORAGE_PATH>/reflexio.db``,
-regardless of the identity it was constructed with. Of the persistent tables only 11
+Resolving every caller to one file, ``<LOCAL_STORAGE_PATH>/reflexio.db``, regardless
+of the identity it was constructed with, is unsafe. Of the persistent tables only 11
 carry an ``org_id`` column; the other 32 -- ``profiles``, ``requests``,
 ``interactions``, ``user_playbooks`` among them -- have none, and their reads are
 unscoped. Two identities sharing that file therefore read each other's rows.
 
 The sharpest case is not two local plugins: a self-host deployment never passes
-``base_dir``, so *every* org it serves resolved to the same file.
+``base_dir``, so *every* org it serves would resolve to the same file.
 
 This module derives the file from the identity instead, and adopts an existing
 database rather than starting empty next to it.
@@ -15,7 +15,7 @@ database rather than starting empty next to it.
 Adoption is **first claimer wins**, not "adopt whatever is there". Adopting on every
 open would let a second identity attach to the same file, leaving an already-commingled
 installation commingled forever -- and those installations are the only ones with the
-bug. See ``docs/superpowers/specs/2026-09-02-oss-dataset-isolation-fix-design.md``.
+bug.
 """
 
 from __future__ import annotations
@@ -356,12 +356,11 @@ def resolve_sqlite_db_path(root: str | Path, org_id: str) -> str:
 
     # COMMINGLED: our label AND someone else's. The check above only refuses when
     # we are ABSENT, so this file -- the self-host multi-org install this module
-    # calls the sharpest case -- used to be adopted wholesale. The adopter then
-    # read the other identity's rows across every attributed table, and the 28
-    # tenant tables carry no `org_id` column at all, so there was nothing
-    # downstream to scope them. The other identity's history was simultaneously
-    # orphaned in a file it would never open again, and the only log line emitted
-    # named the loser, not the adopter.
+    # calls the sharpest case -- would otherwise be adopted wholesale. The
+    # adopter would then read the other identity's rows across every attributed
+    # table, and most tenant tables carry no `org_id` column at all, so there
+    # is nothing downstream to scope them. The other identity's history would
+    # simultaneously be orphaned in a file it would never open again.
     foreign = (labels or set()) - {org_id}
     if foreign:
         barrier_foreign = barrier_identity_labels(legacy) - {org_id}

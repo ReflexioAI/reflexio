@@ -1279,10 +1279,6 @@ def test_rerun_profile_generation_with_nonexistent_extractor_name(
     Extraction is singleton; the ``extractor_names`` filter is a no-op, so a
     non-existent name does not cause an error — the singleton extractor still
     runs. This test verifies the rerun does not error.
-
-    Note: pre-singleton, a non-matching extractor_names value would skip all
-    extractors (no profiles generated). That filtering no longer exists, so the
-    rerun simply succeeds.
     """
     user_id = "test_user_nonexistent_extractor"
 

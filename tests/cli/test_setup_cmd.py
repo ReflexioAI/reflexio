@@ -215,7 +215,7 @@ class TestPromptStorage:
         content = env.read_text()
         assert 'REFLEXIO_URL="http://localhost:8081"' in content
         assert 'REFLEXIO_API_KEY="rflx-self-key"' in content
-        # No Supabase creds — self-hosted no longer asks for them
+        # No Supabase creds — self-hosted does not ask for them
         assert "SUPABASE_URL" not in content
 
     def test_invalid_choice_exits(self, tmp_path: Path) -> None:

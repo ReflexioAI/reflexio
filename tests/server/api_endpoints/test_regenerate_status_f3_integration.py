@@ -1,10 +1,10 @@
 """Verify the regenerate status endpoint surfaces F3 counters.
 
-Tasks 3+4 added ``total_candidates``, ``sampled_count`` and
-``concurrency_limit`` on both ``RegenerateStatusResponse`` (response
-schema) and ``RegenJob`` (dataclass). Task 7 is responsible for wiring
-them together inside ``get_regenerate_status`` so the values populated
-by the worker (or pre-populated for tests) actually reach API clients.
+``RegenerateStatusResponse`` (response schema) and ``RegenJob``
+(dataclass) both carry ``total_candidates``, ``sampled_count`` and
+``concurrency_limit``. ``get_regenerate_status`` wires them together so
+the values populated by the worker (or pre-populated for tests) actually
+reach API clients.
 
 This integration test exercises the full FastAPI route — it inserts a
 ``RegenJob`` directly into the process-local registry (the same store
@@ -34,9 +34,9 @@ def test_status_endpoint_surfaces_f3_counters(client_with_org):
     """
     client, org_id = client_with_org
 
-    # Insert the job manually so we don't need a live worker — Task 7 is
-    # specifically about the handler -> response conversion, not the
-    # write side of the registry.
+    # Insert the job manually so we don't need a live worker — this test is
+    # about the handler -> response conversion, not the write side of the
+    # registry.
     job = RegenJob(
         job_id="f3-status-roundtrip",
         org_id=org_id,
@@ -70,9 +70,8 @@ def test_status_endpoint_surfaces_f3_counters(client_with_org):
 def test_status_endpoint_defaults_when_f3_counters_unset(client_with_org):
     """A RegenJob created without F3 fields exposes zero-valued defaults.
 
-    Guards backwards-compatibility for in-flight jobs that started before
-    the worker began populating these counters (or for the very brief
-    window inside ``run_regen`` before sampling completes).
+    Covers the brief window inside ``run_regen`` before sampling completes,
+    when the worker has not populated these counters yet.
     """
     client, org_id = client_with_org
 

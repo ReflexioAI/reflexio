@@ -618,7 +618,7 @@ class TestFormatProfilesForPrompt:
         assert "Last Modified: unknown" in result
 
     def test_format_profile_timestamp_helper_happy_path(self):
-        """The helper formats a valid timestamp identically to the old inline call."""
+        """The helper formats a valid timestamp as ``YYYY-MM-DD HH:MM UTC``."""
         assert _format_profile_timestamp(1704067200) == "2024-01-01 00:00 UTC"
 
     def test_format_profile_timestamp_helper_fallback(self):
@@ -979,10 +979,10 @@ class TestBuildDeduplicatedResults:
     ):
         """A deletion directive erases the EXISTING profile without writing a replacement.
 
-        This is the core bug fix: "forget that I am interested in X" used to
+        Without the deletion channel, "forget that I am interested in X" would
         produce a merged "Previously interested in X, but requested removal"
-        profile. With the deletion channel, the NEW directive is consumed and
-        the EXISTING profile is deleted outright.
+        profile. With it, the NEW directive is consumed and the EXISTING
+        profile is deleted outright.
         """
         timestamp = int(datetime.now(UTC).timestamp())
         existing_profile = UserProfile(
@@ -1259,10 +1259,10 @@ class TestDeduplicate:
     ):
         """A deletion-only LLM response must still erase the EXISTING profile.
 
-        Regression guard: the public `deduplicate()` used to short-circuit when
-        `duplicate_groups` was empty, which silently dropped deletion directives
-        and returned the 'Requested removal of ...' NEW profile as a new fact —
-        the exact zombie-profile failure the deletion channel was meant to fix.
+        Regression guard: if the public `deduplicate()` short-circuited when
+        `duplicate_groups` is empty, it would silently drop deletion directives
+        and return the 'Requested removal of ...' NEW profile as a new fact —
+        the zombie-profile failure the deletion channel exists to prevent.
         """
         timestamp = int(datetime.now(UTC).timestamp())
         existing_profile = UserProfile(

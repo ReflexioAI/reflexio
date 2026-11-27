@@ -2,7 +2,7 @@
 
 Native Transformers owns rotary implementation details. Assert actual inference,
 model provenance, long input handling and equivalence to a serial baseline;
-legacy cache-attribute resets no longer exercise this implementation.
+legacy cache-attribute resets do not exercise this implementation.
 RUN_LOW_PRIORITY=1 enables these keyless, real-model tests. Once enabled, model
 loading or inference failures fail the test rather than silently skipping it.
 """

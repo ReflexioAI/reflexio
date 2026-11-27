@@ -1,4 +1,4 @@
-"""Pure stratified sampler for the F3 eval-regen pipeline.
+"""Pure stratified sampler for the eval-regen pipeline.
 
 DB-free and LLM-free. Operates on SampleCandidate tuples emitted by the
 regen worker's candidate-discovery step; returns the sampled subset.

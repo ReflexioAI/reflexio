@@ -1,8 +1,7 @@
-"""Phase-A characterization backstops for the BaseGenerationService decomposition.
+"""Characterization backstops for the BaseGenerationService mixin composition.
 
-These are the money-critical, MRO-critical guards pinned BEFORE any mixin move
-(Tier-1b decomposition). They must stay green byte-for-byte through Phase B — a
-red here means a real behavior/contract regression, never "relax the test".
+These are the money-critical, MRO-critical guards. A red here means a real
+behavior/contract regression, never "relax the test".
 
 Three concerns, one per top-level test:
 
@@ -66,8 +65,7 @@ from reflexio.server.usage_metrics import (
 _MODULE_LOGGER = "reflexio.server.services.base_generation_service"
 _ORG_ID = "base_gen_char_org"
 
-# The exact day-0 abstract set. Captured verbatim at HEAD (24bd943). Phase B must
-# NOT shrink this — a smaller set means an @abstractmethod leaked onto a plain
+# The exact abstract set. It must NOT shrink — a smaller set means an @abstractmethod leaked onto a plain
 # (non-ABCMeta) mixin and silently dropped from __abstractmethods__ (SINK-2).
 _EXPECTED_ABSTRACTMETHODS = frozenset(
     {
@@ -79,16 +77,16 @@ _EXPECTED_ABSTRACTMETHODS = frozenset(
         "_load_generation_service_config",
         "_process_results",
         "_should_track_in_progress",
-        # Added by gate (b) Task 8: the durable compute/persist split's
-        # item-finalization seam. Intentional API-surface growth (NOT a
-        # decomposition leak) — the 3 concrete subclasses each implement both.
+        # The durable compute/persist split's item-finalization seam.
+        # Intentional API-surface growth (NOT a decomposition leak) — the 3
+        # concrete subclasses each implement both.
         "_resolve_write_plan",
         "_persist_write_plan",
     }
 )
 
 # The ~30-name inheritance contract each subclass resolves via MRO. Every name
-# here must stay resolvable on all 3 subclasses + the base through Phase B; a
+# here must stay resolvable on all 3 subclasses + the base; a
 # name that stops resolving means a mixin move broke the composed surface.
 _CONTRACT_NAMES = (
     # abstract methods (declared on the base, implemented by subclasses)
@@ -213,8 +211,8 @@ class _CharService(BaseGenerationService):  # type: ignore[type-arg]
 
     # Legacy write-in-compute path (mirrors AgentSuccessEvaluationService): route
     # through the permanent _finalize_extracted_items wrapper so this helper stays
-    # instantiable after gate (b) made _resolve_write_plan/_persist_write_plan
-    # abstract, preserving the finalize-before-fail atomicity these tests pin.
+    # instantiable while _resolve_write_plan/_persist_write_plan are abstract,
+    # preserving the finalize-before-fail atomicity these tests pin.
     def _resolve_write_plan(self, results):
         for result in results:
             if result:
@@ -608,7 +606,7 @@ def test_subclass_surface_mro_and_abcness():
         missing = [name for name in _CONTRACT_NAMES if not hasattr(cls, name)]
         assert not missing, f"{cls.__name__} is missing contract names: {missing}"
 
-    # EXACT equality — do NOT relax if Phase B turns this red.
+    # EXACT equality — do NOT relax if this turns red.
     assert frozenset(BaseGenerationService.__abstractmethods__) == (
         _EXPECTED_ABSTRACTMETHODS
     ), (

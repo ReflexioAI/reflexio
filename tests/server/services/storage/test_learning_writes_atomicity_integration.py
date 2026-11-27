@@ -1,19 +1,18 @@
-"""Contract test: learning-path writes honor ``commit_scope`` atomicity (Task 5a).
+"""Contract test: learning-path writes honor ``commit_scope`` atomicity.
 
-Task 1 introduced ``commit_scope`` — a context manager that groups writes into a
+``commit_scope`` is a context manager that groups writes into a
 single atomic transaction (one BEGIN IMMEDIATE / one commit) and defers FTS/vec
 index ops until after commit. Writes issued inside a scope must NOT run their own
 BEGIN or commit; ``_own_transaction()`` returns False while ``_scope_depth > 0``.
 
-Before this task, the learning-path writes (profiles, user playbooks, lineage
-events, operation-state bookmarks) each self-committed. That broke atomicity: a
-write inside a ``commit_scope`` would durably commit even when a later write in
-the same scope raised, leaving the DB in a torn, partially-committed state.
+If a learning-path write (profiles, user playbooks, lineage events,
+operation-state bookmarks) self-committed, a write inside a ``commit_scope``
+would durably commit even when a later write in the same scope raised, leaving
+the DB in a torn, partially-committed state.
 
 This test is the invariant guard: perform one write of each kind inside a single
-``commit_scope`` that then raises, and assert every write rolled back. It fails
-before the own-txn guards are added (the self-committing writes survive) and
-passes once each method honors ``_own_transaction()``.
+``commit_scope`` that then raises, and assert every write rolled back. A method
+that ignores ``_own_transaction()`` makes its write survive and fails the test.
 """
 
 from __future__ import annotations

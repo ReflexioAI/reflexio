@@ -111,8 +111,8 @@ def test_malformed_configs_are_rejected_not_reinterpreted(
 def test_sqlite_does_not_absorb_a_supabase_payload() -> None:
     """The specific coercion behind the org 56 outage, asserted directly.
 
-    Constructing the SQLite model straight from a Supabase payload used to
-    succeed by ignoring every key, yielding ``db_path=None``.
+    Constructing the SQLite model straight from a Supabase payload must fail,
+    not succeed by ignoring every key and yield ``db_path=None``.
     """
     with pytest.raises(ValidationError):
         StorageConfigSQLite.model_validate(_PROD_SUPABASE)

@@ -408,7 +408,7 @@ def get_regenerate_status(
         ],
         started_at=job.started_at,
         finished_at=job.finished_at,
-        # F3 informational counters — surface sampler + concurrency facts
+        # Informational counters — surface sampler + concurrency facts
         # so the dashboard can render "n_sampled / total_candidates" and
         # the configured worker cap without a second round-trip.
         total_candidates=job.total_candidates,

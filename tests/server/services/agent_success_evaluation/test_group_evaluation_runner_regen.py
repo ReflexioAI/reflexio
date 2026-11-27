@@ -289,7 +289,7 @@ def test_force_regenerate_deletes_prior_results() -> None:
     # Insert-style storage returns a fresh id after save, so the runner removes
     # only the captured prior id.
     storage.delete_agent_success_evaluation_results_by_ids.assert_called_once_with([42])
-    # The old triple-scoped delete must NOT be called by the new flow.
+    # The triple-scoped delete must NOT be called.
     storage.delete_agent_success_evaluation_results_for_session.assert_not_called()
 
 
@@ -427,9 +427,9 @@ def test_force_regenerate_with_no_prior_rows_does_not_delete() -> None:
 def test_regenerate_preserves_old_rows_when_llm_run_fails() -> None:
     """If the eval service reports failures, the prior rows MUST NOT be deleted.
 
-    This is the core durability guarantee: the delete-then-LLM-then-save flow
-    used to wipe rows on any LLM failure. The new ordering captures ids first,
-    saves new rows, and only deletes the captured ids AFTER success.
+    This is the core durability guarantee: a delete-then-LLM-then-save flow
+    would wipe rows on any LLM failure. The runner captures ids first, saves
+    new rows, and only deletes the captured ids AFTER success.
     """
     prior = [
         _make_prior_result(
@@ -644,10 +644,9 @@ def test_regenerate_failure_preserves_old_rows_with_real_sqlite_storage(
 ) -> None:
     """End-to-end durability: LLM failure leaves the prior row in storage.
 
-    The bug being fixed: a failed regen used to delete old rows BEFORE the
-    new save, leaving the session with zero eval rows. With the new order,
-    a failing service.run() means no delete is attempted and the row is
-    preserved.
+    The risk: a failed regen that deleted old rows BEFORE the new save would
+    leave the session with zero eval rows. A failing service.run() must mean
+    no delete is attempted and the row is preserved.
     """
     from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 

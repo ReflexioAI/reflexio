@@ -1,4 +1,4 @@
-"""Task 1.3: expire_active_profiles tombstones TTL-expired active profiles."""
+"""expire_active_profiles tombstones TTL-expired active profiles."""
 
 from __future__ import annotations
 

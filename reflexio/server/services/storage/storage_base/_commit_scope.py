@@ -12,7 +12,7 @@ class CommitScopeMixin(ABC):
 
     @abstractmethod
     def commit_scope(self) -> AbstractContextManager[None]:
-        """Atomic multi-write transaction; see Workstream A plan Task 1."""
+        """Atomic multi-write transaction."""
         raise NotImplementedError
 
     def _coordination_commit_scope(self) -> AbstractContextManager[None]:

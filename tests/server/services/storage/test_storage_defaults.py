@@ -62,10 +62,7 @@ def test_local_storage_path_empty_string_falls_back_to_default() -> None:
 
 
 def test_sqlite_storage_derives_db_path_from_identity_when_db_path_none() -> None:
-    """SQLiteStorage(db_path=None) resolves to a file named for its identity.
-
-    Previously every identity resolved to one shared ``reflexio.db``.
-    """
+    """SQLiteStorage(db_path=None) resolves to a file named for its identity."""
     with (
         tempfile.TemporaryDirectory() as temp_dir,
         patch("reflexio.server.LOCAL_STORAGE_PATH", temp_dir),
@@ -108,8 +105,6 @@ def test_sqlite_storage_explicit_db_path_overrides_env() -> None:
 
 # ---------------------------------------------------------------------------
 # Dataset isolation: which file an identity resolves to, and when it adopts one.
-#
-# Design: docs/superpowers/specs/2026-09-02-oss-dataset-isolation-fix-design.md
 # ---------------------------------------------------------------------------
 
 

@@ -165,7 +165,7 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
 
         Emits ``learnings_generated`` (value facet) and ``extraction_tokens``
         (cost facet) via the OSS emission helpers. ``platform_storage`` is left
-        ``None`` here and resolved enterprise-side at rollup (Phase 1).
+        ``None`` here and resolved enterprise-side at rollup.
 
         Gated by ``EMITS_LEARNING_BILLING`` — only online profile/playbook
         extraction services opt in here. Resumable-extraction finalization emits

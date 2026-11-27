@@ -1,9 +1,9 @@
 """Integration tests: in-place update_* methods emit lineage events atomically.
 
-Phase B1 — Task 1: verifies that each update_* method emits exactly one
-lineage event (op=revise when content changes, op=status_change otherwise).
+Verifies that each update_* method emits exactly one lineage event
+(op=revise when content changes, op=status_change otherwise).
 
-Also covers Task 9 (structured status fields on in-place update_* status_change path).
+Also covers the structured status fields on the in-place update_* status_change path.
 """
 
 from pathlib import Path

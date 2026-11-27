@@ -321,8 +321,8 @@ def test_should_run_skip_emits_no_learning_billing(tmp_path, monkeypatch):
     - Clear MOCK_LLM_RESPONSE so the pre-extraction gate is not bypassed.
     - Set stride_size=1 and seed a bare slash-command turn so the stride check
       passes but the cheap pre-filter rejects the batch (all_slash_commands).
-      Short turns no longer qualify: #659 removed the length rule so short
-      messages reach the LLM usefulness check.
+      Short turns do not qualify: there is no length rule, so short messages
+      reach the LLM usefulness check.
     """
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
 
@@ -400,11 +400,11 @@ def test_should_run_skip_emits_no_learning_billing(tmp_path, monkeypatch):
 
     # EXACTLY ONE gate event per decision, carrying the specific reason.
     #
-    # The cheap pre-filter used to record `skip_cheap_<reason>` itself while the
-    # caller also recorded a generic `should_skip`, so one decision produced two
-    # events -- and the second read as an LLM verdict on a path that never
-    # reaches the LLM, double-counting the skip in the very metric this exists
-    # to make trustworthy. Assert the count, not just the presence.
+    # If the cheap pre-filter recorded `skip_cheap_<reason>` itself while the
+    # caller also recorded a generic `should_skip`, one decision would produce
+    # two events -- and the second would read as an LLM verdict on a path that
+    # never reaches the LLM, double-counting the skip in the very metric this
+    # exists to make trustworthy. Assert the count, not just the presence.
     gate_events = [e for e in events if e.event_name == "generation_gate_evaluated"]
     assert len(gate_events) == 1, f"expected exactly one gate event, got: {gate_events}"
     # The exact reason, not a prefix: this fixture's turns are all bare slash
@@ -464,7 +464,7 @@ class _StubService(BaseGenerationService):  # type: ignore[type-arg]
         pass
 
     # Legacy write-in-compute shim (mirrors AgentSuccessEvaluationService) so the
-    # stub stays instantiable after gate (b) made these abstract.
+    # stub stays instantiable while these are abstract.
     def _resolve_write_plan(self, results):  # pragma: no cover
         for result in results:
             if result:

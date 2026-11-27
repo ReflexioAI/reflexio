@@ -1,4 +1,4 @@
-"""LiteLLMClient extensions for tool-calling (Task 1.3)."""
+"""LiteLLMClient extensions for tool-calling."""
 
 from __future__ import annotations
 

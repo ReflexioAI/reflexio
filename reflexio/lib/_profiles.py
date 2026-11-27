@@ -232,9 +232,7 @@ class ProfilesMixin(ReflexioBase):
 
         The change-log view is rebuilt on demand from ``lineage_event`` linkage
         joined to survivor/tombstone content via
-        :func:`reconstruct_profile_change_log`. The legacy ``profile_change_logs``
-        table is no longer written (B3 Task 6) or read (B3 Task 7); it is retained
-        frozen until its removal in Task 8.
+        :func:`reconstruct_profile_change_log`, not from a change-log table.
 
         Returns:
             ProfileChangeLogResponse: Response containing the reconstructed
@@ -606,7 +604,7 @@ class ProfilesMixin(ReflexioBase):
 
 
 # ---------------------------------------------------------------------------
-# Standalone read-side reconstruction (Phase B3 Task 2)
+# Standalone read-side reconstruction
 # ---------------------------------------------------------------------------
 
 

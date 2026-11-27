@@ -694,20 +694,20 @@ def test_backlog_failure_finishes_as_failure_and_releases_the_lease(
 ) -> None:
     """A failing backlog read must not be reported to ``finish`` as success.
 
-    ``success`` used to be set BEFORE the backlog read. When that read raised,
-    ``success`` was already True, so the ``finally:`` block called
+    If ``success`` is set BEFORE the backlog read and that read raises,
+    ``success`` is already True, so the ``finally:`` block calls
     ``finish(success=True, backlog=None)`` -- and ``finish`` recomputes the
     backlog when it is None, re-running the same failing query and raising a
-    SECOND time, this time out of ``finally:``. The claim lease was therefore
-    never released, and the scheduler backed off the whole ORG rather than the
-    one failing unit.
+    SECOND time, this time out of ``finally:``. The claim lease is then never
+    released, and the scheduler backs off the whole ORG rather than the one
+    failing unit.
 
-    That is exactly what production did: two tracebacks per cycle, one from
+    In production that showed as two tracebacks per cycle, one from
     ``_run_context`` and one from ``finish``, with an aggregation unit stalled
     behind a lease nobody released.
 
-    Observed failing before the reorder with ``assert True is False`` on the
-    ``success`` kwarg.
+    With ``success`` set first, this test fails with ``assert True is False``
+    on the ``success`` kwarg.
     """
     claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
     storage = MagicMock(supports_incremental_playbook_aggregation=True)
@@ -754,11 +754,10 @@ def test_backlog_failure_finishes_as_failure_and_releases_the_lease(
 def test_one_failing_scope_does_not_starve_its_siblings(monkeypatch) -> None:
     """The failure backoff is per (org, project), not per org.
 
-    Raised by Codex on reflexio#510, correcting a call I had made explicitly:
-    I recorded `_retry_after` as "a backoff, not a correctness gate" and left it
-    org-keyed. It IS a correctness gate. Keyed by org, one project that fails
-    repeatedly skips EVERY later project of that org -- the same starvation the
-    repair-throttle re-key exists to remove, arriving by a different route.
+    `_retry_after` is a correctness gate, not just a backoff. Keyed by org, one
+    project that fails repeatedly would skip EVERY later project of that org --
+    the same starvation the per-scope repair throttle exists to remove,
+    arriving by a different route.
 
     Two contexts for one org. The first raises; the second must still run.
     """
@@ -801,9 +800,9 @@ def test_one_failing_scope_does_not_starve_its_siblings(monkeypatch) -> None:
 def test_throttle_state_is_pruned_for_scopes_that_disappear(monkeypatch) -> None:
     """Keying by project must not leak an entry per project ever seen.
 
-    Raised by Codex on reflexio#510: the (org, project) key widened this map
-    from one entry per ORG to one per project, so a long-running scheduler
-    accumulates the lifetime project churn of the whole fleet.
+    The (org, project) key holds one entry per project rather than per ORG, so
+    without pruning a long-running scheduler accumulates the lifetime project
+    churn of the whole fleet.
 
     Pruning to the scopes seen in a COMPLETED pass changes no throttling
     semantics -- a scope the provider stopped yielding has no work, and a
@@ -1268,7 +1267,7 @@ def _run_the_aggregator(monkeypatch, storage, *, result) -> None:
 def test_invalidation_only_passes_do_not_end_the_run_streak(
     monkeypatch, caplog, transient_failure_classifier
 ) -> None:
-    """Codex round 4: run failures interleaved with >1-batch invalidation pages
+    """Run failures interleaved with >1-batch invalidation pages
     (which skip the aggregator) must still escalate."""
     from reflexio.server import background_work
 
@@ -1346,7 +1345,7 @@ def test_org_streak_ends_once_the_claim_succeeds_even_if_finalization_fails(
 def test_a_partial_or_blocked_run_never_ends_the_run_streak(
     monkeypatch, caplog, transient_failure_classifier, partial
 ) -> None:
-    """Codex round 6: escaping run failures alternating with runs that return
+    """Escaping run failures alternating with runs that return
     without doing their work (e.g. legacy adoption blocked on swallowed
     embedding errors) must still escalate."""
     from reflexio.server import background_work

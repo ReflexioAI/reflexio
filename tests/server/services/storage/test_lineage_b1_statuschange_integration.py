@@ -1,6 +1,6 @@
 """Integration tests: status_change lineage events on archive + bulk status-flip methods.
 
-Phase B1 / Task 3: emit op=status_change per affected id, atomically with the UPDATE,
+Each method emits op=status_change per affected id, atomically with the UPDATE,
 for the following methods:
   - archive_agent_playbooks_by_ids
   - archive_agent_playbooks_by_playbook_name

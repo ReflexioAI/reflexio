@@ -168,7 +168,7 @@ _USER_PLAYBOOK_PURGE_SQL = (
     "governance_subject_ref=NULL "
     "WHERE user_playbook_id=?"
 )
-# agent_playbook purge not yet required; added when Task 3/4 needs it.
+# No agent_playbook purge statement is defined.
 _PURGE_SQL: dict[str, str] = {
     "profile": _PROFILE_PURGE_SQL,
     "user_playbook": _USER_PLAYBOOK_PURGE_SQL,

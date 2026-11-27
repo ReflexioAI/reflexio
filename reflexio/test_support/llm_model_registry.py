@@ -155,9 +155,6 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
                 "is_significantly_better": True,
             },
         ),
-        # F1 cleanup: ``agent_success_evaluation_comparison`` was removed along
-        # with the session-level shadow comparison branch. The per-turn shadow
-        # comparison entry is registered above (``shadow_comparison``).
         "boolean_evaluation": ModelRegistryEntry(
             model_class=None,
             minimal_valid="true",

@@ -507,9 +507,8 @@ class BaseGenerationService(
         state_manager = self._create_state_manager()
 
         # Try to acquire lock — pass the serialized payload so blocked
-        # publishes land in the queue with their own data attached. This is
-        # the fix for R2: without the payload, the
-        # rerun re-uses the holder's request and the queued users' batches
+        # publishes land in the queue with their own data attached. Without
+        # the payload, the rerun re-uses the holder's request and the queued users' batches
         # never get extracted.
         my_payload = self._serialize_request_for_queue(request)
         if not state_manager.acquire_lock(
@@ -576,16 +575,15 @@ class BaseGenerationService(
     def _run_generation(self, request: TRequest) -> None:
         """Run one generation synchronously: compute -> persist -> emit.
 
-        Thin wrapper preserving the pre-split behavior for the synchronous
-        ``.run()`` / manual / rerun callers: compute (extractor + dedup +
+        Thin wrapper for the synchronous ``.run()`` / manual / rerun callers: compute (extractor + dedup +
         embeddings), persist (row writes + the extractor stride-bookmark
         advance) and post-commit side-effects (telemetry + billing) run together
-        with **no** external ``commit_scope``. Only the durable worker (Task 8/9)
+        with **no** external ``commit_scope``. Only the durable worker
         drives ``compute_generation`` / ``persist_generation`` /
         ``emit_generation_side_effects`` separately across its fenced scope.
 
         The outer ``except`` records ``generation_failed`` and re-raises
-        ``ExtractorExecutionError`` exactly as before.
+        ``ExtractorExecutionError``.
 
         Args:
             request: The request object containing parameters
@@ -718,8 +716,7 @@ class BaseGenerationService(
         # beside the `_last_token_totals` reset below. The gate runs the
         # should-run precheck, which is a real `generate_chat_response` call
         # (`_should_run.py`); installing any later would leave its cost
-        # invisible, which is the whole class of omission this change exists to
-        # end. It is also, necessarily, before `_execute_extractor`'s
+        # invisible. It is also, necessarily, before `_execute_extractor`'s
         # `contextvars.copy_context()` — a copied context shares this object but
         # not a later `set()`, so a capture installed deeper would never
         # propagate back out.
@@ -990,8 +987,8 @@ class BaseGenerationService(
         and re-plumbing it would touch the money path for zero behavior change.
         It is safe under the **single-use-instance invariant**: every generation
         service instance runs exactly one compute→persist→emit for one job with
-        no interleaving (``.run()`` is synchronous; the durable orchestration in
-        Task 8 holds one ``(instance, plan)`` pair per profile/playbook service
+        no interleaving (``.run()`` is synchronous; the durable orchestration
+        holds one ``(instance, plan)`` pair per profile/playbook service
         and never re-runs compute on that instance before emit), so ``self._last_*``
         is exactly as compute left it when emit runs. The plan still snapshots the
         billing inputs so a future durable reuse can re-plumb locally.
@@ -1094,12 +1091,11 @@ class BaseGenerationService(
     ) -> None:
         """Record that generation was skipped BEFORE the pre-extraction gate ran.
 
-        Emitted on the early-return paths of :meth:`_prepare_generation_run`. Those
-        paths previously logged at ``info``/``warning`` and wrote nothing durable, so
-        "a gate skipped this" was indistinguishable from "extraction ran and found
-        nothing" and from "extraction was never invoked" — all three looked identical
-        from the outside (publish returns success, no ``_agent_runs`` row, no usage
-        event). Diagnosing one such case took several hours and four wrong theories.
+        Emitted on the early-return paths of :meth:`_prepare_generation_run`. Without
+        a durable record, "a gate skipped this" is indistinguishable from "extraction
+        ran and found nothing" and from "extraction was never invoked" — all three
+        look identical from the outside (publish returns success, no ``_agent_runs``
+        row, no usage event).
 
         Uses the same ``generation_gate_evaluated`` event name as the gate itself so a
         single query returns every decision, with ``outcome`` naming which gate fired:

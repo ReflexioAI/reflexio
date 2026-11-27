@@ -82,10 +82,3 @@ def construct_agent_success_evaluation_messages_from_sessions(
     )
 
     return construct_messages_from_interactions(interactions, config)
-
-
-# F1 cleanup: ``has_shadow_content``, ``format_interactions_for_request``, and
-# ``construct_agent_success_evaluation_with_comparison_messages`` were retracted
-# along with the session-level shadow comparison branch. Per-turn shadow
-# comparison reads ``Interaction.shadow_content`` directly inside the dedicated
-# ``services/shadow_comparison/`` judge.

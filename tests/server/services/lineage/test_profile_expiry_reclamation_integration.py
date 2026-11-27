@@ -1,13 +1,13 @@
-"""Integration tests: TTL-expiry reclamation regression guard (Task 1.6).
+"""Integration tests: TTL-expiry reclamation regression guard.
 
 Three tests guard the specific pathology where an active (status=NULL) profile
-whose ``expiration_timestamp`` has elapsed was invisible to both the read filter
-AND the tombstone GC — so it leaked indefinitely until the ``expire_active_profiles``
-sweep was added.
+whose ``expiration_timestamp`` has elapsed is invisible to both the read filter
+AND the tombstone GC — so without the ``expire_active_profiles`` sweep it would
+leak indefinitely.
 
 Why integration (not e2e):
     The sweep, read filter and tombstone GC run against real SQLite storage.
-    Extraction no longer authors a lifetime: ordinary new facts carry the
+    Extraction does not author a lifetime: ordinary new facts carry the
     ``NEVER_EXPIRES`` compatibility value, and only an explicit storage deadline
     (or a legacy stored TTL) is finite. The fixture therefore seeds one active
     profile carrying a finite deadline through the storage write owner rather than

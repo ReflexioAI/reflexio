@@ -1,10 +1,10 @@
 """Read-compatibility for the deprecated ``blocking_issue`` field.
 
-``blocking_issue`` is no longer produced or used by the active extraction /
+``blocking_issue`` is not produced or used by the active extraction /
 aggregation / display code path, but the ``BlockingIssue`` type and the
 domain-model field are intentionally retained so existing stored rows that
 still carry a non-empty ``blocking_issue`` keep deserializing without error.
-Storage was not migrated; these tests guard that read-compat contract.
+Stored rows are not migrated; these tests guard that read-compat contract.
 """
 
 from reflexio.models.api_schema.service_schemas import (

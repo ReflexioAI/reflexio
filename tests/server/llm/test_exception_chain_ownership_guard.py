@@ -51,7 +51,7 @@ _LLM_ERRORS = frozenset(
 )
 _VERDICT_READERS = frozenset({"classify_llm_failure", "describe_tool_loop_error"})
 
-#: Predicates the verdict replaced (PR1 and PR2 of llm-failure-verdict).
+#: Predicates the verdict replaced.
 TOMBSTONES = frozenset(
     {
         "provider_wait_seconds",

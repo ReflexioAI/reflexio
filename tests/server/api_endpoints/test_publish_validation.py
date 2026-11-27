@@ -39,7 +39,7 @@ from reflexio.models.api_schema.service_schemas import (
 # One populated sample per content-bearing field. Keyed by field name so the
 # acceptance test below can be driven from CONTENT_BEARING_FIELD_NAMES itself:
 # adding a field to the predicate without covering it here fails collection,
-# which is how `citations` and `retrieved_learnings` previously went untested.
+# so no content-bearing field can go untested.
 _CONTENT_SAMPLES: dict[str, Any] = {
     "content": "hello",
     "shadow_content": "shadow variant",
@@ -114,9 +114,9 @@ class TestEmptyInteractions:
 class TestSiblingRulesEnforcedAtBoundary:
     """The other two per-interaction rules must 422 too.
 
-    They previously lived only in ``precondition_checks``, whose result is
-    discarded on the async path -- so they returned 200 "queued" and then
-    silently refused the write.
+    Enforced only in ``precondition_checks``, whose result is discarded on
+    the async path, they would return 200 "queued" and then silently refuse
+    the write.
     """
 
     def test_user_action_without_description_is_rejected(self):

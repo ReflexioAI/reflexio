@@ -16,9 +16,8 @@ class _ConcurrencyModel:
     """Fake sentence-transformers model recording peak simultaneous encodes.
 
     Injected into a real ``NomicEmbedder`` so the assertions exercise the
-    embedder-level ``_model_lock`` — the invariant that survives after the
-    daemon's own ``_MODEL_ENCODE_LOCK`` was removed (the embedder, not the
-    daemon, now owns serialization of the non-thread-safe model).
+    embedder-level ``_model_lock`` — the embedder, not the daemon, owns
+    serialization of the non-thread-safe model.
     """
 
     def __init__(self, hold: float = 0.1) -> None:
@@ -84,10 +83,10 @@ def test_embed_texts_caps_and_queues(monkeypatch: pytest.MonkeyPatch) -> None:
     assert all(not thread.is_alive() for thread in threads)
     assert errors == []
     assert fake_model.calls == 6
-    # Model inference is serialized by the embedder's own ``_model_lock`` (see
-    # PR #153: concurrent encodes on the shared, non-thread-safe model corrupt
-    # each other's tensors). The daemon no longer holds a redundant lock — the
-    # embedder owns serialization by construction. The fake model counts time
+    # Model inference is serialized by the embedder's own ``_model_lock``
+    # (concurrent encodes on the shared, non-thread-safe model corrupt each
+    # other's tensors). The daemon holds no lock of its own — the embedder
+    # owns serialization by construction. The fake model counts time
     # inside encode(), so the peak simultaneous-encode count must be exactly 1.
     assert fake_model.peak == 1
 

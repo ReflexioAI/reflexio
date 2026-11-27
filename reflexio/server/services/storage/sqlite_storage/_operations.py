@@ -81,7 +81,6 @@ class OperationMixin:
         user_id: str | None,
         sources: list[str] | None = None,
     ) -> tuple[dict, list[RequestInteractionDataModel]]:
-        # Get operation state
         state_record = self.get_operation_state(service_name)
         operation_state: dict = {}
         if state_record and isinstance(state_record.get("operation_state"), dict):
@@ -123,7 +122,6 @@ class OperationMixin:
         sql += " ORDER BY i.created_at ASC"
         rows = self._fetchall(sql, params)
 
-        # Group by request
         requests_map: dict[str, Request] = {}
         interactions_by_request: dict[str, list[Interaction]] = {}
 

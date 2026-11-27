@@ -528,10 +528,10 @@ class TestAddUserProfile:
 
 class TestGetProfileChangeLogs:
     def test_returns_reconstructed_change_logs(self):
-        """Delegates to reconstruct_profile_change_log (B3 Task 3 read-side repoint).
+        """Delegates to reconstruct_profile_change_log.
 
-        The facade no longer reads the legacy ``profile_change_logs`` table; it
-        serves the view from ``reconstruct_profile_change_log`` over the storage.
+        The facade serves the view from ``reconstruct_profile_change_log`` over
+        the storage.
         """
         mixin = _make_mixin()
         sample_log = ProfileChangeLog(

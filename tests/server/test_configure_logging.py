@@ -1,23 +1,16 @@
 """``configure_logging`` must be callable, idempotent, and never raise a threshold.
 
-This function used to be a module body: ~100 lines that ran as an import side
-effect of ``reflexio.server``, with no name, no arguments and no return value.
-Nothing could call it, so nothing could test it -- and working out what a
-deployed process could actually log meant running a child interpreter against it.
-Two measurements in one session got it wrong first, and a test that tried to
-observe it instead rebuilt the configuration and asserted against its own work.
-
 Two properties carry real weight here:
 
 **Lower-only.** ``level`` and ``first_party_level`` may lower a threshold and never
-raise one. A caller asking for ERROR used to raise the first-party loggers to
-ERROR and delete every WARNING line from stdout, which for a self-hosted
-deployment is the only channel there is.
+raise one. Raising the first-party loggers to ERROR for a caller asking for ERROR
+would delete every WARNING line from stdout, which for a self-hosted deployment
+is the only channel there is.
 
-**Idempotent.** The old body guarded its console handler against a second
-attachment but NOT its two file handlers, which was invisible while it ran once
-and stacks on every call now that it is a function. Measured before the guard was
-added: three handlers became five, then seven.
+**Idempotent.** The console handler AND both file handlers must be guarded
+against a second attachment; an unguarded handler stacks on every call
+(measured without the file-handler guard: three handlers became five, then
+seven).
 """
 
 from __future__ import annotations
@@ -50,9 +43,9 @@ def isolated_logging() -> Iterator[None]:
     EVERY existing logger's level is snapshotted, not just the two first-party
     roots. ``configure_logging`` also pins ``litellm``, ``httpx``,
     ``site_var_manager`` and whatever ``info_loggers`` names, so a narrower
-    fixture left ``reflexio_ext.billing`` at INFO and leaked it into later tests.
-    Raised by CodeRabbit on reflexio#551, and the same order-dependence class that
-    made a sibling test in this file pass alone and fail in the full suite.
+    fixture would leave ``reflexio_ext.billing`` at INFO and leak it into later
+    tests -- the order-dependence class that makes a test pass alone and fail in
+    the full suite.
     """
     root = logging.getLogger()
     saved_root = (root.level, list(root.handlers))
@@ -411,7 +404,7 @@ def test_the_log_level_and_info_loggers_are_resolved(
 
 
 # --------------------------------------------------------------------------
-# The two defects Codex found on reflexio#551, each with its control.
+# Two configuration defects, each with its control.
 # --------------------------------------------------------------------------
 
 
@@ -518,10 +511,10 @@ def test_a_foreign_rotating_handler_does_not_suppress_the_verbose_profile(
     """The verbose profile must still get its console and both log files.
 
     ``RotatingFileHandler`` is a ``StreamHandler`` subclass via ``FileHandler``, so
-    a class-based guard treated one unrelated rotating handler -- an embedding
-    application's own -- as proof that both Reflexio file handlers AND the console
-    already existed. The result was a verbose profile with no colored console, no
-    ``dev.log`` and no ``llm_io.log``. Raised by Codex on reflexio#551.
+    a class-based guard would treat one unrelated rotating handler -- an
+    embedding application's own -- as proof that both Reflexio file handlers AND
+    the console already existed. The result would be a verbose profile with no
+    colored console, no ``dev.log`` and no ``llm_io.log``.
     """
     root = _blank_root()
     foreign = logging.handlers.RotatingFileHandler(

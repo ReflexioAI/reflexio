@@ -1,9 +1,9 @@
 """Integration tests for POST /api/evaluations/grade_on_demand.
 
 The endpoint grades a single session synchronously and caches the verdict
-for 24h via the existing ``operation_state`` storage. F3 Task 8 ships it
-so Plan 3 (F1)'s bounded-list "click-through" UX can pull a fresh grade
-for any session that wasn't in the regen sampler's chosen subset.
+for 24h via the existing ``operation_state`` storage, so the bounded-list
+"click-through" UX can pull a fresh grade for any session that wasn't in the
+regen sampler's chosen subset.
 
 These tests focus on the handler contract:
   - Cache miss → fresh grade is computed and persisted.

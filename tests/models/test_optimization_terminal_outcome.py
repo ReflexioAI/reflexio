@@ -1,17 +1,16 @@
 """``OptimizationTerminalOutcome`` must admit the outcomes the tuner writes.
 
-'regeneration_fenced' reached the tenant CHECK in 20260827040000 (re-declared by
-20260830020000) and is written by reflexio_ext
-offline_tuner/open_world/runner.py:251 via ``_converge_terminal_failure``, but
-was never added to this union -- so reading such a row back through
-``_row_to_playbook_optimization_job`` raised ``ValidationError``.
+'regeneration_fenced' is in the tenant CHECK (20260827040000, re-declared by
+20260830020000) and is the outcome for an attempt the open-world tuner's
+attempt-start fence refuses (the fence is currently dormant; see
+``offline_tuner/open_world/fence.py``). If it is missing from this union, reading such a
+row back through ``_row_to_playbook_optimization_job`` raises
+``ValidationError``.
 
-That failure did not surface as a validation error either. ``handle_exceptions``
-converts it to ``StorageError``, and the open-world runner's ``except
-StorageError`` arm reports ``infrastructure_failure`` -- so a refusal the fence
-made on purpose was recorded, and reported to the enterprise error monitor,
-under a reason that names
-a fault that never happened.
+That failure would not surface as a validation error either.
+``handle_exceptions`` converts it to ``StorageError``, and a caller that reports
+``StorageError`` as ``infrastructure_failure`` would record a refusal the fence
+made on purpose under a reason that names a fault that never happened.
 
 The union-versus-CHECK set equality is asserted in the enterprise tree, where
 cross-repository assertions belong and ``supabase/`` actually exists:
@@ -29,7 +28,7 @@ from reflexio.models.api_schema.domain.entities import PlaybookOptimizationJob
 
 
 def test_a_fenced_job_row_parses() -> None:
-    """The regression: this construction raised ``ValidationError`` before."""
+    """A fenced job row constructs without ``ValidationError``."""
     job = PlaybookOptimizationJob(
         job_id=1,
         target_kind="user_playbook",

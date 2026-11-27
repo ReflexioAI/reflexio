@@ -521,8 +521,8 @@ class TestMinimaxExtractionAgentRole:
 
 
 class TestMinimaxOnlyEnvRegression:
-    """Reproduces the e2e regression where a fresh setup-init with only
-    MINIMAX_API_KEY in env saw the extractor pick gpt-5.4-mini at runtime.
+    """Guards against a fresh setup-init with only MINIMAX_API_KEY in env
+    having the extractor pick gpt-5.4-mini at runtime.
 
     The contract this class locks in: when the only LLM env var in scope
     is MINIMAX_API_KEY, every generation-family role (the slots that
@@ -562,7 +562,7 @@ class TestMinimaxOnlyEnvRegression:
         """Every non-embedding role must resolve to a MiniMax model.
 
         Catches regressions where the ``extraction_agent`` role gets
-        re-introduced without MiniMax coverage — the exact bug PR #51 fixed.
+        re-introduced without MiniMax coverage.
         """
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-test")
         for role in (
@@ -618,7 +618,7 @@ class TestMinimaxOnlyEnvRegression:
 
 
 # ---------------------------------------------------------------------------
-# zai provider defaults (glm-5.2 is the live-verified flagship, #792)
+# zai provider defaults (glm-5.2 is the live-verified flagship)
 # ---------------------------------------------------------------------------
 
 

@@ -1175,7 +1175,7 @@ def _physical_probe(root: Path, contract: str):
             assert output._hidden_params.get("reflexio_served_model") is None
             assert output._hidden_params.get("reflexio_served_provider") is None
         # The caller's shorter allowance must stop actual Codex, rather than
-        # the former provider cap. Both clocks are bounded in this regression.
+        # the provider cap. Both clocks are bounded in this regression.
         os.environ["CLAUDE_SMART_CLI_TIMEOUT"] = "3"
         os.environ["NATIVE_TEST_SLEEP"] = "30"
         started = time.monotonic()

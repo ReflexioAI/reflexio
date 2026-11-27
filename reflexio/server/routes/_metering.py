@@ -57,7 +57,7 @@ def _meter_applied_learnings(
             surfaced_count=surfaced_count,
             caller_type=caller_type,
             platform_llm=platform_llm_from_config(config),
-            platform_storage=None,  # resolved enterprise-side at rollup (Phase 1)
+            platform_storage=None,  # resolved enterprise-side at rollup
             request_id=request_id,
             session_id=session_id,
         )

@@ -74,7 +74,7 @@ def test_daemon_mode_forwards_graceful_shutdown_sec() -> None:
 
 
 def test_daemon_mode_defaults_to_workers_2() -> None:
-    """Audit (Task 9) + B1-B5 stress tests + F2/F3 remediation all passed; default is 2 workers."""
+    """Daemon mode defaults to 2 workers."""
     cmd = _cmd(reload=False)
     assert "--workers" in cmd
     assert cmd[cmd.index("--workers") + 1] == "2"

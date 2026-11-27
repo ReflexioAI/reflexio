@@ -279,8 +279,8 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         self._on_scope_deferred = on_scope_deferred
         self._poll_interval_seconds = poll_interval_seconds
         self._worker_id = worker_id or uuid.uuid4().hex
-        # Keyed by (org_id, project_id) TUPLES, not by a joined string. Codex
-        # on reflexio#510: with `f"{org}:{project}"`, an org id containing a
+        # Keyed by (org_id, project_id) TUPLES, not by a joined string. With
+        # `f"{org}:{project}"`, an org id containing a
         # colon collides with a different (org, project) pair -- both
         # ("a:b", "c") and ("a", "b:c") render as "a:b:c" -- and the first
         # scope processed keeps refreshing the shared timestamp, permanently
@@ -620,10 +620,8 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     break
                 org_id = context.org_id
                 # The FAILURE backoff carries the same (org, project) scope as
-                # the repair throttle. Codex on reflexio#510, and it corrects a
-                # call I got wrong: I had recorded `_retry_after` as "a backoff,
-                # not a correctness gate" and left it org-keyed. It is a
-                # correctness gate. Keyed by org, one project that fails
+                # the repair throttle: `_retry_after` is a correctness gate,
+                # not just a backoff. Keyed by org, one project that fails
                 # repeatedly skips EVERY later project of that org -- the exact
                 # starvation the repair re-key exists to remove, arriving by a
                 # different route.

@@ -1,12 +1,11 @@
-"""Storage contract tests for gc_expired_tombstones (Lineage Phase B2, Task 5).
+"""Storage contract tests for gc_expired_tombstones.
 
 Parametrized over locally-testable backends via the shared ``storage`` fixture
-in conftest.py (currently SQLite only).  Enterprise backends add their params
-in Task 6; they will skip here without DATA_* env vars.
+in conftest.py (currently SQLite only).
 
 Seeding note
 ------------
-GC now ages on ``retired_at`` (INTEGER epoch, set at every tombstone write-path).
+GC ages on ``retired_at`` (INTEGER epoch, set at every tombstone write-path).
 After calling ``merge_records`` (which sets ``retired_at = now``), tests that need
 an "aged" tombstone must back-date ``retired_at`` via a raw SQL helper.  The
 SQLite-backed ``storage`` fixture exposes ``storage.conn`` for this purpose.

@@ -505,14 +505,13 @@ def test_both_correlated_and_uncorrelated_retrievals_reach_the_receipt_issuer(
 ) -> None:
     """Both directions, deliberately in one test.
 
-    This previously asserted the uncorrelated retrieval recorded NOTHING. That
-    contract is inverted: refusing the write protected a reconstructability
-    ratio that no org in the fleet actually had, and instead took exposure
-    intake to zero for 16 days. Both retrievals must now land, the uncorrelated
-    one flagged ``missing_correlation`` by the schema.
+    Both retrievals must land, the uncorrelated one flagged
+    ``missing_correlation`` by the schema. Refusing the uncorrelated write
+    protects a reconstructability ratio that no org in the fleet actually had,
+    and takes exposure intake to zero (measured: zero for 16 days).
 
-    The correlated direction stays pinned in the same test for the original
-    reason: a change that stopped writing *everything* would satisfy a one-sided
+    The correlated direction stays pinned in the same test because a change
+    that stopped writing *everything* would satisfy a one-sided
     assertion while destroying the ledger.
     """
     issuer = _Issuer()

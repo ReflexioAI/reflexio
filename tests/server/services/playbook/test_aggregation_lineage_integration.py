@@ -361,8 +361,8 @@ def test_aggregate_save_failure_aborts_and_restores(
 ):
     """C1: a failure in save_agent_playbooks aborts the run and restores archives.
 
-    The per-playbook save no longer silently skips on failure.  Instead the
-    exception propagates to the outer handler which:
+    The per-playbook save does not silently skip on failure: the exception
+    propagates to the outer handler which:
     (a) re-raises so the caller knows the run failed,
     (b) calls restore_archived_agent_playbooks_by_* to un-archive the old generation,
     (c) leaves no orphan agent_playbook row (atomic rollback of the INSERT + event).
@@ -415,7 +415,7 @@ def test_aggregate_save_failure_aborts_and_restores(
         ),
         pytest.raises(RuntimeError, match="simulated atomic failure"),
     ):
-        # (a) run must RAISE — failure is no longer swallowed
+        # (a) run must RAISE — failure is not swallowed
         aggregator.run(PlaybookAggregatorRequest(agent_version="v0", rerun=True))
 
     # (b) old archived playbook is restored (status cleared back to normal)
@@ -633,7 +633,7 @@ def test_e2e_reconstruct_incremental_run_mode(
     assert result.change_logs, "Expected at least one reconstructed entry"
     # BOTH runs appear. Run 2 (later timestamp) is the most recent entry. Run 1's ap was
     # superseded by run 2 but is still shown in run 1's 'added' list — reconstruct resolves
-    # the added side with include_tombstones, so run 1 is no longer dropped from history.
+    # the added side with include_tombstones, so run 1 stays in history.
     assert len(result.change_logs) == 2, (
         f"Expected both runs reconstructed, got {len(result.change_logs)}"
     )

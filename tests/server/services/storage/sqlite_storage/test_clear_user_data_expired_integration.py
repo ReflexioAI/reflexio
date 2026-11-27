@@ -1,25 +1,22 @@
-"""Task 1.8: clear_user_data must reach EXPIRED and expired profile rows.
+"""clear_user_data must reach EXPIRED and expired profile rows.
 
-Before the fix, BaseStorage.clear_user_data used get_user_profile with
-``_all_statuses`` that omitted Status.EXPIRED and the unconditional
-``expiration_timestamp >= now`` filter hid any profile with a past expiry.
-EXPIRED tombstones (expiration_timestamp in the past) were silently skipped
-by the GDPR erasure path.
+BaseStorage.clear_user_data must read profiles with every status,
+Status.EXPIRED included, and without the ``expiration_timestamp >= now``
+filter; otherwise EXPIRED tombstones (expiration_timestamp in the past) are
+silently skipped by the GDPR erasure path.
 
 Note: SQLiteStorage has its own clear_user_data override that reads profiles
 directly via ``SELECT … WHERE user_id = ?`` (no status/expiry filter), so
-the SQLite override already handles EXPIRED profiles.  The bug lives in
+the SQLite override handles EXPIRED profiles.  The risk lives in
 BaseStorage.clear_user_data (used by the Supabase/Postgres backends).
-We call BaseStorage.clear_user_data(s, …) directly here so the failing
-assertion targets the broken base-class code path.
+We call BaseStorage.clear_user_data(s, …) directly here so the assertion
+targets the base-class code path.
 
 Two test bodies:
-  * test_base_clear_user_data_erases_expired_profile — the bug: EXPIRED
-    profile survives BaseStorage.clear_user_data (FAILS before fix, PASSES
-    after).
-  * test_get_user_profile_include_expired_param — the new param:
-    include_expired=True surfaces the EXPIRED row; False (default) hides it
-    (fails BEFORE fix with TypeError on unknown kwarg, PASSES after).
+  * test_base_clear_user_data_erases_expired_profile — an EXPIRED profile
+    must not survive BaseStorage.clear_user_data.
+  * test_get_user_profile_include_expired_param — include_expired=True
+    surfaces the EXPIRED row; False (default) hides it.
 """
 
 from __future__ import annotations

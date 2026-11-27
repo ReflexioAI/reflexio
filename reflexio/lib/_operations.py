@@ -39,7 +39,6 @@ class OperationsMixin(ReflexioBase):
             org_id = self.request_context.org_id
             progress_key = f"{request.service_name}::{org_id}::progress"
 
-            # Get operation state from storage
             state_entry = self._get_storage().get_operation_state(progress_key)
 
             if not state_entry:
@@ -89,7 +88,6 @@ class OperationsMixin(ReflexioBase):
                                 progress_key, operation_state
                             )
 
-            # Convert to OperationStatusInfo
             operation_status_info = OperationStatusInfo(**operation_state)
 
             return GetOperationStatusResponse(

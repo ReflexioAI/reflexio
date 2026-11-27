@@ -287,9 +287,9 @@ class TestPendingRequestQueue:
 class TestSimpleLock:
     """Contract: ``acquire_simple_lock`` is mutually exclusive on real storage.
 
-    Regression: the old implementation read the wrapped
-    ``{"operation_state": {...}}`` record as if it were the state itself, so
-    ``in_progress`` was never seen and every acquire succeeded.
+    Regression guard: reading the wrapped ``{"operation_state": {...}}`` record
+    as if it were the state itself means ``in_progress`` is never seen and
+    every acquire succeeds.
     """
 
     def _mgr(self, storage):
