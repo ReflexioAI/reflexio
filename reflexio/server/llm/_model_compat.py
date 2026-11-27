@@ -1,10 +1,12 @@
 """Capabilities for qualified models newer than LiteLLM's bundled catalog.
 
 Sources: OpenAI/Anthropic verified 2026-09-30; MiniMax/Z.ai 2026-10-01.
+MiniMax-M3.1-Flash stable reasoning contract verified 2026-11-27.
 https://developers.openai.com/api/docs/models
 https://platform.claude.com/docs/en/models/overview
 https://platform.claude.com/docs/en/models/opus-5-5/migration-guide
 https://platform.minimax.io/docs/api-reference/text-openai-api
+https://platform.minimax.io/docs/guides/text-generation
 https://docs.z.ai/guides/llm/glm-5.3
 https://docs.z.ai/guides/vlm/glm-5.3-flash
 Only direct provider IDs are covered; third-party routes retain their own policy.
@@ -28,8 +30,10 @@ ANTHROPIC_MODELS = frozenset(
     {"claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"}
 )
 MINIMAX_PREVIEW_MODEL = "minimax/MiniMax-M3.1-Flash-Preview"
+MINIMAX_FLASH_MODEL = "minimax/MiniMax-M3.1-Flash"
+MINIMAX_FLASH_MODELS = frozenset({MINIMAX_PREVIEW_MODEL, MINIMAX_FLASH_MODEL})
 GLM_MODELS = frozenset({"zai/glm-5.3", "zai/glm-5.3-flash", "zai/glm-5.3-flashx"})
-SECONDARY_MODELS = GLM_MODELS | {MINIMAX_PREVIEW_MODEL}
+SECONDARY_MODELS = GLM_MODELS | MINIMAX_FLASH_MODELS
 
 # Routes whose provider documents a request field that turns thinking OFF,
 # used for the client's one reasoning-exhausted retry. MiniMax (text-openai-api,
@@ -91,6 +95,10 @@ def ensure_model_capabilities(model: str) -> None:
     """
     name = qualified_model_id(model)
     if name is None or name in litellm.model_cost:
+        return
+    if name == MINIMAX_FLASH_MODEL and name.split("/", 1)[1] in litellm.model_cost:
+        # LiteLLM also resolves the provider's unprefixed catalog key. Do not
+        # shadow its prices or context limits with a capability-only alias.
         return
     if name in SECONDARY_MODELS:
         # These providers use prompt schemas in Reflexio; native strict JSON
@@ -169,7 +177,7 @@ def apply_model_request_policy(params: dict[str, Any]) -> None:
         effort = extra.get("reasoning_effort", params.get("reasoning_effort"))
         allowed_efforts = (
             {"low", "medium", "high", "xhigh", "max"}
-            if qualified == MINIMAX_PREVIEW_MODEL
+            if qualified in MINIMAX_FLASH_MODELS
             else {"low", "high", "max"}
         )
         if isinstance(thinking, dict) and thinking.get("type") == "disabled":
@@ -184,7 +192,7 @@ def apply_model_request_policy(params: dict[str, Any]) -> None:
                 f"{', '.join(sorted(allowed_efforts))}."
             )
         if (
-            qualified == MINIMAX_PREVIEW_MODEL
+            qualified in MINIMAX_FLASH_MODELS
             and extra.get("reasoning_split", params.get("reasoning_split")) is False
         ):
             raise LiteLLMClientError(f"{qualified} requires reasoning_split=True.")

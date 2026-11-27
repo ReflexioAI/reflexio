@@ -2236,6 +2236,21 @@ evidence rendering. Historical storage projections retain their existing limits.
 
 ### MiniMax endpoint authority
 
+The exact direct routes `minimax/MiniMax-M3.1-Flash` and its `-Preview`
+counterpart retain caller reasoning effort through LiteLLM's provider mapper.
+Both accept `low`, `medium`, `high`, `xhigh` and `max`; omission preserves the
+provider default. Disabled thinking, `none` effort and `reasoning_split=false`
+refuse before dispatch. Caller `extra_body` retains its existing precedence.
+These capabilities do not register prices or change third-party routes.
+Existing full provider-prefixed or bare catalog entries retain their prices and
+context limits; the fallback does not shadow a bare entry with partial metadata.
+See
+the [MiniMax Chat Completions contract](https://platform.minimax.io/docs/api-reference/text-openai-api),
+verified 2026-11-27. In particular, the procedural maintain stage's explicit
+`low` effort must reach the payload; silently dropping it could select the
+provider's `max` default. This is a request-policy guarantee, not a measured
+latency or usage claim.
+
 The shared completion builder resolves existing MiniMax endpoint overrides before
 output/input admission and provider-circuit selection. Request overrides take
 precedence over configured endpoints, then `litellm.api_base`, then nonblank
