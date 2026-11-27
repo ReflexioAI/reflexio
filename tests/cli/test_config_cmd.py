@@ -524,24 +524,27 @@ class TestConfigStorageEdges:
         assert "Failed to reach http://reflexio.test/api/my_config" in result.output
 
     @pytest.mark.parametrize("json_mode", [False, True])
-    def test_no_storage_configured(
-        self, runner: CliRunner, cli_app, json_mode: bool
+    @pytest.mark.parametrize(
+        "message", ["Org has no storage", "Storage credential export is disabled"]
+    )
+    def test_failed_storage_export(
+        self, runner: CliRunner, cli_app, json_mode: bool, message: str
     ) -> None:
         import json as _json
 
         client = MagicMock()
         client.get_my_config.return_value = MyConfigResponse(
-            success=False, message="Org has no storage"
+            success=False, message=message
         )
         args = ("--json",) if json_mode else ()
         result = self._invoke(runner, cli_app, client, *args)
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         if json_mode:
             data = _json.loads(result.stdout)["data"]
             assert data["success"] is False
-            assert data["message"] == "Org has no storage"
+            assert data["message"] == message
         else:
-            assert "Error: Org has no storage" in result.output
+            assert f"Error: {message}" in result.output
 
     def test_json_mode_masks_and_keeps_non_string_values(
         self, runner: CliRunner, cli_app

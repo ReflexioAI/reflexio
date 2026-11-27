@@ -2,43 +2,25 @@
 
 Covers both the publisher-API shim (``account_api``) and the FastAPI
 routes. The my_config gate is security-critical — it defaults closed
-in OS/self-host and only opens when auth is enforced or the opt-in
-env var is set.
+unless the host provides an authenticated organization resolver.
 """
 
 from __future__ import annotations
 
-import os
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from fastapi import Header, HTTPException
 from fastapi.testclient import TestClient
 
+from reflexio.models.config_schema import Config, StorageConfigSQLite
 from reflexio.server.api import create_app
+from reflexio.server.services.configurator.configurator import DefaultConfigurator
 
 # These test account behavior independently of the standalone listener policy.
 # Actual standalone access is exercised in test_local_access.py.
 app = create_app()
-
-
-@pytest.fixture(autouse=True)
-def reset_gate():
-    """Reset the per-app auth gate and the env var between tests.
-
-    ``app.state.my_config_enabled`` is scoped to the FastAPI instance
-    but the tests share a module-level ``app``, so we still snap it
-    back. The env var is snapped back for the same reason.
-    """
-    prev_enabled = bool(getattr(app.state, "my_config_enabled", False))
-    prev_env = os.environ.get("REFLEXIO_ALLOW_MY_CONFIG")
-    app.state.my_config_enabled = False
-    os.environ.pop("REFLEXIO_ALLOW_MY_CONFIG", None)
-    yield
-    app.state.my_config_enabled = prev_enabled
-    if prev_env is None:
-        os.environ.pop("REFLEXIO_ALLOW_MY_CONFIG", None)
-    else:
-        os.environ["REFLEXIO_ALLOW_MY_CONFIG"] = prev_env
 
 
 class TestWhoamiEndpoint:
@@ -90,40 +72,62 @@ class TestMyConfigEndpoint:
         assert body["success"] is False
         assert "disabled" in body["message"].lower()
 
-    def test_opt_in_env_var_enables_endpoint(self):
-        os.environ["REFLEXIO_ALLOW_MY_CONFIG"] = "true"
-        client = TestClient(app)
-        response = client.get("/api/my_config")
-
+    @pytest.mark.parametrize("legacy_value", ["true", "false", "unexpected"])
+    def test_retired_env_cannot_enable_export(self, monkeypatch, legacy_value):
+        monkeypatch.setenv("REFLEXIO_ALLOW_MY_CONFIG", legacy_value)
+        with patch("reflexio.server.api_endpoints.account_api.get_reflexio") as load:
+            response = TestClient(app).get("/api/my_config")
         assert response.status_code == 200
-        body = response.json()
-        assert body["success"] is True
-        assert body["storage_type"] == "sqlite"
+        assert response.json()["success"] is False
+        assert "storage_config" not in response.json()
+        load.assert_not_called()
 
-    def test_auth_enforced_mode_enables_endpoint(self):
-        """When Bearer auth is enforced app-wide, my_config is reachable.
+    def test_authenticated_host_exports_for_the_resolved_org(self):
+        tokens = {"Bearer synthetic-one": "org-one", "Bearer synthetic-two": "org-two"}
 
-        Simulates what ``create_app`` does for the enterprise flow by
-        setting ``app.state.my_config_enabled`` directly — this is the
-        same flag the factory sets when ``get_org_id`` + ``require_auth``
-        are provided together.
-        """
-        app.state.my_config_enabled = True
-        client = TestClient(app)
-        response = client.get("/api/my_config")
+        def authenticated_org(authorization: str = Header(default="")):
+            if authorization not in tokens:
+                raise HTTPException(status_code=401)
+            return tokens[authorization]
 
-        assert response.status_code == 200
-        body = response.json()
-        assert body["success"] is True
+        def load_org(*, org_id):
+            configurator = DefaultConfigurator(
+                org_id,
+                config=Config(
+                    storage_config=StorageConfigSQLite(
+                        db_path=f"/synthetic/{org_id}.sqlite3"
+                    )
+                ),
+            )
+            return SimpleNamespace(
+                request_context=SimpleNamespace(configurator=configurator)
+            )
 
-    def test_exception_returns_generic_message_no_leakage(self):
+        client = TestClient(create_app(get_org_id=authenticated_org, require_auth=True))
+        with patch(
+            "reflexio.server.api_endpoints.account_api.get_reflexio",
+            side_effect=load_org,
+        ) as load:
+            assert client.get("/api/my_config").status_code == 401
+            load.assert_not_called()
+            for token, org_id in tokens.items():
+                response = client.get(
+                    "/api/my_config", headers={"Authorization": token}
+                )
+                assert response.status_code == 200
+                assert (
+                    response.json()["storage_config"]["db_path"]
+                    == f"/synthetic/{org_id}.sqlite3"
+                )
+
+    def test_exception_returns_generic_message_no_leakage(self, monkeypatch):
         """A crash in ``get_reflexio`` must not leak exception text.
 
         We have to open the endpoint gate to actually reach the body
         of ``my_config`` — the closed-by-default path short-circuits
         before hitting ``get_reflexio`` at all.
         """
-        app.state.my_config_enabled = True
+        monkeypatch.setattr(app.state, "my_config_enabled", True)
         with patch(
             "reflexio.server.api_endpoints.account_api.get_reflexio",
             side_effect=RuntimeError("boom-secret-db-url"),
@@ -136,38 +140,3 @@ class TestMyConfigEndpoint:
         assert body["success"] is False
         assert body["message"] == "Failed to load storage configuration"
         assert "boom-secret-db-url" not in response.text
-
-
-def test_my_config_gate_accepts_only_true(monkeypatch) -> None:
-    """The credential-export gate must not be opened by an ambiguous spelling.
-
-    ``my_config`` is the "download my creds" endpoint: on OS/self-host its only
-    guard is this variable, and the response carries the caller's storage
-    configuration. So the gate is parsed with ``env_bool`` -- narrower than the
-    ``{"1", "true", "yes"}`` allowlist it replaced, and far narrower than the
-    permissive ``env_truthy`` (which accepts ``"on"``) briefly used here.
-
-    A wrong value raises rather than silently opening or closing the gate: for a
-    credential path, refusing to guess is the only safe behaviour.
-    """
-    from reflexio.server.api_endpoints.account_api import (
-        _ALLOW_MY_CONFIG_ENV_VAR,
-        my_config_allowed,
-    )
-    from reflexio.server.env_utils import EnvBoolError
-
-    monkeypatch.setenv(_ALLOW_MY_CONFIG_ENV_VAR, "true")
-    assert my_config_allowed() is True
-
-    monkeypatch.setenv(_ALLOW_MY_CONFIG_ENV_VAR, "false")
-    assert my_config_allowed() is False
-
-    monkeypatch.delenv(_ALLOW_MY_CONFIG_ENV_VAR, raising=False)
-    assert my_config_allowed() is False, "unset must not open the gate"
-
-    # "on" is the specific spelling that a permissive parser would have let
-    # through; "1" and "yes" were accepted by the older allowlist.
-    for ambiguous in ("on", "1", "yes", "y"):
-        monkeypatch.setenv(_ALLOW_MY_CONFIG_ENV_VAR, ambiguous)
-        with pytest.raises(EnvBoolError):
-            my_config_allowed()

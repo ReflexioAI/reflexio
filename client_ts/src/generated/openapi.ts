@@ -2216,19 +2216,7 @@ export interface paths {
         };
         /**
          * My Config Endpoint
-         * @description Return raw storage credentials for the caller's org.
-         *
-         *     Enablement is controlled by two independent opt-ins so the endpoint
-         *     is closed by default on unauthenticated self-host deployments:
-         *
-         *     - ``request.app.state.my_config_enabled`` — set to True by
-         *       :func:`create_app` when the host wires in a Bearer-auth
-         *       ``get_org_id`` dependency, so enterprise callers are always
-         *       authenticated before they reach this route.
-         *     - ``REFLEXIO_ALLOW_MY_CONFIG=true`` — OS self-host escape hatch.
-         *
-         *     If neither is set we return a closed response instead of a 404 so
-         *     the CLI can display an actionable hint.
+         * @description Return storage settings for the authenticated organization.
          */
         get: operations["my_config_endpoint_api_my_config_get"];
         put?: never;

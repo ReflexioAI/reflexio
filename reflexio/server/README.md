@@ -166,6 +166,7 @@ turnover bound is not a substitute for proving configuration freshness.
 
 - **Health/version**: `GET /`, `GET /health/live`, `GET /health/ready`, `GET /health` and `GET /healthz` (deprecated aliases), `GET /healthz/eval`, `GET /meta/version`
 - **Identity/config**: `GET /api/whoami`, `GET /api/my_config`, `GET /api/get_config`, `POST /api/set_config`, `POST /api/update_config`
+  Storage credential export requires an authenticated organization resolver. Local SQLite users can inspect routing with `reflexio status whoami` and configuration with `reflexio config show`. Remove obsolete `REFLEXIO_ALLOW_MY_CONFIG` assignments.
 - **Provenance**: `POST /api/get_learning_provenance`
 - **Publish/direct writes**: `POST /api/publish_interaction`, `POST /api/add_user_profile`, `POST /api/add_user_playbook`, `POST /api/add_agent_playbook`
 - **Retrieval**: `POST /api/get_requests`, `POST /api/get_interactions`, `GET /api/get_all_interactions`, `GET /api/learning_status`, `POST /api/get_profiles`, `GET /api/get_all_profiles`, `POST /api/get_user_playbooks`, `POST /api/get_agent_playbooks`, `POST /api/get_agent_success_evaluation_results`, `POST /api/get_retrieved_learning_evaluation_results`

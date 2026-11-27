@@ -348,9 +348,13 @@ installations keep their saved database target.
 uv run reflexio config show
 uv run reflexio config set --data '{"api_key_config": {"openai": "sk-..."}}'
 uv run reflexio config set --data @config.json
-uv run reflexio config storage                           # show storage backend info
+uv run reflexio config storage                           # inspect storage on an authenticated deployment
 uv run reflexio config upgrade-file old.json --output canonical.json  # explicit offline copy
 ```
+
+`config storage` requires an authenticated organization resolver. It exits
+with a nonzero status when export fails. For local SQLite, use `status whoami`
+for a masked routing summary or `config show` to inspect the saved configuration.
 
 The explicit file converter preserves the input and custom policy, writes a canonical
 copy with restrictive permissions, and does not load operator dotenv, create home
