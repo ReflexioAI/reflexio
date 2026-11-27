@@ -4,6 +4,7 @@ import sqlite3
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
 from threading import Event
 from typing import Literal
 from unittest.mock import patch
@@ -289,6 +290,41 @@ def test_future_lease_survives_migrate_then_is_retired_by_retention_without_reop
     assert store.delete_oldest_retention_target_rows(GRAPH, 1) == 4
 
 
+def test_retirement_rechecks_a_lease_renewed_after_read_probe(store, tmp_path):
+    job = seed(store, "running", 1)
+    store.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ? WHERE job_id = ?",
+        (int(time.time()) - 60, job.job_id),
+    )
+    store.conn.commit()
+    write_scope = store.commit_scope
+    expires_at = int(time.time()) + 3600
+
+    @contextmanager
+    def renew_before_admission():
+        with closing(sqlite3.connect(str(tmp_path / "owned.db"))) as other, other:
+            other.execute(
+                "UPDATE playbook_optimization_jobs SET lease_owner = 'renewed', "
+                "lease_expires_at = ? WHERE job_id = ?",
+                (expires_at, job.job_id),
+            )
+        with write_scope():
+            yield
+
+    with patch.object(
+        store, "commit_scope", side_effect=renew_before_admission
+    ) as write:
+        store._retire_unfinished_gepa_jobs()
+        write.assert_called_once_with()
+
+    row = store.conn.execute(
+        "SELECT status, lease_owner, lease_expires_at FROM playbook_optimization_jobs "
+        "WHERE job_id = ?",
+        (job.job_id,),
+    ).fetchone()
+    assert tuple(row) == ("running", "renewed", expires_at)
+
+
 def test_retirement_holds_the_writer_lock_so_no_claim_can_interleave(store, tmp_path):
     job = seed(store, "running", 1)
     store.conn.execute(
@@ -313,7 +349,9 @@ def test_retirement_holds_the_writer_lock_so_no_claim_can_interleave(store, tmp_
         return real_time()
 
     with patch("reflexio.server.services.storage.sqlite_storage._base.time") as clock:
-        clock.time.side_effect = probe
+        # Only the second clock read runs under the admitted writer lock.
+        reads = iter((real_time, probe))
+        clock.time.side_effect = lambda: next(reads)()
         store._retire_unfinished_gepa_jobs()
     other.close()
     assert outcomes == ["locked"]
