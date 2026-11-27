@@ -1,5 +1,8 @@
 """Every built provider request is admitted before consuming durable quota."""
 
+import json
+import math
+from copy import deepcopy
 from unittest.mock import Mock
 
 import pytest
@@ -10,6 +13,7 @@ from reflexio.server.llm.input_budget import (
     InputBudgetExceededError,
     declared_context_limits,
     extraction_request_guard,
+    measure_request_input_tokens,
 )
 
 
@@ -64,7 +68,7 @@ def test_schema_tools_margin_and_output_reserve_reject_before_quota(counter):
             True,
         )
     assert counter.call_args_list[0].kwargs["tools"] == tools
-    assert counter.call_count == 2
+    assert counter.call_count == 4
     reserve.assert_not_called()
 
 
@@ -445,15 +449,15 @@ def test_nonrejecting_measurement_uses_the_admission_counter(counter):
         tool_choice="auto",
         response_format=Output,
     )
-    assert measure_request_input_tokens(request) == 2400
+    assert measure_request_input_tokens(request) == 3600
     assert counter.call_args_list[0].kwargs["tools"] == request["tools"]
     assert counter.call_args_list[0].kwargs["tool_choice"] == "auto"
-    assert '"decision"' in counter.call_args_list[1].kwargs["text"]
+    assert '"decision"' in counter.call_args_list[3].kwargs["text"]
     with pytest.raises(InputBudgetExceededError):
         check_request_input_budget(request, context_limits={"test-model": 10000})
     assert (
         check_request_input_budget(request, context_limits={"test-model": 20000})
-        == 2400
+        == 3600
     )
 
 
@@ -488,3 +492,62 @@ def test_native_output_config_schema_counts_before_quota(counter):
         guard(request, 120, (), True)
     reserve.assert_not_called()
     assert any("text" in call.kwargs for call in counter.call_args_list)
+
+
+@pytest.mark.parametrize("nested", ["$defs", "anyOf"])
+def test_complete_tool_schema_growth_is_counted_before_quota(nested):
+    # The installed provider formatter ignores these nested schema forms. The
+    # transmitted schema still occupies context and cannot bypass admission.
+    schema = {
+        "type": "object",
+        "properties": {"evidence": {"$ref": "#/$defs/Witness"}},
+        "$defs": {"Witness": {"type": "string", "enum": ["EXCERPT_1"]}},
+    }
+    if nested == "anyOf":
+        schema = {"type": "object", "properties": {"evidence": {"anyOf": [schema]}}}
+    tools = [
+        {"type": "function", "function": {"name": "observe", "parameters": schema}}
+    ]
+    request = params(model="gpt-4o", max_tokens=100, tools=tools)
+    small = measure_request_input_tokens(request)
+    enlarged = deepcopy(request)
+    target = enlarged["tools"][0]["function"]["parameters"]
+    if nested == "anyOf":
+        target = target["properties"]["evidence"]["anyOf"][0]
+    target["$defs"]["Witness"]["enum"] = [f"EXCERPT_{i}" for i in range(2000)]
+    large = measure_request_input_tokens(enlarged)
+    assert large > small + 1000
+    reserve = Mock()
+    guard = extraction_request_guard(
+        context_limits={"gpt-4o": small + 101}, reserve_attempt=reserve
+    )
+    guard(request, 120, (), False)
+    with pytest.raises(InputBudgetExceededError):
+        guard(enlarged, 120, (), False)
+    assert reserve.call_count == 1
+
+
+def test_complete_tool_floor_preserves_larger_native_estimate(counter):
+    tools = [{"type": "function", "function": {"name": "observe"}}]
+    # Native provider framing can cost more than JSON. Keep the larger estimate.
+    counter.side_effect = [1000, 100, 200]
+    assert measure_request_input_tokens(params(tools=tools)) == math.ceil(1000 * 1.2)
+    assert json.loads(counter.call_args_list[1].kwargs["text"])["tools"] == tools
+
+
+def test_complete_tool_floor_keeps_named_choice_even_without_native_tool_format(
+    counter,
+):
+    choice = {"type": "function", "function": {"name": "observe"}}
+    counter.side_effect = [100, 2000, 100]
+    assert (
+        measure_request_input_tokens(
+            params(
+                tools=[{"type": "function", "function": {"name": "observe"}}],
+                tool_choice=choice,
+            )
+        )
+        == 2520
+    )
+    envelope = json.loads(counter.call_args_list[1].kwargs["text"])
+    assert envelope["tool_choice"] == choice

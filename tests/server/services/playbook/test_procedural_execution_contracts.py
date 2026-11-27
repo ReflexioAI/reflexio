@@ -5,6 +5,7 @@ from copy import deepcopy
 
 import litellm
 import pytest
+import yaml
 
 from reflexio.server.llm._litellm_types import ProviderRequestGuardError
 from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
@@ -89,7 +90,7 @@ def test_changed_effective_policy_holds_partial_window_before_cached_work_or_dis
     monkeypatch.setattr(client, "get_completion_request_contract", private_descriptor)
 
     def outage(params, timeout):
-        if "source_observations" in json.loads(params["messages"][1]["content"]):
+        if "source_observations" in yaml.safe_load(params["messages"][1]["content"]):
             calls.append(params)
             raise ProviderRequestGuardError("synthetic interruption after reader")
         return wire(params, timeout)

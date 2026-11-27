@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from reflexio.server.llm._litellm_types import (
     CompletionResult,
@@ -152,7 +153,31 @@ def _client(responses: list[CompletionResult]) -> tuple[StageClient, MagicMock]:
 
     def complete(**kwargs: Any) -> CompletionResult:
         kwargs["provider_request_guard"]({}, 240, (kwargs["model"],), False)
-        return next(pending)
+        response = next(pending)
+        if kwargs["model"] == "minimax/MiniMax-M3.1-Flash":
+            assert isinstance(response.value, ToolCallingChatResponse)
+            assert response.value.tool_calls is not None
+            members = [
+                {
+                    "id": item["id"],
+                    "name": item["function"]["name"],
+                    "arguments": json.loads(item["function"]["arguments"]),
+                }
+                for item in response.value.tool_calls
+            ]
+            if members[-1]["name"] != "finish_batch":
+                members.append(
+                    {
+                        "id": "done",
+                        "name": "finish_batch",
+                        "arguments": {
+                            "status": "complete",
+                            "reason": "Complete declarations.",
+                        },
+                    }
+                )
+            return _response(_call("return_procedural_batch", {"calls": members}))
+        return response
 
     native.generate_chat_response_with_provenance.side_effect = complete
     return StageClient(native, "minimax/MiniMax-M3"), native
@@ -226,7 +251,7 @@ def test_complete_selected_pipeline_uses_three_calls_and_exact_full_result() -> 
         and requests[1]["reasoning_effort"] == "low"
         and "reasoning_effort" not in requests[2]
     )
-    compiler_body = json.loads(requests[1]["messages"][1]["content"])
+    compiler_body = yaml.safe_load(requests[1]["messages"][1]["content"])
     assert compiler_body["source_observations"] == [
         {
             "topic": "Source-linked learning",
@@ -238,7 +263,7 @@ def test_complete_selected_pipeline_uses_three_calls_and_exact_full_result() -> 
         "Reader's untrusted proposed answer."
         not in requests[1]["messages"][1]["content"]
     )
-    review_body = json.loads(requests[2]["messages"][1]["content"])
+    review_body = yaml.safe_load(requests[2]["messages"][1]["content"])
     assert (
         review_body["result_review_units"][0]["resulting_record"]
         == receipt["rendered"]["W0"]

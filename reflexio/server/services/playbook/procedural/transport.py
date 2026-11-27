@@ -6,11 +6,13 @@ import json
 import time
 from collections.abc import Callable
 from copy import deepcopy
+from enum import Enum
 from functools import reduce
 from hashlib import sha256
 from operator import or_
 from typing import Annotated, Any, Literal, cast
 
+import yaml
 from pydantic import BaseModel, Field, JsonValue, ValidationError, create_model
 
 from reflexio.server.llm._litellm_text_generation import _uses_native_transport
@@ -26,6 +28,7 @@ from reflexio.server.llm.tools import (
     ToolLoopTurn,
 )
 
+from . import review
 from .models import ContractError, Finish, Model, Text
 
 MAX_CALLS = 6
@@ -45,6 +48,56 @@ def _request_contract_digest(contract: dict[str, Any]) -> str:
     except (TypeError, ValueError):
         raise ContractError("Procedural request contract is not hashable") from None
     return sha256(payload.encode()).hexdigest()
+
+
+class _EvidenceDumper(yaml.SafeDumper):
+    """Preserve source strings without JSON escaping or line folding."""
+
+
+def _evidence_string(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+    return dumper.represent_scalar(
+        "tag:yaml.org,2002:str",
+        value,
+        style='"' if "\x85" in value else "|" if "\n" in value else None,
+    )
+
+
+_EvidenceDumper.add_representer(str, _evidence_string)
+
+
+def _input_instructions(stage: str) -> str:
+    contract = ""
+    if stage != "source":
+        contract += (
+            "\nThe user payload is YAML data; block scalars retain verbatim text. "
+            "YAML anchors and aliases denote the same supplied value, not new evidence. "
+            "Returned function arguments remain JSON."
+        )
+    if stage == "review":
+        contract += (
+            "\nA resulting source_span.verbatim_concatenation denotes the exact ordered "
+            "concatenation of its parts: incumbent_source_span=P refers only to "
+            "source.existing[P].source_span; literal is exact additional text. "
+            "Read all referenced evidence as part of the full resulting provenance. "
+            "This representation does not change the resulting instruction or add evidence."
+        )
+    return contract
+
+
+def _input_content(stage: str, body: dict[str, Any]) -> str:
+    if stage == "source":
+        return json.dumps(body, ensure_ascii=False)
+    view = review.input_view(body) if stage == "review" else body
+    rendered = yaml.dump(
+        view,
+        Dumper=_EvidenceDumper,
+        allow_unicode=True,
+        sort_keys=False,
+        width=1_000_000,
+    )
+    if yaml.safe_load(rendered) != view:
+        raise ContractError("Procedural input encoding changed supplied evidence")
+    return rendered
 
 
 class IncompleteBatchError(ContractError):
@@ -121,6 +174,17 @@ def _single_call_schema(
 ) -> type[_ProceduralBatch]:
     """Carry the same typed declarations through a provider's one-tool turn."""
     members = []
+    # A shared enum becomes one $defs entry instead of repeating every offered
+    # source address in each declaration. Original models still validate output.
+    witness = (
+        Enum(
+            "OriginalSourceWitness",
+            {f"W{i}": choice for i, choice in enumerate(evidence_choices)},
+            type=str,
+        )
+        if evidence_choices
+        else None
+    )
     for name, original in {**models, "finish_batch": Finish}.items():
         arguments = original
         if evidence_choices is not None and "evidence" in original.model_fields:
@@ -129,7 +193,9 @@ def _single_call_schema(
             arguments = create_model(
                 "Bound" + original.__name__,
                 __base__=original,
-                evidence=(Text, Field(json_schema_extra=extra)),
+                evidence=(cast(Any, witness), ...)
+                if witness is not None
+                else (Text, Field(json_schema_extra=extra)),
             )
         members.append(
             create_model(
@@ -264,7 +330,9 @@ class StageClient:
                 (primary["model"], primary.get("custom_llm_provider")),
                 *[(model, None) for model in self.model_ladders[stage][1:]],
             ]
-            self.single_call[stage] = any(
+            self.single_call[stage] = (
+                stage == "maintain" and compiler == "minimax/MiniMax-M3.1-Flash"
+            ) or any(
                 _uses_native_transport(model, provider, kind)
                 for model, provider in routes
                 for kind in ("local-cli", "openclaw")
@@ -374,9 +442,13 @@ class StageClient:
                 "with finish_batch(status=complete), including for NOOP. If unable to finish, "
                 "end with finish_batch(status=incomplete). The wrapper executes nothing."
             )
+        contract += _input_instructions(stage)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": prompt + "\n" + contract},
-            {"role": "user", "content": json.dumps(body, ensure_ascii=False)},
+            {
+                "role": "user",
+                "content": _input_content(stage, body),
+            },
         ]
         for attempt in range(min(1, remaining - 1) + 1):
             self.calls += 1

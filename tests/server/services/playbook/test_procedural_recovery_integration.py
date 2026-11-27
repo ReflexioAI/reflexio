@@ -5,6 +5,7 @@ from copy import deepcopy
 
 import litellm
 import pytest
+import yaml
 
 from reflexio.server import metering_events
 from reflexio.server.services.extraction.input_recovery import (
@@ -49,7 +50,7 @@ def test_operator_retirement_preserves_terminal_failure_and_unblocks_future_wind
     valid_new_operation = False
 
     def terminal_then_future(params, timeout):
-        body = json.loads(params["messages"][1]["content"])
+        body = yaml.safe_load(params["messages"][1]["content"])
         if "source_observations" in body and not valid_new_operation:
             calls.append(params)
             arguments = (
@@ -191,3 +192,60 @@ def test_operator_retirement_preserves_terminal_failure_and_unblocks_future_wind
         legitimate.generation_request_snapshot["procedural_execution"]["physical_calls"]
         == 3
     )
+
+
+def test_compiler_input_hold_rearms_without_rerolling_reader_or_refunding_attempts(
+    pipeline, monkeypatch
+):
+    from reflexio.server.llm import input_budget
+    from reflexio.server.services.playbook.procedural import native
+    from tests.server.services.playbook.test_procedural_window_integration import setup
+
+    _, storage, window, token, client, calls, _ = setup(pipeline, monkeypatch)
+    worker = pipeline[1]
+    storage.release_user_extraction(window.user_id, token)
+    monkeypatch.setattr(
+        "reflexio.lib._base.create_generation_litellm_client", lambda _: client
+    )
+    original_guard = input_budget.check_request_input_budget
+    repaired = False
+
+    def capacity(request, **kwargs):
+        original_guard(request, **kwargs)
+        if not repaired and "source_observations" in yaml.safe_load(
+            request["messages"][1]["content"]
+        ):
+            raise input_budget.InputBudgetExceededError(
+                "synthetic pre-dispatch compiler hold"
+            )
+
+    monkeypatch.setattr(
+        "reflexio.server.services.extraction.overflow_coordinator.check_request_input_budget",
+        capacity,
+    )
+    _drain_once(worker, storage)
+    held = storage.get_agent_run(f"window:{window.window_id}")
+    assert _cursor(storage)["retry_at"] == float("inf")
+    assert _cursor(storage)["last_error"] == "input_budget_exceeded"
+    assert len(calls) == 1
+    frozen = deepcopy(held.generation_request_snapshot["overflow"])
+    assert len(frozen["attempts"]) == 1
+    reader = deepcopy(frozen["checkpoint"][native.KEY]["reader_steps"])
+    receipt = plan_input_budget_recovery(storage, window.window_id, action="rearm")
+    assert receipt["recoverable"]
+    repaired = True
+    apply_input_budget_recovery(storage, receipt)
+    after_rearm = storage.get_agent_run(held.id)
+    assert (
+        after_rearm.generation_request_snapshot["overflow"]["attempts"]
+        == frozen["attempts"]
+    )
+    for _ in range(3):
+        _drain_once(worker, storage)
+    completed = storage.get_agent_run(held.id)
+    final = completed.generation_request_snapshot["overflow"]
+    assert len(calls) == len(final["attempts"]) == 3
+    assert final["checkpoint"][native.KEY]["reader_steps"] == reader
+    assert _cursor(storage)["completed_seq"] == window.end_seq
+    assert _cursor(storage)["window_id"] is None
+    assert len(storage.get_user_playbooks(user_id="u", agent_version="v")) == 1
