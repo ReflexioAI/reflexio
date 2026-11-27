@@ -34,6 +34,25 @@ def request(
     return asyncio.run(run())
 
 
+def test_local_key_does_not_grant_storage_credential_export(monkeypatch):
+    monkeypatch.setenv("REFLEXIO_ALLOW_MY_CONFIG", "true")
+    for headers in ({}, {"Authorization": "Bearer wrong"}):
+        response = request(
+            monkeypatch, key="synthetic-key", path="/api/my_config", headers=headers
+        )
+        assert response.status_code == 401
+
+    response = request(
+        monkeypatch,
+        key="synthetic-key",
+        path="/api/my_config",
+        headers={"Authorization": "Bearer synthetic-key"},
+    )
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    assert "storage_config" not in response.json()
+
+
 @pytest.mark.parametrize("peer,host", [("127.0.0.1", "localhost"), ("::1", "[::1]")])
 def test_loopback_can_use_standalone_routes_without_a_key(monkeypatch, peer, host):
     response = request(monkeypatch, peer=peer, host=host)

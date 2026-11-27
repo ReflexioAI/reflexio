@@ -23,7 +23,6 @@ from reflexio.models.api_schema.service_schemas import (
     WhoamiResponse,
 )
 from reflexio.server.cache.reflexio_cache import get_reflexio
-from reflexio.server.env_utils import env_bool
 
 logger = logging.getLogger(__name__)
 
@@ -70,32 +69,11 @@ def whoami(org_id: str) -> WhoamiResponse:
     )
 
 
-# Guard the my_config endpoint on OS/self-host so it isn't exposed by
-# default on unauthenticated localhost deployments. The FastAPI layer
-# (``reflexio.server.api.create_app``) now owns the enterprise opt-in:
-# when a custom ``get_org_id`` is provided together with ``require_auth``,
-# it sets ``app.state.my_config_enabled = True``. This helper keeps the
-# OS-only ``REFLEXIO_ALLOW_MY_CONFIG`` env var as a fallback for self-hosts.
-_ALLOW_MY_CONFIG_ENV_VAR = "REFLEXIO_ALLOW_MY_CONFIG"
-
-
-def my_config_allowed() -> bool:
-    """Return whether ``GET /api/my_config`` is enabled via the env var.
-
-    Returns True when ``REFLEXIO_ALLOW_MY_CONFIG=true`` is set
-    (OS self-host opt-in). App-state driven enablement lives in the
-    FastAPI endpoint wrapper in ``reflexio.server.api`` and does not
-    flow through this helper.
-    """
-    return env_bool(_ALLOW_MY_CONFIG_ENV_VAR, default=False)
-
-
 def my_config(org_id: str) -> MyConfigResponse:
     """Return the caller's raw storage configuration.
 
-    This is the "download my creds" endpoint. On OS/self-host it is
-    guarded by ``REFLEXIO_ALLOW_MY_CONFIG``; on enterprise the FastAPI
-    route wraps it in Bearer-token auth and sets ``app.state.my_config_enabled``.
+    The HTTP route grants access only through the host's authenticated
+    organization resolver.
 
     Args:
         org_id: Organization identifier.

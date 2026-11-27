@@ -11,6 +11,7 @@ import typer
 
 from reflexio.cli.errors import (
     CONNECTION_ERRORS,
+    EXIT_GENERAL,
     EXIT_NETWORK,
     EXIT_VALIDATION,
     CliError,
@@ -497,7 +498,8 @@ def storage(
 ) -> None:
     """Show the storage credentials the server has on file for your org.
 
-    Calls ``GET /api/my_config``. The default output masks credentials
+    Requires an authenticated organization host. Use ``reflexio status whoami``
+    for local SQLite routing. The default output masks credentials
     so it's safe to paste into bug reports; pass ``--reveal`` to print
     the unmasked values when copying to a new machine.
 
@@ -515,7 +517,7 @@ def storage(
             render(resp, json_mode=True)
         else:
             print_error(resp.message or "No storage configured for this org")
-        return
+        raise typer.Exit(EXIT_GENERAL)
 
     payload: dict = dict(resp.storage_config)
 

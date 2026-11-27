@@ -533,9 +533,12 @@ def test_whoami_my_config_and_set_config(live):
     assert who.storage_type == "sqlite"
 
     mine = live.client.get_my_config()
-    assert isinstance(mine.success, bool)
+    assert mine.success is False
+    assert mine.storage_config is None
 
     current = live.client.get_config()
+    assert current.storage_config is not None
+    assert current.storage_config.storage_type == "sqlite"
     # A ConfigResponse carries read-only extras; set_config drops them.
     assert live.client.set_config(current)["success"] is True
     plain = Config.model_validate(current.model_dump(mode="python"), extra="ignore")

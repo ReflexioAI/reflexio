@@ -78,27 +78,14 @@ def my_config_endpoint(
     request: Request,
     org_id: str = Depends(default_get_org_id),
 ) -> MyConfigResponse:
-    """Return raw storage credentials for the caller's org.
-
-    Enablement is controlled by two independent opt-ins so the endpoint
-    is closed by default on unauthenticated self-host deployments:
-
-    - ``request.app.state.my_config_enabled`` — set to True by
-      :func:`create_app` when the host wires in a Bearer-auth
-      ``get_org_id`` dependency, so enterprise callers are always
-      authenticated before they reach this route.
-    - ``REFLEXIO_ALLOW_MY_CONFIG=true`` — OS self-host escape hatch.
-
-    If neither is set we return a closed response instead of a 404 so
-    the CLI can display an actionable hint.
-    """
-    app_state_enabled = bool(getattr(request.app.state, "my_config_enabled", False))
-    if not (app_state_enabled or account_api.my_config_allowed()):
+    """Return storage settings for the authenticated organization."""
+    if not getattr(request.app.state, "my_config_enabled", False):
         return MyConfigResponse(
             success=False,
             message=(
-                "GET /api/my_config is disabled. Set "
-                "REFLEXIO_ALLOW_MY_CONFIG=true to enable."
+                "Storage credential export is disabled without an authenticated "
+                "organization resolver. For local SQLite routing, use "
+                "reflexio status whoami."
             ),
         )
     return account_api.my_config(org_id=org_id)
