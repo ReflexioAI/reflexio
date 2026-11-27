@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import litellm
 import pytest
+import yaml
 
 from reflexio.models.config_schema import UserPlaybookExtractorConfig
 from reflexio.server.llm.input_budget import ExtractionInputIntegrityError
@@ -71,7 +72,7 @@ def setup(pipeline, monkeypatch, *, retire=False, change_before_commit=None):
     def wire(params, _timeout):
         calls.append(params)
         names = {tool["function"]["name"] for tool in params["tools"]}
-        body = json.loads(params["messages"][1]["content"])
+        body = yaml.safe_load(params["messages"][1]["content"])
         if "record_observation" in names:
             evidence = body["sources"][0]["segments"][0]["excerpts"][0]["id"]
             name, arguments = (
@@ -82,7 +83,7 @@ def setup(pipeline, monkeypatch, *, retire=False, change_before_commit=None):
                     "evidence": evidence,
                 },
             )
-        elif "create_procedure" in names:
+        elif "create_procedure" in names or "source_observations" in body:
             evidence = body["source_observations"][0]["evidence"]
             if retire:
                 name, arguments = (
@@ -129,6 +130,21 @@ def setup(pipeline, monkeypatch, *, retire=False, change_before_commit=None):
             )
         else:
             raise AssertionError(f"Retired model stage invoked: {names}")
+        if "return_procedural_batch" in names:
+            arguments = {
+                "calls": [
+                    {"id": "entry", "name": name, "arguments": arguments},
+                    {
+                        "id": "done",
+                        "name": "finish_batch",
+                        "arguments": {
+                            "status": "complete",
+                            "reason": "Complete declaration batch.",
+                        },
+                    },
+                ]
+            }
+            name = "return_procedural_batch"
         return litellm.ModelResponse(
             model=params["model"],
             choices=[
@@ -316,7 +332,7 @@ def cli_setup(pipeline, monkeypatch, tmp_path):
         calls.append(params)
         assert params["model"] == model
         assert {item["function"]["name"] for item in params["tools"]} == {BATCH_TOOL}
-        body = json.loads(params["messages"][1]["content"])
+        body = yaml.safe_load(params["messages"][1]["content"])
         if "result_review_units" in body:
             name, arguments = (
                 "review_result",
@@ -627,7 +643,7 @@ def test_cli_partial_execution_resumes_reader_and_preserves_physical_allowance(
 
     def outage(params, timeout):
         nonlocal interrupted
-        body = json.loads(params["messages"][1]["content"])
+        body = yaml.safe_load(params["messages"][1]["content"])
         if "source_observations" in body and not interrupted:
             interrupted = True
             calls.append(params)
@@ -658,9 +674,9 @@ def test_cli_partial_execution_resumes_reader_and_preserves_physical_allowance(
                 params
                 for params in calls
                 if "source_observations"
-                not in json.loads(params["messages"][1]["content"])
+                not in yaml.safe_load(params["messages"][1]["content"])
                 and "result_review_units"
-                not in json.loads(params["messages"][1]["content"])
+                not in yaml.safe_load(params["messages"][1]["content"])
             ]
         )
         == 1
@@ -678,7 +694,7 @@ def test_cli_partial_source_history_or_profile_change_holds_before_redraw(
     )
 
     def outage(params, timeout):
-        if "source_observations" in json.loads(params["messages"][1]["content"]):
+        if "source_observations" in yaml.safe_load(params["messages"][1]["content"]):
             calls.append(params)
             raise ProviderRequestGuardError("synthetic suspension")
         return wire(params, timeout)
@@ -721,7 +737,7 @@ def test_cli_invalid_terminal_output_is_not_rerolled_by_worker_retry(
     )
 
     def malformed(params, timeout):
-        if "source_observations" in json.loads(params["messages"][1]["content"]):
+        if "source_observations" in yaml.safe_load(params["messages"][1]["content"]):
             calls.append(params)
             return litellm.ModelResponse(
                 model=params["model"],
@@ -761,7 +777,7 @@ def test_cli_physical_limit_cannot_reset_across_six_worker_turns(
     )
 
     def outage(params, timeout):
-        if "source_observations" in json.loads(params["messages"][1]["content"]):
+        if "source_observations" in yaml.safe_load(params["messages"][1]["content"]):
             calls.append(params)
             raise ProviderRequestGuardError("synthetic suspension")
         return wire(params, timeout)
@@ -797,7 +813,7 @@ def test_cli_checkpoint_rejects_stale_claim_and_checkpoint_revision(
     )
 
     def outage(params, timeout):
-        if "source_observations" in json.loads(params["messages"][1]["content"]):
+        if "source_observations" in yaml.safe_load(params["messages"][1]["content"]):
             calls.append(params)
             raise ProviderRequestGuardError("synthetic suspension")
         return wire(params, timeout)
@@ -870,7 +886,7 @@ def test_mixed_transport_resume_and_ack_keep_cumulative_usage_exactly_once(
         calls.append(params)
         assert params["model"] == "gpt-4o-mini"
         assert {item["function"]["name"] for item in params["tools"]} == {BATCH_TOOL}
-        body = json.loads(params["messages"][1]["content"])
+        body = yaml.safe_load(params["messages"][1]["content"])
         if "result_review_units" in body:
             name = "review_result"
             arguments = {

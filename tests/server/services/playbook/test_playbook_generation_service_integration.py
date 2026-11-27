@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import litellm
 import pytest
+import yaml
 
 pytestmark = pytest.mark.integration
 
@@ -320,7 +321,7 @@ def _setup_procedural_wire(service, *, noop=False):
 
     def wire(params, _timeout):
         calls.append(params)
-        body = json.loads(params["messages"][1]["content"])
+        body = yaml.safe_load(params["messages"][1]["content"])
         names = {tool["function"]["name"] for tool in params["tools"]}
         if "record_observation" in names:
             if noop:
@@ -338,7 +339,7 @@ def _setup_procedural_wire(service, *, noop=False):
                         "observation": "The user accepted the assistance.",
                     },
                 )
-        elif "create_procedure" in names:
+        elif "create_procedure" in names or "source_observations" in body:
             name, value = (
                 "create_procedure",
                 {
@@ -365,6 +366,21 @@ def _setup_procedural_wire(service, *, noop=False):
             )
         else:
             raise AssertionError(f"Unexpected retired semantic call: {names}")
+        if "return_procedural_batch" in names:
+            value = {
+                "calls": [
+                    {"id": "entry", "name": name, "arguments": value},
+                    {
+                        "id": "done",
+                        "name": "finish_batch",
+                        "arguments": {
+                            "status": "complete",
+                            "reason": "Complete declaration batch.",
+                        },
+                    },
+                ]
+            }
+            name = "return_procedural_batch"
         return litellm.ModelResponse(
             model=params["model"],
             choices=[

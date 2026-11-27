@@ -44,6 +44,38 @@ a write plan even when no new entries exist.
 | `continuation.py` | Inline stage reuse through the storage-owned execution checkpoint |
 | `transfer-provenance.json` | Selected source hashes and declared port adaptations |
 
+## Complete request presentation and recovery
+
+The native MiniMax reader keeps its original JSON request. The MiniMax Flash
+compiler uses the existing typed one-tool batch carrier, with one shared witness
+enum; original declaration models and exact offered-witness membership still
+validate every returned item. Other native compiler profiles retain their existing
+carrier. Compiler and reviewer inputs use safe YAML block strings to avoid JSON
+escaping overhead. Returned function arguments remain JSON. Code verifies the
+entire serialized input roundtrip, including Unicode and newline bytes.
+
+Reviewer wire views may represent a resulting `source_span` as an ordered
+`verbatim_concatenation`: local `incumbent_source_span` references identify only
+supplied replacement incumbents, and `literal` parts preserve exact separators
+and newly appended evidence. Code expands the complete view and compares it with
+the original logical review before dispatch. Unproven prefixes remain raw.
+Instructions, triggers, resources, evidence IDs and publication metadata are not
+removed or rewritten. The retained journal and native write plan keep their
+original full strings and hashes; the presentation happens after cached-step
+lookup, so a completed reader can be reused on fenced recovery.
+
+Admission counts the actual full request on every repair and fallback. Its schema
+estimate is at least the complete serialized tool/choice envelope: moving witness
+enums into `$defs` does not make them free. Existing token margins, output caps,
+context limits and physical attempt ceilings remain unchanged. Source preparation
+fitting alone does not guarantee a later compiler or reviewer fits. A genuinely
+oversized request still holds before quota reservation and dispatch. Use the
+existing input-recovery preview/apply owner to rearm a repaired hold; preserve
+completed work and all consumed attempts. Never clear a checkpoint or retire a
+new window merely to work around capacity.
+Code-owned presentation mismatches use the existing input-integrity retry owner;
+they are not cached as terminal model-contract failures.
+
 ## Source and retrieval adaptation
 
 The native consumer receives the complete admitted single textual source chunk,

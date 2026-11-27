@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import litellm
 import pytest
+import yaml
 
 from reflexio.models.api_schema.domain.entities import Status
 from reflexio.models.config_schema import LLMConfig
@@ -519,7 +520,7 @@ def test_manual_partial_provider_failure_is_recorded_not_claimed_as_automatic_re
     wire = client._completion_with_hard_timeout
 
     def outage(params, timeout):
-        if "source_observations" in json.loads(params["messages"][1]["content"]):
+        if "source_observations" in yaml.safe_load(params["messages"][1]["content"]):
             calls.append(params)
             raise ProviderRequestGuardError("synthetic manual provider interruption")
         return wire(params, timeout)

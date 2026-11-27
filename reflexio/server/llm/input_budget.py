@@ -271,6 +271,22 @@ def measure_request_input_tokens(params: Mapping[str, Any]) -> int:
             tools=params.get("tools"),
             tool_choice=params.get("tool_choice"),
         )
+        if tools := params.get("tools"):
+            # LiteLLM's function formatter omits nested $defs/$ref and unions.
+            # Keep its provider-specific estimate, but never make a complete
+            # transmitted schema cheaper merely by moving fields into $defs.
+            tool_input = {"tools": tools}
+            if params.get("tool_choice") is not None:
+                tool_input["tool_choice"] = params["tool_choice"]
+            complete_tools = litellm.token_counter(
+                model=model,
+                text=json.dumps(tool_input, ensure_ascii=False, separators=(",", ":")),
+            )
+            messages_only = litellm.token_counter(
+                model=model,
+                messages=messages,
+            )
+            tokens = max(tokens, messages_only + complete_tools)
         response_format = params.get("response_format")
         # Native Claude normalization moves the schema to this GA field.
         # Count the actual built form, not only the OpenAI-style spelling.
