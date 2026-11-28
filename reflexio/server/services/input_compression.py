@@ -489,12 +489,15 @@ def _parent_wire_tokens(
 def _fragments(
     sources: Sequence[EvidenceSource],
     count_tokens: Callable[[str], int] = compression_tokens,
+    *,
+    check_progress: Callable[[], None] = lambda: None,
 ) -> list[EvidenceSource]:
     """Retain every character and original offsets, including a giant tool result."""
     result = []
     for source in sources:
         start = 0
         while start < len(source.text):
+            check_progress()
             low, high, end = start + 1, min(len(source.text), start + 4096), start
             while low <= high:
                 middle = (low + high) // 2
@@ -522,6 +525,8 @@ def _sections(
     budget: CompressionBudget,
     request_tokens: Callable[[list[EvidencePacket]], int],
     count_tokens: Callable[[str], int] = compression_tokens,
+    *,
+    check_progress: Callable[[], None] = lambda: None,
 ) -> list[EvidencePacket]:
     """Pack actual serialized metadata/text and reject before spending calls."""
     sections: list[EvidencePacket] = []
@@ -534,6 +539,7 @@ def _sections(
         )
 
     for position, fragment in enumerate(fragments, 1):
+        check_progress()
         candidate = EvidencePacket(evidence=[*current, fragment])
         if exceeds_capacity(candidate):
             if not current:
@@ -872,14 +878,17 @@ def plan_compression_input(
     estimate_output: Callable[[EvidencePacket], int] | None = None,
     response_schema: Mapping[str, Any] | None = None,
     required_speakers: Sequence[str] = (),
+    check_progress: Callable[[], None] = lambda: None,
 ) -> CompressionPlan:
-    """Freeze exact section geometry without model, cache or storage access.
+    """Freeze exact section geometry without model calls or cache access.
 
     Execution uses the same prepared sources, messages and rendered-size rules.
     ``output_contract`` must identify the caller's pure output renderer and
     estimator, as for ``compress_input``. Keep their behavior fixed while using
     this transient plan. Its witness binds scope, source, model, schema, budgets,
     output contract and ordered sections, without exposing raw text.
+    A caller may check its work ownership during planning. The callback does
+    not enter the witness or affect the plan's contents.
     """
     started = time.monotonic()
     # Freeze caller-owned containers before callbacks or later execution.
@@ -951,7 +960,7 @@ def plan_compression_input(
     count_tokens = ExactTokenCounts(
         compression_tokens, pattern=tiktoken.get_encoding("cl100k_base")._pat_str
     )
-    fragments = _fragments(sources, count_tokens)
+    fragments = _fragments(sources, count_tokens, check_progress=check_progress)
     if not fragments or measure_output(EvidencePacket()) > budget.output_tokens:
         raise CompressionError(
             "Source metadata or fixed consumer rendering exceeds the output budget"
@@ -1028,7 +1037,9 @@ def plan_compression_input(
             count_tokens,
         )
 
-    sections = _sections(fragments, budget, request_tokens, count_tokens)
+    sections = _sections(
+        fragments, budget, request_tokens, count_tokens, check_progress=check_progress
+    )
     section_digests = tuple(
         _digest(section.model_dump(mode="json")) for section in sections
     )

@@ -211,12 +211,14 @@ def plan_with_client(
     output_contract: str = "packet-json-v1",
     estimate_output: Callable[[EvidencePacket], int] | None = None,
     required_speakers: Sequence[str] = (),
+    check_progress: Callable[[], None] = lambda: None,
 ) -> ClientCompressionPlan:
     """Prepare and price actual initial native requests without provider/cache I/O.
 
     Context declarations, model/route/policy, schema and output reservation bind
     the new witness. Rebuild and compare it before resuming an admitted parent.
-    Planning observes no usage and invokes no lease/attempt callbacks.
+    Planning observes no usage. Durable callers can check work ownership
+    during planning without reserving a provider call.
     """
     preparation_started = time.monotonic()
     context_limits = dict(context_limits)
@@ -288,12 +290,14 @@ def plan_with_client(
         estimate_output=estimate_output,
         response_schema=_ReferenceSelection.model_json_schema(),
         required_speakers=required_speakers,
+        check_progress=check_progress,
     )
 
     def check_leaf_requests() -> tuple[tuple[str, int], ...]:
         checked: list[tuple[str, int]] = []
 
         def check_messages(messages: list[dict[str, str]]) -> None:
+            check_progress()
             params = client._build_completion_params(
                 messages=messages, **request_options()
             )[0]
