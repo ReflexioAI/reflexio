@@ -237,6 +237,9 @@ def test_deadline_before_admission_never_reads_key_or_constructs_client(
         raise search_runtime.SearchDeadlineError()
 
     monkeypatch.setattr(search_runtime, "checkpoint", expired)
+    monkeypatch.setattr(
+        jc, "_judge_key", lambda: pytest.fail("expired call read the key")
+    )
     with pytest.raises(search_runtime.SearchDeadlineError):
         jc.call_jev(PAYLOAD)
     assert not wire["requests"] and not wire["constructors"]

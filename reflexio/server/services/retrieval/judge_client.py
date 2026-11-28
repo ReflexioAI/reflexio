@@ -151,10 +151,10 @@ def call_jev(payload: dict) -> dict:
     releases ownership only after the physical HTTP call has finished.
     """
     deadline = monotonic() + _ALLOWANCE
+    _remaining(deadline)
     key = _judge_key()
     if not key:
         raise ReadinessUnavailableError("Search judge is disabled")
-    _remaining(deadline)
     if not isinstance(payload, dict) or payload.get("model") != _MODEL:
         raise ReadinessUnavailableError("Search judge requires model jev-1.14.0")
     try:

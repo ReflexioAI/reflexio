@@ -84,7 +84,11 @@ def test_daemon_mode_recycles_worker_after_max_requests(tmp_path: Path) -> None:
             "0",
         ],
         cwd=tmp_path,
-        env={**os.environ, "PYTHON_DOTENV_DISABLED": "1"},
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            "PYTHON_DOTENV_DISABLED": "1",
+        },
     )
     try:
         url = f"http://127.0.0.1:{port}/healthz"

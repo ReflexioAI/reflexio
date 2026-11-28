@@ -109,7 +109,8 @@ def test_judge_settings_in_developer_dotenv_do_not_leak(tmp_path: Path, legacy: 
     project = Path(__file__).resolve().parents[1]
     developer_env = tmp_path / ".env"
     developer_contents = (
-        "REFLEXIO_SEARCH_JUDGE=off\nOPENAI_API_KEY=fixture-credential\n"
+        ("REFLEXIO_SEARCH_JUDGE=off\n" if legacy else "")
+        + "REFLEXIO_SEARCH_JUDGE_API_KEY=fixture-judge\nOPENAI_API_KEY=fixture-credential\n"
     )
     developer_env.write_text(developer_contents)
     env = os.environ.copy()
@@ -131,6 +132,7 @@ sys.path.insert(0, str(project))
 runpy.run_path(str(project / 'tests/conftest.py'))
 assert os.environ.get("OPENAI_API_KEY") == "fixture-credential"
 assert "REFLEXIO_SEARCH_JUDGE" not in os.environ
+assert "REFLEXIO_SEARCH_JUDGE_API_KEY" not in os.environ
 from reflexio.cli.env_loader import _load_dotenv_pruned, load_reflexio_env
 load_reflexio_env()
 assert "REFLEXIO_SEARCH_JUDGE_API_KEY" not in os.environ
