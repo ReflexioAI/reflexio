@@ -410,7 +410,7 @@ class _FakeOpenclaw:
         monkeypatch.setattr(
             setup_cmd.shutil,
             "which",
-            lambda name: f"/usr/bin/{name}" if name in binaries else None,
+            lambda name, **_kwargs: f"/usr/bin/{name}" if name in binaries else None,
         )
         monkeypatch.setattr(setup_cmd.subprocess, "run", self)
 
@@ -669,6 +669,9 @@ class TestOpenclawUninstall:
             calls.append(environment)
             raise FileNotFoundError
 
+        monkeypatch.setattr(
+            setup_cmd.shutil, "which", lambda _name, **_kwargs: "/fixture/missing"
+        )
         monkeypatch.setattr(setup_cmd, "_openclaw_run", failed_launch)
         result = cli("openclaw", "--uninstall", input="y\n")
 
@@ -690,7 +693,7 @@ class TestOpenclawUninstall:
         result = cli("openclaw", "--uninstall", input="y\n")
         assert result.exit_code == 0, result.output
         assert (
-            "openclaw CLI not found in REFLEXIO_OPENCLAW_EXECUTABLE or PATH"
+            "openclaw CLI not found on PATH or at the saved legacy location"
             in result.output
         )
         assert fake.calls == []

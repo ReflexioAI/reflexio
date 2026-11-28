@@ -842,16 +842,13 @@ def _uninstall_openclaw(env_path: Path | None = None, purge: bool = False) -> No
     child_env = {
         key: value
         for key, value in saved.items()
-        if key.startswith("OPENCLAW_") and value is not None
+        if (key == "PATH" or key.startswith("OPENCLAW_")) and value is not None
     }
     child_env.update(os.environ)
     for key in _OPENCLAW_ENV_KEYS:
         child_env.pop(key, None)
-    cli = (
-        os.environ.get(OPENCLAW_EXECUTABLE_ENV)
-        or saved.get(OPENCLAW_EXECUTABLE_ENV)
-        or saved.get(_RETIRED_OPENCLAW_PATH)
-        or shutil.which("openclaw")
+    cli = shutil.which("openclaw", path=child_env.get("PATH", os.defpath)) or saved.get(
+        _RETIRED_OPENCLAW_PATH
     )
     removed = False
     if cli:
@@ -874,7 +871,7 @@ def _uninstall_openclaw(env_path: Path | None = None, purge: bool = False) -> No
             typer.echo("Warning: could not verify removal from OpenClaw.")
     else:
         typer.echo(
-            f"Warning: openclaw CLI not found in {OPENCLAW_EXECUTABLE_ENV} or PATH, "
+            "Warning: openclaw CLI not found on PATH or at the saved legacy location, "
             "skipping plugin removal"
         )
 

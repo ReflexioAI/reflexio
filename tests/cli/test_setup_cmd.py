@@ -856,21 +856,29 @@ class TestOpenclawSetup:
         assert "rk-1" not in out
 
     @pytest.mark.parametrize(
-        "locator", ["REFLEXIO_OPENCLAW_EXECUTABLE", "OPENCLAW_BIN"]
+        ("plugin_path", "expected"),
+        [(None, "/opt/legacy/openclaw"), ("/host/bin/openclaw", "/host/bin/openclaw")],
     )
-    def test_uninstall_openclaw_reuses_saved_locator(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locator: str
+    def test_uninstall_uses_plugin_location_not_generation_binding(
+        self, tmp_path, monkeypatch, plugin_path, expected
     ) -> None:
-        """Uninstall removes the plugin and the legacy env keys."""
         from reflexio.cli.commands import setup_cmd
 
         env_path = tmp_path / ".env"
         env_path.write_text(
-            f'export {locator} = "/opt/openclaw/bin/openclaw"\n'
+            'REFLEXIO_OPENCLAW_EXECUTABLE="/wrapper/openclaw"\n'
+            'export OPENCLAW_BIN = "/opt/legacy/openclaw"\n'
             'OPENCLAW_SMART_USE_LOCAL_CLI = "1"\n'
+            "PATH=/host/bin\n"
         )
         monkeypatch.setattr(setup_cmd.typer, "confirm", lambda *_a, **_kw: True)
-        monkeypatch.setattr(setup_cmd.shutil, "which", lambda _: None)
+        monkeypatch.delenv("PATH", raising=False)
+
+        def which(_name, *, path):
+            assert path == "/host/bin"
+            return plugin_path
+
+        monkeypatch.setattr(setup_cmd.shutil, "which", which)
 
         calls: list[list[str]] = []
 
@@ -889,8 +897,8 @@ class TestOpenclawSetup:
         setup_cmd._uninstall_openclaw(env_path=env_path, purge=False)
 
         assert calls
-        assert all(call[0] == "/opt/openclaw/bin/openclaw" for call in calls)
-        assert env_path.read_text() == ""
+        assert all(call[0] == expected for call in calls)
+        assert env_path.read_text() == "PATH=/host/bin\n"
 
 
 class TestEnsureUserEnvForSetup:
