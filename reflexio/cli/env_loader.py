@@ -12,13 +12,13 @@ import os
 import re
 import secrets
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Mapping
 from io import StringIO
 from pathlib import Path
 
 _logger = logging.getLogger(__name__)
 
-from dotenv.main import DotEnv
+from dotenv.main import DotEnv, resolve_variables
 
 from reflexio.native_compute import TOKENIZER_ENV_OUTPUTS
 from reflexio.removed_env import reject_removed_env
@@ -234,13 +234,21 @@ def _dotenv_disabled() -> bool:
     }
 
 
-def _validate_launch_values(
-    values: MutableMapping[str, str] | MutableMapping[str, str | None],
-) -> None:
-    """Discard the shipped inactive judge default before runtime validation."""
-    if values.get("REFLEXIO_SEARCH_JUDGE") == "off":
-        values.pop("REFLEXIO_SEARCH_JUDGE")
+_RETIRED_JUDGE_MODE = "REFLEXIO_SEARCH_JUDGE"
+
+
+def _validate_launch_values(values: Mapping[str, str | None]) -> None:
+    """The former shipped inactive default is safe to discard during launch."""
+    if values.get(_RETIRED_JUDGE_MODE) == "off":
+        values = {
+            key: value for key, value in values.items() if key != _RETIRED_JUDGE_MODE
+        }
     reject_removed_env(values)
+
+
+def _discard_inactive_judge_default() -> None:
+    if os.environ.get(_RETIRED_JUDGE_MODE) == "off":
+        os.environ.pop(_RETIRED_JUDGE_MODE)
 
 
 def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> None:
@@ -268,18 +276,22 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
     # configuration, so neither validate nor prune their unrelated assignments.
     if _dotenv_disabled():
         return
-    # Resolve the original source, including references to derived names, but
-    # never publish those outputs even transiently during an override reload.
-    file_vals = DotEnv(
+    # Validate the literal assignments before interpolation, then resolve from
+    # the original source without passing the retired default into runtime.
+    raw = DotEnv(
         dotenv_path=None if isinstance(path, StringIO) else path,
         stream=StringIO(path.getvalue()) if isinstance(path, StringIO) else None,
-        override=override,
+        interpolate=False,
     ).dict()
-    _validate_launch_values(file_vals)
-    for key, value in file_vals.items():
+    _validate_launch_values(raw)
+    for key, value in resolve_variables(raw.items(), override=override).items():
         # The launch environment selects the user-level file. Assignments in
         # the file cannot retarget later loads, setup writes, or child workers.
-        if key == "REFLEXIO_ENV_FILE" or key in TOKENIZER_ENV_OUTPUTS or value is None:
+        if (
+            key in {"REFLEXIO_ENV_FILE", _RETIRED_JUDGE_MODE}
+            or key in TOKENIZER_ENV_OUTPUTS
+            or value is None
+        ):
             continue
         if override or key not in os.environ:
             os.environ[key] = value
@@ -309,6 +321,7 @@ def load_existing_reflexio_env(
         content = _find_env_example(package_data_module)
         if content is not None:
             _load_dotenv_pruned(StringIO(content))
+    _discard_inactive_judge_default()
     return existing
 
 
@@ -338,12 +351,14 @@ def load_reflexio_env(
     existing = _load_existing_env_paths()
     if existing is not None:
         _backfill_missing_keys(existing, auto_generate_keys or [])
+        _discard_inactive_judge_default()
         return existing
 
     # No .env found — auto-create from bundled template
     created = _create_default_env(package_data_module, auto_generate_keys or [])
     if created is not None:
         _loaded_env_path = created.resolve()
+    _discard_inactive_judge_default()
     return created
 
 
@@ -431,6 +446,7 @@ def load_reflexio_env_for_mode(
         _USER_ENV_DIR.mkdir(parents=True, exist_ok=True)
         _backfill_missing_keys(home_secrets, auto_generate_keys)
 
+    _discard_inactive_judge_default()
     return loaded
 
 
@@ -483,6 +499,7 @@ def load_existing_reflexio_env_for_mode(
         content = _find_mode_template(mode, package_data_module)
         if content is not None:
             _load_dotenv_pruned(StringIO(content))
+    _discard_inactive_judge_default()
     return loaded
 
 
@@ -578,6 +595,7 @@ def ensure_user_env_for_setup(
         ``None`` if no template could be found.
     """
     global _loaded_env_path
+    _validate_launch_values(os.environ)
     target = user_env_file()
     if target.exists():
         _load_dotenv_pruned(target)
@@ -585,10 +603,12 @@ def ensure_user_env_for_setup(
         _logger.debug("Loaded user env from: %s", resolved)
         _loaded_env_path = resolved
         _backfill_missing_keys(target, auto_generate_keys or [])
+        _discard_inactive_judge_default()
         return target
     created = _create_default_env(package_data_module, auto_generate_keys or [])
     if created is not None:
         _loaded_env_path = created.resolve()
+    _discard_inactive_judge_default()
     return created
 
 

@@ -81,6 +81,40 @@ def test_launch_consumes_only_the_shipped_inactive_search_judge_default(
     assert selected.read_text() == original
 
 
+@pytest.mark.parametrize("mode", [None, "self_host"])
+def test_old_process_default_is_available_to_dotenv_interpolation_only(
+    monkeypatch, tmp_path, mode
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(env_loader, "_USER_ENV_DIR", tmp_path / "home")
+    monkeypatch.setattr(env_loader, "_loaded_env_path", None)
+    monkeypatch.setenv("REFLEXIO_SEARCH_JUDGE", "off")
+    monkeypatch.setenv("DATA_DB_URL", "isolated-for-cleanup")
+    monkeypatch.delenv("DATA_DB_URL")
+    if mode:
+        monkeypatch.setenv("DEPLOYMENT_MODE", mode)
+    else:
+        monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
+    env_file = tmp_path / (f".env.{mode}" if mode else ".env")
+    env_file.write_text("DATA_DB_URL=fixture-${REFLEXIO_SEARCH_JUDGE:-missing}\n")
+    env_loader.load_existing_reflexio_env_for_mode()
+    assert os.environ["DATA_DB_URL"] == "fixture-off"
+    assert "REFLEXIO_SEARCH_JUDGE" not in os.environ
+
+
+@pytest.mark.parametrize("mode", [None, "self_host"])
+def test_interpolation_cannot_create_a_shipped_judge_default(
+    monkeypatch, tmp_path, mode
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(env_loader, "_USER_ENV_DIR", tmp_path / "home")
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    env_file = tmp_path / (f".env.{mode}" if mode else ".env")
+    env_file.write_text("REFLEXIO_SEARCH_JUDGE=${SELECTED_JUDGE_MODE:-off}\n")
+    with pytest.raises(ValueError, match="REFLEXIO_SEARCH_JUDGE"):
+        env_loader.load_existing_reflexio_env_for_mode(cli_mode=mode)
+
+
 def test_canonical_process_target_keeps_precedence(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DB_URL", "process-target")
     env_file = tmp_path / ".env"
