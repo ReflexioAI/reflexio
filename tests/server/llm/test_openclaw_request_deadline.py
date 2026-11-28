@@ -58,7 +58,7 @@ def _prepare_owned_cli(monkeypatch, tmp_path):
     monkeypatch.delenv("OPENCLAW_DEFAULT_MODEL", raising=False)
     calls = tmp_path / "calls.jsonl"
     script = tmp_path / "openclaw"
-    monkeypatch.setenv("OPENCLAW_BIN", str(script))
+    monkeypatch.setenv("REFLEXIO_OPENCLAW_EXECUTABLE", str(script))
     monkeypatch.setattr(
         litellm,
         "custom_provider_map",

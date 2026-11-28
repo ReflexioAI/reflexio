@@ -863,7 +863,7 @@ class TestOpenclawSetup:
 
         env_path = tmp_path / ".env"
         env_path.write_text(
-            'OPENCLAW_BIN="/opt/openclaw/bin/openclaw"\nOPENCLAW_SMART_USE_LOCAL_CLI="1"\n'
+            'REFLEXIO_OPENCLAW_EXECUTABLE="/opt/openclaw/bin/openclaw"\nOPENCLAW_SMART_USE_LOCAL_CLI="1"\n'
         )
         monkeypatch.setattr(setup_cmd.typer, "confirm", lambda *_a, **_kw: True)
         monkeypatch.setattr(setup_cmd.shutil, "which", lambda _: None)

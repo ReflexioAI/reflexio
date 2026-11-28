@@ -158,7 +158,7 @@ def test_actual_litellm_wrapper_and_process_snapshot_preserve_terminal_rejection
         pytest.skip(f"{method} unavailable")
     monkeypatch.setenv(authority.ENV_NATIVE_MODEL, "local-cli/codex/allowed")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    monkeypatch.delenv("OPENCLAW_SMART_USE_LOCAL_CLI", raising=False)
+    monkeypatch.delenv("REFLEXIO_OPENCLAW_EXECUTABLE", raising=False)
     context = multiprocessing.get_context(method)
     result_queue = context.Queue()
     process = context.Process(
@@ -326,11 +326,11 @@ def test_native_intent_is_guarded_before_gateway_or_role_rewriting(
 
 def test_independent_openclaw_grant_remains_usable(monkeypatch):
     from reflexio.server.llm import model_defaults
-    from reflexio.server.llm.providers import openclaw_provider
 
     monkeypatch.setenv(authority.ENV_NATIVE_MODEL, "local-cli/codex/owned")
-    monkeypatch.setenv("OPENCLAW_SMART_USE_LOCAL_CLI", "1")
-    monkeypatch.setattr(openclaw_provider, "is_openclaw_available", lambda: True)
+    monkeypatch.setattr(
+        model_defaults, "openclaw_executable", lambda: "/fixture/openclaw"
+    )
     providers = model_defaults.detect_available_providers()
     assert providers[:2] == ["local-cli", "openclaw"]
     assert authority.authorize_native_model("openclaw/default") is None

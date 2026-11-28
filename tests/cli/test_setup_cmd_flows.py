@@ -657,7 +657,10 @@ class TestOpenclawUninstall:
         state.mkdir()
         result = cli("openclaw", "--uninstall", input="y\n")
         assert result.exit_code == 0, result.output
-        assert "openclaw CLI not found in OPENCLAW_BIN or PATH" in result.output
+        assert (
+            "openclaw CLI not found in REFLEXIO_OPENCLAW_EXECUTABLE or PATH"
+            in result.output
+        )
         assert fake.calls == []
         assert state.exists()
 

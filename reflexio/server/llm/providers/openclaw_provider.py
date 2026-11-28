@@ -4,9 +4,8 @@ Routes ``litellm.completion(model="openclaw/...", ...)`` through the
 user's locally-installed ``openclaw`` CLI by spawning
 ``openclaw infer model run --prompt <p> --json [--model <m>]``.
 
-Activation is opt-in via ``OPENCLAW_SMART_USE_LOCAL_CLI=1``. Without it,
-the provider does not register and reflexio falls back to its normal
-provider priority. Every spawn sets ``OPENCLAW_SMART_INTERNAL=1`` so the
+An explicit ``REFLEXIO_OPENCLAW_EXECUTABLE`` binding authorizes this route
+and selects the executable. Without it, Reflexio uses normal provider priority. Every spawn sets ``OPENCLAW_SMART_INTERNAL=1`` so the
 openclaw-smart plugin's hooks short-circuit when this provider invokes
 the CLI (recursion guard).
 """
@@ -21,10 +20,8 @@ import reflexio.provider_bootstrap  # noqa: F401
 import json
 import logging
 import os
-import shutil
 import subprocess  # noqa: S404 — subprocess is the integration point.
 import time
-from pathlib import Path
 from typing import Any
 
 import litellm
@@ -38,8 +35,11 @@ from litellm.types.utils import (
     Usage,
 )
 
-from reflexio.server.env_utils import env_truthy
 from reflexio.server.llm._native_cli import request_timeout_seconds, run_native_cli
+from reflexio.server.llm._openclaw_config import (
+    OPENCLAW_EXECUTABLE_ENV,
+    openclaw_executable,
+)
 from reflexio.server.llm.providers.cli_tool_protocol import (
     append_schema_instruction,
     append_tools_instruction,
@@ -51,8 +51,6 @@ from reflexio.server.llm.providers.cli_tool_protocol import (
 _LOGGER = logging.getLogger(__name__)
 
 PROVIDER_KEY = "openclaw"
-ENV_ENABLE = "OPENCLAW_SMART_USE_LOCAL_CLI"
-ENV_CLI_PATH = "OPENCLAW_BIN"
 # Retired selector; retained only for operation-scoped adoption refusal.
 ENV_DEFAULT_MODEL = "OPENCLAW_DEFAULT_MODEL"
 _BUSY_MARKER = "retry when it finishes"
@@ -69,44 +67,6 @@ _HANDLER: OpenClawLLM | None = None
 
 class OpenClawCLIError(RuntimeError):
     """Raised when the openclaw CLI subprocess fails."""
-
-
-def _env_enabled() -> bool:
-    """Return True when OPENCLAW_SMART_USE_LOCAL_CLI is truthy.
-
-    Returns:
-        bool: True if the opt-in env var is set to a truthy value, else False.
-    """
-    return env_truthy(os.environ.get(ENV_ENABLE, ""))
-
-
-def _resolve_cli_path() -> str | None:
-    """Resolve the openclaw CLI absolute path.
-
-    Honors ``OPENCLAW_BIN`` env override, otherwise falls back to
-    ``shutil.which("openclaw")``.
-
-    Returns:
-        str | None: Absolute path to the openclaw binary, or None if not found.
-    """
-    override = os.environ.get(ENV_CLI_PATH)
-    if override:
-        path = Path(override)
-        if path.is_file() and os.access(override, os.X_OK):
-            return override
-    return shutil.which("openclaw")
-
-
-def is_openclaw_available() -> bool:
-    """Return True when the openclaw provider is usable right now.
-
-    Both the opt-in env var *and* a resolvable CLI path are required.
-
-    Returns:
-        bool: True iff ``OPENCLAW_SMART_USE_LOCAL_CLI`` is truthy AND a
-            CLI binary is resolvable.
-    """
-    return _env_enabled() and _resolve_cli_path() is not None
 
 
 def _extract_text(payload: Any) -> str:
@@ -163,9 +123,11 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: float) -> str:
             non-JSON stdout, or returns JSON with no recognized text field.
     """
     deadline = time.monotonic() + timeout_s
-    cli = _resolve_cli_path()
+    cli = openclaw_executable()
     if not cli:
-        raise OpenClawCLIError("openclaw CLI not found; set OPENCLAW_BIN")
+        raise OpenClawCLIError(
+            f"OpenClaw CLI is disabled; set {OPENCLAW_EXECUTABLE_ENV}"
+        )
 
     # `infer model run` takes the prompt only as an argument, and Linux caps a
     # single argv string at MAX_ARG_STRLEN (128 KiB). Refuse clearly instead
@@ -412,27 +374,19 @@ def _messages_to_prompt(
     return "\n\n".join(parts)
 
 
-def register_if_enabled() -> bool:
-    """Register the openclaw provider with LiteLLM if the opt-in env is set.
+def register_if_configured() -> bool:
+    """Register the OpenClaw provider if its executable is configured.
 
     Idempotent: safe to call multiple times.
 
     Returns:
-        bool: True if the provider is now registered, False if env is off or
-            the CLI is missing.
+        bool: True if registered; False if the route has no binding.
     """
     global _REGISTERED, _HANDLER
+    if openclaw_executable() is None:
+        return False
     if _REGISTERED:
         return True
-    if not _env_enabled():
-        return False
-    if not _resolve_cli_path():
-        _LOGGER.warning(
-            "%s=1 but openclaw CLI not found; set %s",
-            ENV_ENABLE,
-            ENV_CLI_PATH,
-        )
-        return False
     _HANDLER = OpenClawLLM()
     litellm.custom_provider_map = [
         *getattr(litellm, "custom_provider_map", []),

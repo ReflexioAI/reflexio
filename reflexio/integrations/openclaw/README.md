@@ -57,9 +57,12 @@ plugins it did not bundle. Without `url`, the plugin uses `REFLEXIO_URL`, then
 ## Extraction through OpenClaw's model (optional)
 
 Reflexio normally extracts with its own configured LLM provider. To reuse the
-model OpenClaw is signed in to, set `OPENCLAW_SMART_USE_LOCAL_CLI=1` (and
-`OPENCLAW_BIN` if `openclaw` is not on `PATH`) for the Reflexio server; the
-OpenClaw provider is then detected automatically (`openclaw/default` uses
+model OpenClaw is signed in to, set `REFLEXIO_OPENCLAW_EXECUTABLE` in the
+Reflexio server environment to the absolute path to the executable. This
+binding authorizes OpenClaw and selects the exact executable. An unset or blank
+binding leaves the route disabled. A configured path that cannot execute fails
+validation without searching `PATH`. The model role remains independent
+(`openclaw/default` uses
 OpenClaw's configured model; `openclaw/<provider>/<model>` picks one). The
 server calls `openclaw infer model run`. Extraction is a tool loop and the CLI
 returns text, so tool calls travel in the prompt, the same protocol the Claude
@@ -73,6 +76,13 @@ another API key is present. An explicit per-call cloud model still uses standard
 provider resolution; omit `model_role` when that exact cloud model must win.
 An explicit `custom_llm_provider` transport override takes precedence over the
 model prefix. Embedding APIs keep their separate selection path.
+
+When upgrading, remove `OPENCLAW_SMART_USE_LOCAL_CLI` and `OPENCLAW_BIN`,
+including blank assignments. If previously enabled, set the new binding to the
+same absolute executable the server used. If it used its `PATH`, identify the
+executable in that same service or shell before migrating. If previously
+disabled, leave the new binding unset even if you had recorded a path. Installing
+the plugin does not authorize server-side generation.
 
 `OPENCLAW_DEFAULT_MODEL` no longer selects a model. Preserve a Reflexio-specific
 choice in the existing role model fields, such as

@@ -97,7 +97,7 @@ start_backend() {
   local -a extra_env=(MOCK_LLM_RESPONSE=true OPENAI_API_KEY=sk-placeholder-mock)
   if [ "${MODE:-stub}" = real ]; then
     # Extraction runs through the lab's OpenClaw (and so the same Codex login).
-    extra_env=(OPENCLAW_SMART_USE_LOCAL_CLI=1 "OPENCLAW_BIN=$LAB/prefix/bin/openclaw"
+    extra_env=("REFLEXIO_OPENCLAW_EXECUTABLE=$LAB/prefix/bin/openclaw"
       "OPENCLAW_STATE_DIR=$LAB/state" "OPENCLAW_CONFIG_PATH=$LAB/state/openclaw.json")
   fi
   # Run from the lab directory (not the repo root) so no developer .env is

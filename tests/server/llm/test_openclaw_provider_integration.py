@@ -1,6 +1,6 @@
 """Integration: LiteLLM dispatches to the openclaw provider end-to-end.
 
-Exercises ``register_if_enabled`` + ``litellm.completion`` together so a
+Exercises ``register_if_configured`` + ``litellm.completion`` together so a
 regression in the registration glue (provider key, handler installation,
 or kwargs routing) is caught even when each layer's unit tests pass.
 
@@ -53,10 +53,9 @@ def test_litellm_dispatches_to_openclaw_provider(
     fake_cli = tmp_path / "openclaw"
     fake_cli.write_text("#!/bin/sh\nexit 0\n")
     fake_cli.chmod(0o755)
-    monkeypatch.setenv(ocp.ENV_ENABLE, "1")
-    monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake_cli))
+    monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake_cli))
 
-    assert ocp.register_if_enabled() is True
+    assert ocp.register_if_configured() is True
 
     # Registration installed our handler under the openclaw provider key.
     entry = next(
@@ -89,22 +88,10 @@ def test_litellm_dispatches_to_openclaw_provider(
 
 
 def test_register_noop_when_env_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Without ``OPENCLAW_SMART_USE_LOCAL_CLI``, registration is skipped."""
-    monkeypatch.delenv(ocp.ENV_ENABLE, raising=False)
-    assert ocp.register_if_enabled() is False
+    """Without an executable binding, registration is skipped."""
+    monkeypatch.delenv(ocp.OPENCLAW_EXECUTABLE_ENV, raising=False)
+    assert ocp.register_if_configured() is False
     assert litellm.custom_provider_map == []
-
-
-def test_register_noop_when_cli_missing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    """Env opt-in without a resolvable CLI path is a logged no-op, not a crash."""
-    monkeypatch.setenv(ocp.ENV_ENABLE, "1")
-    # Point to a path that doesn't exist *and* override PATH so the
-    # ``shutil.which`` fallback also misses.
-    monkeypatch.setenv(ocp.ENV_CLI_PATH, str(tmp_path / "does-not-exist"))
-    monkeypatch.setenv("PATH", str(tmp_path))
-    assert ocp.register_if_enabled() is False
 
 
 def test_spawned_completion_worker_can_reach_the_openclaw_provider(
@@ -123,8 +110,7 @@ def test_spawned_completion_worker_can_reach_the_openclaw_provider(
     fake = tmp_path / "openclaw"
     fake.write_text('#!/bin/sh\necho \'{"ok": true, "outputs": [{"text": "PONG"}]}\'\n')
     fake.chmod(0o755)
-    monkeypatch.setenv("OPENCLAW_SMART_USE_LOCAL_CLI", "1")
-    monkeypatch.setenv("OPENCLAW_BIN", str(fake))
+    monkeypatch.setenv("REFLEXIO_OPENCLAW_EXECUTABLE", str(fake))
 
     context = multiprocessing.get_context("spawn")
     queue = context.Queue(maxsize=1)
@@ -275,8 +261,7 @@ if __name__=='__main__':
         OPENBLAS_NUM_THREADS="1",
         MKL_NUM_THREADS="1",
         RAYON_NUM_THREADS="1",
-        OPENCLAW_SMART_USE_LOCAL_CLI="1",
-        OPENCLAW_BIN=str(cli),
+        REFLEXIO_OPENCLAW_EXECUTABLE=str(cli),
         PYTHON_DOTENV_DISABLED="1",
         REFLEXIO_ENV_FILE=str(tmp_path / "empty.env"),
         HOME=str(tmp_path / "home"),

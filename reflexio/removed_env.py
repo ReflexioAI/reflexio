@@ -62,6 +62,8 @@ REMOVED_ENV_ALIASES = {
     "BILLING_METERING_SWEEPS_ENABLED": "BILLING_METERING_MAINTENANCE_INTERVAL_SECONDS",
     "BILLING_METERING_SWEEP_INTERVAL_SECONDS": "BILLING_METERING_MAINTENANCE_INTERVAL_SECONDS",
     "BILLING_PERIOD_CLOSE_ENABLED": "BILLING_PERIOD_CLOSE_INTERVAL_SECONDS",
+    "OPENCLAW_BIN": "REFLEXIO_OPENCLAW_EXECUTABLE",
+    "OPENCLAW_SMART_USE_LOCAL_CLI": "REFLEXIO_OPENCLAW_EXECUTABLE",
     "PERIOD_CLOSE_INTERVAL_SECONDS": "BILLING_PERIOD_CLOSE_INTERVAL_SECONDS",
 }
 
@@ -364,6 +366,18 @@ REMOVED_ENV: tuple[RemovedEnv, ...] = (
         "binding unset for native search",
     ),
     _renamed("BILLING_PERIOD_CLOSE_ENABLED", "BILLING_PERIOD_CLOSE_INTERVAL_SECONDS"),
+    _renamed(
+        "OPENCLAW_BIN",
+        "REFLEXIO_OPENCLAW_EXECUTABLE",
+        "; bind the previously selected absolute executable only if OpenClaw "
+        "was enabled. Keep the binding unset for a disabled route",
+    ),
+    _renamed(
+        "OPENCLAW_SMART_USE_LOCAL_CLI",
+        "REFLEXIO_OPENCLAW_EXECUTABLE",
+        "; bind the previously selected absolute executable only if OpenClaw "
+        "was enabled. Keep the binding unset for a disabled route",
+    ),
     _renamed("PERIOD_CLOSE_INTERVAL_SECONDS", "BILLING_PERIOD_CLOSE_INTERVAL_SECONDS"),
 )
 

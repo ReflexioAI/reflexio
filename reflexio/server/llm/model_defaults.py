@@ -24,15 +24,14 @@ from reflexio.server.llm._native_model_ref import (
 from reflexio.server.llm._native_model_ref import (
     PROVIDER_KEY as _NATIVE_PROVIDER,
 )
+from reflexio.server.llm._openclaw_config import openclaw_executable
 
 # Installed local embedding capability is advertised without activating it.
 # resolve_model_name owns the embedding-role default independently of provider
 # credentials. Generation still requires a generation-capable provider.
 _LOCAL_EMBEDDING_PROVIDER = "local"
 
-# The OpenClaw CLI provider (providers/openclaw_provider.py), opted into with
-# OPENCLAW_SMART_USE_LOCAL_CLI=1 plus a resolvable `openclaw` binary. Like
-# claude-code it borrows the host CLI's own login instead of an API key.
+# OpenClaw uses the login of the explicitly bound host CLI.
 _OPENCLAW_PROVIDER = "openclaw"
 
 logger = logging.getLogger(__name__)
@@ -132,7 +131,6 @@ def detect_available_providers(
 
     # Disabled CLI adapters cannot contribute a provider; avoid importing
     # their execution libraries just to rediscover the explicit opt-out.
-    from reflexio.server.env_utils import env_truthy
     from reflexio.server.llm.providers.local_embedding_provider import (
         is_local_embedder_available,
     )
@@ -141,13 +139,8 @@ def detect_available_providers(
     # is unavailable. Never fall through to an unrelated API credential.
     if configured_native_model() is not None:
         available.add(_NATIVE_PROVIDER)
-    if env_truthy(os.environ.get("OPENCLAW_SMART_USE_LOCAL_CLI", "")):
-        from reflexio.server.llm.providers.openclaw_provider import (
-            is_openclaw_available,
-        )
-
-        if is_openclaw_available():
-            available.add(_OPENCLAW_PROVIDER)
+    if openclaw_executable() is not None:
+        available.add(_OPENCLAW_PROVIDER)
     if is_local_embedder_available():
         available.add(_LOCAL_EMBEDDING_PROVIDER)
 
