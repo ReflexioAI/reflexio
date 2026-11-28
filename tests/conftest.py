@@ -88,6 +88,7 @@ def _isolate_judge_settings() -> None:
 
 
 _isolate_judge_settings()
+env_loader.block_implicit_dotenv_walkup()
 env_loader.load_reflexio_env()
 
 # The loader intentionally imports provider credentials from the developer

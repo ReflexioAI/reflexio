@@ -126,10 +126,12 @@ import os
 from pathlib import Path
 import runpy
 import sys
+from types import SimpleNamespace
 
 project = Path(sys.argv[1])
 sys.path.insert(0, str(project))
-runpy.run_path(str(project / 'tests/conftest.py'))
+bootstrap = runpy.run_path(str(project / 'tests/conftest.py'))
+bootstrap["pytest_configure"](SimpleNamespace(args=["tests"]))
 assert os.environ.get("OPENAI_API_KEY") == "fixture-credential"
 assert "REFLEXIO_SEARCH_JUDGE" not in os.environ
 assert "REFLEXIO_SEARCH_JUDGE_API_KEY" not in os.environ
