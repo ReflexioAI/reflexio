@@ -44,13 +44,15 @@ process. Update the shell environment and dotenv files before upgrading.
 
 ## Optional search judge credential
 
-Remove `REFLEXIO_SEARCH_JUDGE` from the environment and dotenv files before
-upgrading. For native search, leave `REFLEXIO_SEARCH_JUDGE_API_KEY` unset.
+Startup discards the former template's exact `REFLEXIO_SEARCH_JUDGE=off`
+default. Native-search deployments with that default can replace the image
+and restart. Remove the retired assignment at your next configuration update.
+For native search, leave `REFLEXIO_SEARCH_JUDGE_API_KEY` unset.
 To keep a deployment that explicitly opted into Jev, bind its approved Typesafe
 credential to `REFLEXIO_SEARCH_JUDGE_API_KEY` through the deployment's secret
 manager. The application does not read the old generic `TYPESAFE_API_KEY` to
-activate the judge. An old mode assignment produces an upgrade error without
-including either value. Eligibility and fallback behavior are unchanged.
+activate the judge. The former `jev` selector and any assignment other than
+the exact `off` default require explicit cleanup, with no values in the error. Eligibility and fallback behavior are unchanged.
 
 ## Credential keyring consolidation
 

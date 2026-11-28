@@ -72,7 +72,12 @@ def _isolate_judge_settings() -> None:
             return
     load = env_loader._load_dotenv_pruned
 
-    def load_test_source(path: Path | StringIO, *, override: bool = False) -> None:
+    def load_test_source(
+        path: Path | StringIO,
+        *,
+        override: bool = False,
+        inherit_inactive_judge_default: bool = False,
+    ) -> None:
         if isinstance(path, Path) and path.resolve() == selected:
             with selected.open(encoding="utf-8") as source:
                 path = StringIO(
@@ -82,7 +87,11 @@ def _isolate_judge_settings() -> None:
                         if row.key not in _JUDGE_ENV
                     )
                 )
-        load(path, override=override)
+        load(
+            path,
+            override=override,
+            inherit_inactive_judge_default=inherit_inactive_judge_default,
+        )
 
     env_loader._load_dotenv_pruned = load_test_source
 
