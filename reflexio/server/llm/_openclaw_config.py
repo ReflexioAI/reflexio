@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from reflexio.removed_env import reject_removed_env
-from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+from reflexio.server.llm._provider_errors import ProviderRequestGuardError
 
 OPENCLAW_EXECUTABLE_ENV = "REFLEXIO_OPENCLAW_EXECUTABLE"
 

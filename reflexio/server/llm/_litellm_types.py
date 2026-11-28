@@ -18,10 +18,9 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from reflexio.models.config_schema import APIKeyConfig
-
-
-class ProviderRequestGuardError(RuntimeError):
-    """Raised when a caller rejects built params at the provider boundary."""
+from reflexio.server.llm._provider_errors import (
+    ProviderRequestGuardError as ProviderRequestGuardError,
+)
 
 
 class InputBudgetConfigurationError(ProviderRequestGuardError):
