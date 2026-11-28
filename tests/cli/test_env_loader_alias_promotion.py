@@ -127,6 +127,13 @@ def test_project_interpolation_keeps_home_default_and_assignment_order(
     monkeypatch.delenv("REFLEXIO_TEST_FIRST_VALUE")
     monkeypatch.setenv("DATA_DB_URL", "isolated-for-cleanup")
     monkeypatch.delenv("DATA_DB_URL")
+    resolve = env_loader.resolve_variables
+
+    def resolve_without_exporting(values, override):
+        assert "REFLEXIO_SEARCH_JUDGE" not in os.environ
+        return resolve(values, override=override)
+
+    monkeypatch.setattr(env_loader, "resolve_variables", resolve_without_exporting)
     (home / ".env.self_host").write_text("REFLEXIO_SEARCH_JUDGE=off\n")
     (tmp_path / ".env.self_host").write_text(
         "REFLEXIO_TEST_FIRST_VALUE=first\n"

@@ -248,7 +248,7 @@ def _validate_launch_values(values: Mapping[str, str | None]) -> None:
 
 def _discard_inactive_judge_default() -> None:
     if os.environ.get(_RETIRED_JUDGE_MODE) == "off":
-        os.environ.pop(_RETIRED_JUDGE_MODE)
+        os.environ.pop(_RETIRED_JUDGE_MODE, None)
 
 
 def _validated_dotenv(path: Path | StringIO) -> list[tuple[str, str | None]]:
@@ -264,7 +264,12 @@ def _validated_dotenv(path: Path | StringIO) -> list[tuple[str, str | None]]:
     return assignments
 
 
-def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> None:
+def _load_dotenv_pruned(
+    path: Path | StringIO,
+    *,
+    override: bool = False,
+    inherit_inactive_judge_default: bool = False,
+) -> None:
     """Load a .env file, treating blank assignments (``KEY=``) as unset.
 
     python-dotenv exports a blank ``KEY=`` line as ``os.environ["KEY"] = ""``
@@ -292,6 +297,8 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
     # Keep the original assignment order for interpolation, including
     # reassignments later in the same file.
     assignments = _validated_dotenv(path)
+    if inherit_inactive_judge_default:
+        assignments.insert(0, (_RETIRED_JUDGE_MODE, "off"))
     for key, value in resolve_variables(assignments, override=override).items():
         # The launch environment selects the user-level file. Assignments in
         # the file cannot retarget later loads, setup writes, or child workers.
@@ -480,13 +487,11 @@ def _load_existing_mode_paths(mode: str) -> Path | None:
 
     loaded = next((path for path in (project, home_secrets) if path.exists()), None)
     if loaded is not None:
-        if carry_home_default and loaded == project:
-            os.environ[_RETIRED_JUDGE_MODE] = "off"
-        try:
-            _load_dotenv_pruned(loaded, override=False)
-        finally:
-            if carry_home_default and loaded == project:
-                os.environ.pop(_RETIRED_JUDGE_MODE)
+        _load_dotenv_pruned(
+            loaded,
+            override=False,
+            inherit_inactive_judge_default=carry_home_default and loaded == project,
+        )
         _logger.debug("Loaded mode env from: %s (mode=%s)", loaded, mode)
 
     _loaded_env_path = loaded.resolve() if loaded is not None else None
