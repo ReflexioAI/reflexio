@@ -11,9 +11,11 @@ import tempfile
 import threading
 import weakref
 from collections.abc import Iterator
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from dotenv.parser import parse_stream
 
 _THIS_DIR = Path(__file__).resolve().parent  # tests/
 PROJECT_ROOT = _THIS_DIR.parent  # repo root, or mutmut's relocated source root
@@ -54,9 +56,39 @@ if "MUTANT_UNDER_TEST" in os.environ:
 # Load the developer's provider credentials without importing the server yet.
 # The server configures file handlers during import, so the temporary paths
 # below must be in place before that import occurs.
-from reflexio.cli.env_loader import load_reflexio_env  # noqa: E402
+from reflexio.cli import env_loader  # noqa: E402
 
-load_reflexio_env()
+
+def _isolate_legacy_judge_setting() -> None:
+    # A developer's existing dotenv may come from the previous shipped
+    # template. Only filter that startup source in pytest. Other files,
+    # including test fixtures, still exercise the normal strict loader.
+    selected = env_loader._existing_env_path()
+    if selected is None or env_loader._dotenv_disabled():
+        return
+    selected = selected.resolve()
+    with selected.open(encoding="utf-8") as source:
+        if not any(row.key == "REFLEXIO_SEARCH_JUDGE" for row in parse_stream(source)):
+            return
+    load = env_loader._load_dotenv_pruned
+
+    def load_test_source(path: Path | StringIO, *, override: bool = False) -> None:
+        if isinstance(path, Path) and path.resolve() == selected:
+            with selected.open(encoding="utf-8") as source:
+                path = StringIO(
+                    "".join(
+                        row.original.string
+                        for row in parse_stream(source)
+                        if row.key != "REFLEXIO_SEARCH_JUDGE"
+                    )
+                )
+        load(path, override=override)
+
+    env_loader._load_dotenv_pruned = load_test_source
+
+
+_isolate_legacy_judge_setting()
+env_loader.load_reflexio_env()
 
 # The loader intentionally imports provider credentials from the developer
 # environment, but it can also reintroduce local service-routing variables from

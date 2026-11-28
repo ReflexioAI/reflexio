@@ -102,3 +102,53 @@ assert selected.exists() and selected.read_text() == ''
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert not (home / ".reflexio" / ".env").exists()
+
+
+def test_legacy_judge_in_developer_dotenv_does_not_block_collection(tmp_path: Path):
+    project = Path(__file__).resolve().parents[1]
+    developer_env = tmp_path / ".env"
+    developer_contents = (
+        "REFLEXIO_SEARCH_JUDGE=off\nOPENAI_API_KEY=fixture-credential\n"
+    )
+    developer_env.write_text(developer_contents)
+    env = os.environ.copy()
+    for key in (
+        "REFLEXIO_ENV_FILE",
+        "PYTHON_DOTENV_DISABLED",
+        "MUTANT_UNDER_TEST",
+        "OPENAI_API_KEY",
+    ):
+        env.pop(key, None)
+    code = """
+import os
+from pathlib import Path
+import runpy
+import sys
+
+project = Path(sys.argv[1])
+sys.path.insert(0, str(project))
+runpy.run_path(str(project / 'tests/conftest.py'))
+assert os.environ.get("OPENAI_API_KEY") == "fixture-credential"
+assert "REFLEXIO_SEARCH_JUDGE" not in os.environ
+from reflexio.cli.env_loader import _load_dotenv_pruned, load_reflexio_env
+load_reflexio_env()
+fixture = Path("fixture.env")
+fixture.write_text("REFLEXIO_SEARCH_JUDGE=jev\\n")
+try:
+    _load_dotenv_pruned(fixture)
+except ValueError as error:
+    assert "REFLEXIO_SEARCH_JUDGE" in str(error)
+else:
+    raise AssertionError("A different source must retain strict validation")
+"""
+    result = subprocess.run(  # noqa: S603 — fixed code and a pytest-owned dotenv
+        [sys.executable, "-I", "-c", code, str(project)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=40,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert developer_env.read_text() == developer_contents
