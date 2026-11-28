@@ -11,7 +11,6 @@ import httpx
 import pytest
 
 from reflexio.server import search_runtime
-from reflexio.server.env_utils import env_str
 from reflexio.server.services.retrieval import judge_client as jc
 from reflexio.server.services.storage.error import ReadinessUnavailableError
 
@@ -25,13 +24,10 @@ REPLY = {"model": MODEL, "answers": {}, "usage": {"input_tokens": 1}}
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
     jc.close_judge_client()
-    # An entirely fake mapping prevents every test from reading a real key.
-    env = {"REFLEXIO_SEARCH_JUDGE": "jev", "TYPESAFE_API_KEY": "unit-key"}
-    monkeypatch.setattr(
-        jc, "env_str", lambda name, default="": env_str(name, default, env=env)
-    )
+    monkeypatch.delenv("REFLEXIO_SEARCH_JUDGE", raising=False)
+    monkeypatch.setenv("REFLEXIO_SEARCH_JUDGE_API_KEY", "unit-key")
     monkeypatch.setattr(jc, "monotonic", lambda: 0.0)
-    yield env
+    yield
     jc.close_judge_client()
 
 
@@ -81,60 +77,37 @@ def wire(monkeypatch):
     return state
 
 
-@pytest.mark.parametrize("mode", [None, "", "   ", "off", " off ", "jev", " jev "])
-def test_mode_is_explicit_and_never_reads_key_or_creates_client(monkeypatch, mode):
-    accessed = []
-
-    class FakeEnv(dict):
-        def get(self, key, default=None):
-            accessed.append(key)
-            assert key == "REFLEXIO_SEARCH_JUDGE"
-            return super().get(key, default)
-
-    env = FakeEnv() if mode is None else FakeEnv(REFLEXIO_SEARCH_JUDGE=mode)
-    monkeypatch.setattr(
-        jc, "env_str", lambda name, default="": env_str(name, default, env=env)
-    )
-    monkeypatch.setattr(
-        jc, "_client", lambda: pytest.fail("mode must not construct HTTP client")
-    )
-    assert jc.judge_mode() == ("jev" if mode and mode.strip() == "jev" else "off")
-    assert accessed == ["REFLEXIO_SEARCH_JUDGE"]
-
-
-@pytest.mark.parametrize("mode", ["other", "JEV", "secret-mode-text"])
-def test_unknown_mode_is_safe_typed_refusal(isolated, mode):
-    isolated["REFLEXIO_SEARCH_JUDGE"] = mode
-    with pytest.raises(ReadinessUnavailableError) as caught:
-        jc.judge_mode()
-    assert mode not in str(caught.value)
-
-
-def test_disabled_call_cannot_read_key_or_bootstrap_client(monkeypatch, wire):
-    class DisabledEnv(dict):
-        def get(self, key, default=None):
-            assert key == "REFLEXIO_SEARCH_JUDGE"
-            return "off"
-
-    monkeypatch.setattr(
-        jc,
-        "env_str",
-        lambda name, default="": env_str(name, default, env=DisabledEnv()),
-    )
-    with pytest.raises(ReadinessUnavailableError):
-        jc.call_jev(PAYLOAD)
+@pytest.mark.parametrize("key", [None, "", "   ", "synthetic-credential"])
+def test_only_dedicated_binding_activates_without_creating_client(
+    monkeypatch, wire, key
+):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "unrelated-credential")
+    if key is None:
+        monkeypatch.delenv("REFLEXIO_SEARCH_JUDGE_API_KEY")
+    else:
+        monkeypatch.setenv("REFLEXIO_SEARCH_JUDGE_API_KEY", key)
+    assert jc.judge_mode() == ("jev" if key and key.strip() else "off")
     assert not wire["constructors"] and not wire["leases"] and not wire["requests"]
 
 
-@pytest.mark.parametrize("key", [None, "", "   "])
-def test_missing_key_is_explicit_without_http(isolated, wire, key):
-    if key is None:
-        isolated.pop("TYPESAFE_API_KEY")
-    else:
-        isolated["TYPESAFE_API_KEY"] = key
-    with pytest.raises(ReadinessUnavailableError, match="TYPESAFE_API_KEY"):
+@pytest.mark.parametrize("mode", ["", "off", "jev", "invalid-legacy-value"])
+def test_old_mode_refuses_without_exposing_value(monkeypatch, wire, mode):
+    monkeypatch.setenv("REFLEXIO_SEARCH_JUDGE", mode)
+    with pytest.raises(
+        ReadinessUnavailableError,
+        match="Removed environment names: REFLEXIO_SEARCH_JUDGE",
+    ) as caught:
         jc.call_jev(PAYLOAD)
-    assert not wire["constructors"] and not wire["requests"]
+    assert "invalid-legacy-value" not in str(caught.value)
+    assert not wire["constructors"] and not wire["leases"] and not wire["requests"]
+
+
+def test_disabled_call_ignores_generic_key_without_http(monkeypatch, wire):
+    monkeypatch.delenv("REFLEXIO_SEARCH_JUDGE_API_KEY")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ambient-key")
+    with pytest.raises(ReadinessUnavailableError, match="Search judge is disabled"):
+        jc.call_jev(PAYLOAD)
+    assert not wire["constructors"] and not wire["leases"] and not wire["requests"]
 
 
 def test_exact_frozen_url_gzip_headers_and_direct_client_reuse(wire):
@@ -176,7 +149,9 @@ def test_close_is_idempotent_and_future_call_gets_new_client(wire):
 def test_pid_change_discards_stale_pool(wire, monkeypatch):
     jc.call_jev(PAYLOAD)
     first = wire["clients"][0]
-    monkeypatch.setattr(jc, "os", SimpleNamespace(getpid=lambda: 1234567))
+    monkeypatch.setattr(
+        jc, "os", SimpleNamespace(getpid=lambda: 1234567, environ=jc.os.environ)
+    )
     jc.call_jev(PAYLOAD)
     assert first.is_closed and len(wire["clients"]) == 2
 
@@ -329,8 +304,6 @@ def test_deadline_during_json_parse_cannot_accept_late_reply(wire, monkeypatch):
 
 def test_literal_deployment_contract_matches_runtime_mode_and_key_names():
     assert jc.SEARCH_JUDGE_CONTRACT == {
-        "mode_env": jc._MODE_ENV,
-        "default": "off",
-        "enabled": "jev",
-        "required_env_secrets": (jc._KEY_ENV,),
+        "credential_env": "REFLEXIO_SEARCH_JUDGE_API_KEY",
+        "secret_json_key": "TYPESAFE_API_KEY",
     }

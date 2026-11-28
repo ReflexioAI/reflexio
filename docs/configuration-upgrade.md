@@ -42,6 +42,16 @@ imports cannot discard obsolete blank assignments before enterprise startup.
 This also rejects obsolete enterprise variables inherited by a standalone OSS
 process. Update the shell environment and dotenv files before upgrading.
 
+## Optional search judge credential
+
+Remove `REFLEXIO_SEARCH_JUDGE` from the environment and dotenv files before
+upgrading. For native search, leave `REFLEXIO_SEARCH_JUDGE_API_KEY` unset.
+To keep a deployment that explicitly opted into Jev, bind its approved Typesafe
+credential to `REFLEXIO_SEARCH_JUDGE_API_KEY` through the deployment's secret
+manager. The application does not read the old generic `TYPESAFE_API_KEY` to
+activate the judge. An old mode assignment produces an upgrade error without
+including either value. Eligibility and fallback behavior are unchanged.
+
 ## Credential keyring consolidation
 
 Braintrust credentials use the same process credential-encryption implementation
