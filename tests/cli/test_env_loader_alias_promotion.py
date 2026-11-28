@@ -115,6 +115,38 @@ def test_interpolation_cannot_create_a_shipped_judge_default(
         env_loader.load_existing_reflexio_env_for_mode(cli_mode=mode)
 
 
+def test_project_interpolation_keeps_home_default_and_assignment_order(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(env_loader, "_USER_ENV_DIR", home)
+    monkeypatch.setattr(env_loader, "_loaded_env_path", None)
+    monkeypatch.setenv("REFLEXIO_TEST_FIRST_VALUE", "env-placeholder")
+    monkeypatch.delenv("REFLEXIO_TEST_FIRST_VALUE")
+    monkeypatch.setenv("DATA_DB_URL", "isolated-for-cleanup")
+    monkeypatch.delenv("DATA_DB_URL")
+    (home / ".env.self_host").write_text("REFLEXIO_SEARCH_JUDGE=off\n")
+    (tmp_path / ".env.self_host").write_text(
+        "REFLEXIO_TEST_FIRST_VALUE=first\n"
+        "DATA_DB_URL=${REFLEXIO_TEST_FIRST_VALUE}-${REFLEXIO_SEARCH_JUDGE:-missing}\n"
+        "REFLEXIO_TEST_FIRST_VALUE=second\n"
+    )
+    env_loader.load_existing_reflexio_env_for_mode(cli_mode="self_host")
+    assert os.environ["DATA_DB_URL"] == "first-off"
+    assert os.environ["REFLEXIO_TEST_FIRST_VALUE"] == "second"
+    assert "REFLEXIO_SEARCH_JUDGE" not in os.environ
+
+
+def test_later_default_does_not_hide_the_retired_active_selector(monkeypatch, tmp_path):
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("REFLEXIO_SEARCH_JUDGE=jev\nREFLEXIO_SEARCH_JUDGE=off\n")
+    with pytest.raises(ValueError, match="REFLEXIO_SEARCH_JUDGE"):
+        env_loader._load_dotenv_pruned(env_file)
+
+
 def test_canonical_process_target_keeps_precedence(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DB_URL", "process-target")
     env_file = tmp_path / ".env"

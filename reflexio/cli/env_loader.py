@@ -251,6 +251,19 @@ def _discard_inactive_judge_default() -> None:
         os.environ.pop(_RETIRED_JUDGE_MODE)
 
 
+def _validated_dotenv(path: Path | StringIO) -> list[tuple[str, str | None]]:
+    dotenv = DotEnv(
+        dotenv_path=None if isinstance(path, StringIO) else path,
+        stream=StringIO(path.getvalue()) if isinstance(path, StringIO) else None,
+    )
+    assignments = list(dotenv.parse())
+    _validate_launch_values(dict(assignments))
+    for key, value in assignments:
+        if key == _RETIRED_JUDGE_MODE and value != "off":
+            reject_removed_env({key: value})
+    return assignments
+
+
 def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> None:
     """Load a .env file, treating blank assignments (``KEY=``) as unset.
 
@@ -276,15 +289,10 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
     # configuration, so neither validate nor prune their unrelated assignments.
     if _dotenv_disabled():
         return
-    # Validate the literal assignments before interpolation, then resolve from
-    # the original source without passing the retired default into runtime.
-    raw = DotEnv(
-        dotenv_path=None if isinstance(path, StringIO) else path,
-        stream=StringIO(path.getvalue()) if isinstance(path, StringIO) else None,
-        interpolate=False,
-    ).dict()
-    _validate_launch_values(raw)
-    for key, value in resolve_variables(raw.items(), override=override).items():
+    # Keep the original assignment order for interpolation, including
+    # reassignments later in the same file.
+    assignments = _validated_dotenv(path)
+    for key, value in resolve_variables(assignments, override=override).items():
         # The launch environment selects the user-level file. Assignments in
         # the file cannot retarget later loads, setup writes, or child workers.
         if (
@@ -456,24 +464,30 @@ def _load_existing_mode_paths(mode: str) -> Path | None:
     # Optional gitignored home secrets, loaded first so committed presets and
     # process env both still win where they define the same keys.
     home_secrets = _USER_ENV_DIR / f".env.{mode}"
-    # Check every selected source before home values can be exported or blank
-    # process values pruned. Names do not require interpolation; publishing below
-    # still resolves references in the existing home-then-project order.
+    # Check both sources before either publishes values. An inactive judge
+    # default in home is visible to the project file's interpolation only.
+    project = Path(f".env.{mode}")
+    carry_home_default = False
     if not _dotenv_disabled():
-        for source in (home_secrets, Path(f".env.{mode}")):
-            if source.exists():
-                _validate_launch_values(DotEnv(source, interpolate=False).dict())
+        if home_secrets.exists():
+            carry_home_default = (_RETIRED_JUDGE_MODE, "off") in _validated_dotenv(
+                home_secrets
+            ) and _RETIRED_JUDGE_MODE not in os.environ
+        if project.exists():
+            _validated_dotenv(project)
     if home_secrets.exists():
         _load_dotenv_pruned(home_secrets, override=False)
 
-    loaded: Path | None = None
-    for env_path in (Path(f".env.{mode}"), home_secrets):
-        if env_path.exists():
-            _load_dotenv_pruned(env_path, override=False)
-            _loaded_env_path = env_path.resolve()
-            _logger.debug("Loaded mode env from: %s (mode=%s)", _loaded_env_path, mode)
-            loaded = env_path
-            break
+    loaded = next((path for path in (project, home_secrets) if path.exists()), None)
+    if loaded is not None:
+        if carry_home_default and loaded == project:
+            os.environ[_RETIRED_JUDGE_MODE] = "off"
+        try:
+            _load_dotenv_pruned(loaded, override=False)
+        finally:
+            if carry_home_default and loaded == project:
+                os.environ.pop(_RETIRED_JUDGE_MODE)
+        _logger.debug("Loaded mode env from: %s (mode=%s)", loaded, mode)
 
     _loaded_env_path = loaded.resolve() if loaded is not None else None
     return loaded
