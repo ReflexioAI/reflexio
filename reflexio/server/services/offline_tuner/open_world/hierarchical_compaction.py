@@ -9,6 +9,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, replace
+from time import monotonic
 from typing import Any
 
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -43,6 +44,7 @@ from reflexio.server.services.storage.session_outcome_identity import (
 from .evidence_documents import _span_id, project_trajectory_spans
 
 SESSION_OUTPUT_CONTRACT = "offline-analyst-canonical-base64-groups-v2-reserve750"
+_PLANNING_LEASE_CHECK_SECONDS = 60
 
 
 def _source_key(span: EvidenceSpan) -> str:
@@ -190,7 +192,18 @@ def compress_session_evidence(
             sources, before_call=before_call, load=load, save=save, **options
         )
     else:
-        plan = plan_with_client(sources, **options)
+        next_check_at = monotonic() + _PLANNING_LEASE_CHECK_SECONDS
+
+        def check_planning_lease() -> None:
+            nonlocal next_check_at
+            if monotonic() >= next_check_at:
+                # Renew and check authority outside a journal transaction.
+                # Pricing and splitting can run long before the first call.
+                before_call()
+                next_check_at = monotonic() + _PLANNING_LEASE_CHECK_SECONDS
+
+        plan = plan_with_client(sources, check_progress=check_planning_lease, **options)
+        before_call()
         journal.bind(plan)
         with journal.provider_scope():
             result = plan.execute(

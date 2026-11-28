@@ -9,7 +9,10 @@ import litellm
 import pytest
 
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.services.input_compression import CompressionBudget
+from reflexio.server.services.input_compression import (
+    CompressionBudget,
+    ExactTokenCounts,
+)
 from reflexio.server.services.offline_tuner.evidence.manifests import (
     canonical_json_bytes,
 )
@@ -26,6 +29,7 @@ from reflexio.server.services.offline_tuner.evidence.shared_compaction_checkpoin
     encode_selection,
     receipt,
 )
+from reflexio.server.services.offline_tuner.open_world import hierarchical_compaction
 from reflexio.server.services.offline_tuner.open_world.hierarchical_compaction import (
     compress_session_evidence,
 )
@@ -45,13 +49,13 @@ from tests.server.services.offline_tuner.open_world.test_hierarchical_compaction
 )
 
 
-def run(storage, source, trajectory):
+def run(storage, source, trajectory, *, before_call=lambda: None):
     journal = SharedCompactionJournal(
         storage,
         job_id=7,
         fence=1,
         identity="a" * 64,
-        before_call=lambda: None,
+        before_call=before_call,
         now=lambda: 1,
         limit=128,
     )
@@ -75,7 +79,7 @@ def run(storage, source, trajectory):
         ),
         client=client,
         context_limits={"minimax/MiniMax-M3": 1_000_000},
-        before_call=lambda: None,
+        before_call=before_call,
         journal=journal,
     )
     return journal, result
@@ -113,6 +117,50 @@ def fake_transport(calls, *, usage=True, fail=False, repair=False):
         return response
 
     return complete
+
+
+@pytest.mark.parametrize("lose_lease", [False, True])
+def test_long_plan_checks_lease_before_any_dispatch(monkeypatch, lose_lease):
+    clock = 0
+    expires_at = 3600
+    renewals = []
+    calls = []
+    original_count = ExactTokenCounts.__call__
+
+    def slow_count(counter, text):
+        nonlocal clock
+        clock += 30
+        return original_count(counter, text)
+
+    def guard():
+        nonlocal expires_at
+        if lose_lease and clock >= 3000:
+            raise RuntimeError("peer took the lease")
+        if clock >= expires_at:
+            raise RuntimeError("lease expired")
+        if expires_at - clock < 600:
+            renewals.append(clock)
+            expires_at = clock + 3600
+
+    monkeypatch.setattr(
+        hierarchical_compaction, "monotonic", lambda: clock, raising=False
+    )
+    monkeypatch.setattr(ExactTokenCounts, "__call__", slow_count)
+    monkeypatch.setattr(
+        LiteLLMClient, "_completion_with_hard_timeout", fake_transport(calls)
+    )
+    source, trajectory = _freeze_document(
+        document("User correction: require explicit approval. " + "noise " * 6000)
+    )
+    storage = MemoryCheckpoints()
+    if lose_lease:
+        with pytest.raises(RuntimeError, match="peer took the lease"):
+            run(storage, source, trajectory, before_call=guard)
+        assert clock < 3600
+        assert not calls and not storage.rows
+    else:
+        run(storage, source, trajectory, before_call=guard)
+        assert clock > 3600 and renewals and calls
 
 
 @pytest.mark.parametrize("usage", [False, True])
