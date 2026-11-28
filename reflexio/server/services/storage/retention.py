@@ -10,11 +10,14 @@ from typing import Any, Literal
 
 from reflexio.removed_env import reject_removed_env
 from reflexio.server.env_utils import env_str
+from reflexio.server.services.offline_tuner.retention import (
+    OPEN_WORLD_TRAJECTORY_RETENTION_SECONDS,
+)
 from reflexio.server.services.storage.lifecycle_filters import GC_ELIGIBLE_STATUSES
 
 DEFAULT_ROW_RETENTION_LIMIT = 250_000
 ROW_RETENTION_DELETE_FRACTION = 0.20
-OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS = 14 * 24 * 60 * 60
+OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS = OPEN_WORLD_TRAJECTORY_RETENTION_SECONDS
 TOMBSTONE_STATUSES = tuple(sorted(GC_ELIGIBLE_STATUSES))
 
 
