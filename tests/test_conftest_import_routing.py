@@ -104,7 +104,8 @@ assert selected.exists() and selected.read_text() == ''
     assert not (home / ".reflexio" / ".env").exists()
 
 
-def test_legacy_judge_in_developer_dotenv_does_not_block_collection(tmp_path: Path):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_judge_settings_in_developer_dotenv_do_not_leak(tmp_path: Path, legacy: bool):
     project = Path(__file__).resolve().parents[1]
     developer_env = tmp_path / ".env"
     developer_contents = (
@@ -132,6 +133,7 @@ assert os.environ.get("OPENAI_API_KEY") == "fixture-credential"
 assert "REFLEXIO_SEARCH_JUDGE" not in os.environ
 from reflexio.cli.env_loader import _load_dotenv_pruned, load_reflexio_env
 load_reflexio_env()
+assert "REFLEXIO_SEARCH_JUDGE_API_KEY" not in os.environ
 fixture = Path("fixture.env")
 fixture.write_text("REFLEXIO_SEARCH_JUDGE=jev\\n")
 try:

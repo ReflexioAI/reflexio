@@ -10,10 +10,12 @@ exits cleanly on ``--max-requests`` exhaustion without respawning.
 from __future__ import annotations
 
 import contextlib
+import os
 import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -55,7 +57,7 @@ def _wait_for_healthz(url: str, timeout: float = 30.0) -> None:
     raise RuntimeError(f"server at {url} did not become ready in {timeout}s")
 
 
-def test_daemon_mode_recycles_worker_after_max_requests() -> None:
+def test_daemon_mode_recycles_worker_after_max_requests(tmp_path: Path) -> None:
     """Spawn the backend with --max-requests 5 and verify a worker PID rolls.
 
     With ``--workers 2`` we observe the set of worker PIDs serving ``/healthz``
@@ -65,6 +67,8 @@ def test_daemon_mode_recycles_worker_after_max_requests() -> None:
     recycle behavior we care about (not "every worker rolled").
     """
     port = _free_port()
+    # Spawned workers must not load developer settings or opt into Jev.
+    (tmp_path / ".env").write_text("REFLEXIO_SEARCH_JUDGE=off\n")
     proc = subprocess.Popen(  # noqa: S603
         [
             sys.executable,
@@ -78,7 +82,9 @@ def test_daemon_mode_recycles_worker_after_max_requests() -> None:
             "5",
             "--max-requests-jitter",
             "0",
-        ]
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHON_DOTENV_DISABLED": "1"},
     )
     try:
         url = f"http://127.0.0.1:{port}/healthz"

@@ -27,6 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # `~/.reflexio/.env` or the enterprise worktree `.env`. CI sets none of these,
 # so the suite passes there even without the cleanup. Cleared once per session
 # before any test imports modules that read them at call time.
+_JUDGE_ENV = ("REFLEXIO_SEARCH_JUDGE", "REFLEXIO_SEARCH_JUDGE_API_KEY")
 _OSS_TEST_POLLUTING_ENV_VARS = (
     "DEPLOYMENT_MODE",
     "REFLEXIO_STORAGE",
@@ -36,8 +37,7 @@ _OSS_TEST_POLLUTING_ENV_VARS = (
     "REFLEXIO_EMBEDDING_DAEMON_HOST",
     "REFLEXIO_RERANK_SERVICE_TIMEOUT_MS",
     "REFLEXIO_RERANK_ENABLED",
-    "REFLEXIO_SEARCH_JUDGE",
-    "REFLEXIO_SEARCH_JUDGE_API_KEY",
+    *_JUDGE_ENV,
     "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
     "REFLEXIO_URL",
     "IS_TEST_ENV",
@@ -59,16 +59,16 @@ if "MUTANT_UNDER_TEST" in os.environ:
 from reflexio.cli import env_loader  # noqa: E402
 
 
-def _isolate_legacy_judge_setting() -> None:
-    # A developer's existing dotenv may come from the previous shipped
-    # template. Only filter that startup source in pytest. Other files,
-    # including test fixtures, still exercise the normal strict loader.
+def _isolate_judge_settings() -> None:
+    # Never activate a developer's judge through collection or runtime
+    # reloads. Only filter the selected startup source in pytest. Other
+    # files, including test fixtures, exercise the normal strict loader.
     selected = env_loader._existing_env_path()
     if selected is None or env_loader._dotenv_disabled():
         return
     selected = selected.resolve()
     with selected.open(encoding="utf-8") as source:
-        if not any(row.key == "REFLEXIO_SEARCH_JUDGE" for row in parse_stream(source)):
+        if not any(row.key in _JUDGE_ENV for row in parse_stream(source)):
             return
     load = env_loader._load_dotenv_pruned
 
@@ -79,7 +79,7 @@ def _isolate_legacy_judge_setting() -> None:
                     "".join(
                         row.original.string
                         for row in parse_stream(source)
-                        if row.key != "REFLEXIO_SEARCH_JUDGE"
+                        if row.key not in _JUDGE_ENV
                     )
                 )
         load(path, override=override)
@@ -87,7 +87,7 @@ def _isolate_legacy_judge_setting() -> None:
     env_loader._load_dotenv_pruned = load_test_source
 
 
-_isolate_legacy_judge_setting()
+_isolate_judge_settings()
 env_loader.load_reflexio_env()
 
 # The loader intentionally imports provider credentials from the developer
