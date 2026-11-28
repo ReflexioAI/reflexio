@@ -855,15 +855,19 @@ class TestOpenclawSetup:
         assert "denied <redacted>" in out
         assert "rk-1" not in out
 
-    def test_uninstall_openclaw_reuses_openclaw_bin_from_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        "locator", ["REFLEXIO_OPENCLAW_EXECUTABLE", "OPENCLAW_BIN"]
+    )
+    def test_uninstall_openclaw_reuses_saved_locator(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locator: str
     ) -> None:
         """Uninstall removes the plugin and the legacy env keys."""
         from reflexio.cli.commands import setup_cmd
 
         env_path = tmp_path / ".env"
         env_path.write_text(
-            'REFLEXIO_OPENCLAW_EXECUTABLE="/opt/openclaw/bin/openclaw"\nOPENCLAW_SMART_USE_LOCAL_CLI="1"\n'
+            f'export {locator} = "/opt/openclaw/bin/openclaw"\n'
+            'OPENCLAW_SMART_USE_LOCAL_CLI = "1"\n'
         )
         monkeypatch.setattr(setup_cmd.typer, "confirm", lambda *_a, **_kw: True)
         monkeypatch.setattr(setup_cmd.shutil, "which", lambda _: None)

@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from dotenv import dotenv_values
+from dotenv.parser import parse_stream
 
 from reflexio.server.env_utils import env_truthy
 from reflexio.server.llm._openclaw_config import OPENCLAW_EXECUTABLE_ENV
@@ -565,9 +567,10 @@ _OPENCLAW_PLUGIN_ID = "reflexio-openclaw-smart"
 _OPENCLAW_PLUGIN_DIR = (
     Path(__file__).resolve().parents[2] / "integrations/openclaw/plugin"
 )
+_RETIRED_OPENCLAW_PATH = "OPENCLAW_BIN"
 _OPENCLAW_ENV_KEYS = (
     OPENCLAW_EXECUTABLE_ENV,
-    "OPENCLAW_BIN",
+    _RETIRED_OPENCLAW_PATH,
     "OPENCLAW_SMART_USE_LOCAL_CLI",
 )
 _OPENCLAW_HOOK_COUNT = 3  # before_prompt_build, agent_end, session_end
@@ -577,11 +580,12 @@ def _remove_env_keys(env_path: Path, keys: tuple[str, ...]) -> None:
     """Delete the given keys from a ``.env`` file. Silent on missing file/keys."""
     if not env_path.exists():
         return
-    lines = env_path.read_text().splitlines()
-    drop = {f"{k}=" for k in keys}
-    kept = [line for line in lines if not any(line.startswith(p) for p in drop)]
-    if len(kept) != len(lines):
-        env_path.write_text("\n".join(kept) + ("\n" if kept else ""))
+    with env_path.open(newline="") as stream:
+        bindings = list(parse_stream(stream))
+    kept = [binding.original.string for binding in bindings if binding.key not in keys]
+    if len(kept) != len(bindings):
+        with env_path.open("w", newline="") as stream:
+            stream.writelines(kept)
 
 
 def _read_env_key(env_path: Path | None, key: str) -> str | None:
@@ -813,7 +817,18 @@ def _uninstall_openclaw(env_path: Path | None = None, purge: bool = False) -> No
         "This will remove the Reflexio integration from openClaw. Continue?",
         abort=True,
     )
-    cli = _read_env_key(env_path, OPENCLAW_EXECUTABLE_ENV) or shutil.which("openclaw")
+    # This is an explicit uninstall of a saved installation. Only this
+    # operation may read the retired path, and it never loads the file as env.
+    saved = (
+        dotenv_values(env_path, interpolate=False)
+        if env_path and env_path.is_file()
+        else {}
+    )
+    cli = (
+        saved.get(OPENCLAW_EXECUTABLE_ENV)
+        or saved.get(_RETIRED_OPENCLAW_PATH)
+        or shutil.which("openclaw")
+    )
     if cli:
         _openclaw_run(cli, "plugins", "disable", _OPENCLAW_PLUGIN_ID)
         _openclaw_run(cli, "plugins", "uninstall", "--force", _OPENCLAW_PLUGIN_ID)

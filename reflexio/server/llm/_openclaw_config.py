@@ -16,8 +16,11 @@ def openclaw_executable() -> str | None:
     executable = env_str(OPENCLAW_EXECUTABLE_ENV)
     if not executable:
         return None
-    path = Path(executable)
-    if not (path.is_absolute() and path.is_file() and os.access(path, os.X_OK)):
+    if not (
+        Path(executable).is_absolute()
+        and os.path.isfile(executable)  # noqa: PTH113 - validate the unnormalised path exactly
+        and os.access(executable, os.X_OK)
+    ):
         raise ProviderRequestGuardError(
             f"{OPENCLAW_EXECUTABLE_ENV} must name an absolute executable file"
         )
