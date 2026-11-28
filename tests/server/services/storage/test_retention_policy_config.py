@@ -234,3 +234,19 @@ def test_retired_reward_label_cap_does_not_configure_cleanup(value):
     assert "offline_tuner_reward_label" not in retention.get_row_retention_limits(
         env={}
     )
+
+
+def test_exposure_retention_protects_the_reader_evidence_horizon():
+    from reflexio.server.services.offline_tuner.evidence.open_world_policy import (
+        PRODUCTION_OPEN_WORLD_POLICY,
+    )
+
+    target = next(
+        target
+        for target in retention.RETENTION_TARGETS
+        if target.name == "user_playbook_exposure_events"
+    )
+    assert (
+        target.minimum_age_seconds
+        == PRODUCTION_OPEN_WORLD_POLICY.historical_window_seconds
+    )
