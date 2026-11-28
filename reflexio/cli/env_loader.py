@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import sys
+from collections.abc import MutableMapping
 from io import StringIO
 from pathlib import Path
 
@@ -233,6 +234,15 @@ def _dotenv_disabled() -> bool:
     }
 
 
+def _validate_launch_values(
+    values: MutableMapping[str, str] | MutableMapping[str, str | None],
+) -> None:
+    """Discard the shipped inactive judge default before runtime validation."""
+    if values.get("REFLEXIO_SEARCH_JUDGE") == "off":
+        values.pop("REFLEXIO_SEARCH_JUDGE")
+    reject_removed_env(values)
+
+
 def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> None:
     """Load a .env file, treating blank assignments (``KEY=``) as unset.
 
@@ -253,7 +263,7 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
         override: Passed to ``DotEnv`` resolution and assignment. When False (default) the existing
             process environment wins over the file's values.
     """
-    reject_removed_env(os.environ)
+    _validate_launch_values(os.environ)
     # Preserve python-dotenv's existing opt-out: disabled files cannot supply
     # configuration, so neither validate nor prune their unrelated assignments.
     if _dotenv_disabled():
@@ -265,7 +275,7 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
         stream=StringIO(path.getvalue()) if isinstance(path, StringIO) else None,
         override=override,
     ).dict()
-    reject_removed_env(file_vals)
+    _validate_launch_values(file_vals)
     for key, value in file_vals.items():
         # The launch environment selects the user-level file. Assignments in
         # the file cannot retarget later loads, setup writes, or child workers.
@@ -279,7 +289,7 @@ def _load_dotenv_pruned(path: Path | StringIO, *, override: bool = False) -> Non
 
 def _load_existing_env_paths() -> Path | None:
     global _loaded_env_path
-    reject_removed_env(os.environ)
+    _validate_launch_values(os.environ)
     env_path = _existing_env_path()
     if env_path is not None:
         _load_dotenv_pruned(env_path)
@@ -401,7 +411,7 @@ def load_reflexio_env_for_mode(
     Returns:
         Path to the loaded mode env file, or None if nothing was found/created.
     """
-    reject_removed_env(os.environ)
+    _validate_launch_values(os.environ)
     mode = resolve_mode(cli_mode)
     if mode is None:
         return load_reflexio_env(
@@ -436,7 +446,7 @@ def _load_existing_mode_paths(mode: str) -> Path | None:
     if not _dotenv_disabled():
         for source in (home_secrets, Path(f".env.{mode}")):
             if source.exists():
-                reject_removed_env(DotEnv(source, interpolate=False).dict())
+                _validate_launch_values(DotEnv(source, interpolate=False).dict())
     if home_secrets.exists():
         _load_dotenv_pruned(home_secrets, override=False)
 
@@ -464,7 +474,7 @@ def load_existing_reflexio_env_for_mode(
     same order as CLI setup. Returns an on-disk path only when one was loaded.
     No mode falls back to the existing plain-file reader, never provisioning.
     """
-    reject_removed_env(os.environ)
+    _validate_launch_values(os.environ)
     mode = resolve_mode(cli_mode)
     if mode is None:
         return load_existing_reflexio_env(package_data_module=package_data_module)
