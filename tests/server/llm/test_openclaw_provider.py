@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from unittest.mock import patch
 
@@ -26,45 +27,69 @@ def _fake_completed_process(
     )
 
 
-class TestEnvFlags:
-    def test_disabled_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(ocp.ENV_ENABLE, raising=False)
-        assert ocp._env_enabled() is False
-
-    def test_enabled_with_truthy(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(ocp.ENV_ENABLE, "1")
-        assert ocp._env_enabled() is True
-        monkeypatch.setenv(ocp.ENV_ENABLE, "true")
-        assert ocp._env_enabled() is True
-        monkeypatch.setenv(ocp.ENV_ENABLE, "YES")
-        assert ocp._env_enabled() is True
-
-    def test_disabled_with_falsy(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(ocp.ENV_ENABLE, "0")
-        assert ocp._env_enabled() is False
-        monkeypatch.setenv(ocp.ENV_ENABLE, "")
-        assert ocp._env_enabled() is False
+@pytest.mark.parametrize("legacy", ["OPENCLAW_BIN", "OPENCLAW_SMART_USE_LOCAL_CLI"])
+@pytest.mark.parametrize("value", ["", "synthetic-private-value"])
+def test_legacy_bindings_require_explicit_adoption(monkeypatch, legacy, value):
+    monkeypatch.setenv(legacy, value)
+    with pytest.raises(ValueError, match=legacy) as exc:
+        ocp.openclaw_executable()
+    if value:
+        assert value not in str(exc.value)
 
 
-class TestResolveCliPath:
-    def test_env_override_honored(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ) -> None:
-        fake = tmp_path / "openclaw"
-        fake.write_text("#!/bin/sh\nexit 0\n")
-        fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
-        assert ocp._resolve_cli_path() == str(fake)
+def test_missing_selected_executable_refuses_instead_of_searching_path(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(tmp_path / "missing"))
+    with (
+        patch("shutil.which", return_value="/unselected/openclaw") as which,
+        pytest.raises(RuntimeError, match="absolute executable file") as exc,
+    ):
+        ocp.openclaw_executable()
+    which.assert_not_called()
+    assert str(tmp_path) not in str(exc.value)
 
-    def test_falls_back_to_which(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(ocp.ENV_CLI_PATH, raising=False)
-        with patch("shutil.which", return_value="/usr/local/bin/openclaw"):
-            assert ocp._resolve_cli_path() == "/usr/local/bin/openclaw"
 
-    def test_none_when_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(ocp.ENV_CLI_PATH, raising=False)
-        with patch("shutil.which", return_value=None):
-            assert ocp._resolve_cli_path() is None
+def test_executable_validation_uses_exact_launch_path(monkeypatch, tmp_path):
+    chosen = tmp_path / "openclaw"
+    chosen.write_text("#!/bin/sh")
+    chosen.chmod(0o755)
+    monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(chosen) + "/")
+
+    with pytest.raises(RuntimeError, match="absolute executable file"):
+        ocp.openclaw_executable()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX supports trailing spaces in names")
+def test_nonblank_path_keeps_trailing_space(monkeypatch, tmp_path):
+    chosen = tmp_path / "openclaw "
+    chosen.write_text("#!/bin/sh")
+    chosen.chmod(0o755)
+    monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(chosen))
+
+    assert ocp.openclaw_executable() == str(chosen)
+
+
+def test_explicit_executable_is_the_only_launch_authority(monkeypatch, tmp_path):
+    chosen = tmp_path / "selected-openclaw"
+    chosen.write_text("#!/bin/sh")
+    chosen.chmod(0o755)
+    monkeypatch.setenv("REFLEXIO_OPENCLAW_EXECUTABLE", str(chosen))
+    with patch("shutil.which", return_value="/unselected/openclaw") as which:
+        assert ocp.register_if_configured()
+        assert ocp.openclaw_executable() == str(chosen)
+        which.assert_not_called()
+
+
+def test_path_binary_cannot_dispatch_without_explicit_authority(monkeypatch):
+    monkeypatch.delenv("REFLEXIO_OPENCLAW_EXECUTABLE", raising=False)
+    with (
+        patch("shutil.which", return_value="/unselected/openclaw"),
+        patch.object(ocp, "run_native_cli") as dispatch,
+        pytest.raises(ocp.OpenClawCLIError, match="REFLEXIO_OPENCLAW_EXECUTABLE"),
+    ):
+        ocp._call_cli(prompt="synthetic", model=None, timeout_s=1)
+    dispatch.assert_not_called()
 
 
 class TestExtractText:
@@ -97,7 +122,7 @@ class TestCallCli:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
 
         proc = _fake_completed_process(
             json.dumps({"ok": True, "outputs": [{"text": "PONG"}]})
@@ -118,7 +143,7 @@ class TestCallCli:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
 
         proc = _fake_completed_process(
             json.dumps({"ok": True, "outputs": [{"text": "ok"}]})
@@ -134,7 +159,7 @@ class TestCallCli:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
 
         proc = _fake_completed_process(
             json.dumps({"ok": True, "outputs": [{"text": "ok"}]})
@@ -151,7 +176,7 @@ class TestCallCli:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
 
         proc = _fake_completed_process("", stderr="bad model", returncode=2)
         with (
@@ -161,10 +186,10 @@ class TestCallCli:
             ocp._call_cli(prompt="p", model=None, timeout_s=10)
 
     def test_raises_on_missing_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(ocp.ENV_CLI_PATH, raising=False)
+        monkeypatch.delenv(ocp.OPENCLAW_EXECUTABLE_ENV, raising=False)
         with (
             patch("shutil.which", return_value=None),
-            pytest.raises(ocp.OpenClawCLIError, match="not found"),
+            pytest.raises(ocp.OpenClawCLIError, match="REFLEXIO_OPENCLAW_EXECUTABLE"),
         ):
             ocp._call_cli(prompt="p", model=None, timeout_s=10)
 
@@ -174,7 +199,7 @@ class TestCallCli:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
 
         proc = _fake_completed_process("not json")
         with (
@@ -189,7 +214,7 @@ class TestCallCli:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
 
         proc = _fake_completed_process(json.dumps({"unrelated": "x"}))
         with (
@@ -204,7 +229,7 @@ class TestCallCli:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
 
         proc = _fake_completed_process(json.dumps({"ok": False, "error": "no auth"}))
         with (
@@ -219,7 +244,7 @@ class TestCallCli:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
 
         with (
             patch("subprocess.run") as run,
@@ -231,14 +256,8 @@ class TestCallCli:
 
 class TestRegisterIfEnabled:
     def test_skips_when_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(ocp.ENV_ENABLE, raising=False)
-        assert ocp.register_if_enabled() is False
-
-    def test_skips_when_cli_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(ocp.ENV_ENABLE, "1")
-        monkeypatch.delenv(ocp.ENV_CLI_PATH, raising=False)
-        with patch("shutil.which", return_value=None):
-            assert ocp.register_if_enabled() is False
+        monkeypatch.delenv(ocp.OPENCLAW_EXECUTABLE_ENV, raising=False)
+        assert ocp.register_if_configured() is False
 
     def test_registers_when_enabled_and_cli_present(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -246,29 +265,22 @@ class TestRegisterIfEnabled:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_ENABLE, "1")
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
-        assert ocp.register_if_enabled() is True
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
+        assert ocp.register_if_configured() is True
         assert ocp._REGISTERED is True
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_ENABLE, "1")
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
-        assert ocp.register_if_enabled() is True
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
+        assert ocp.register_if_configured() is True
         # Second call must not fail
-        assert ocp.register_if_enabled() is True
+        assert ocp.register_if_configured() is True
 
 
 class TestAutoDetection:
-    """Opting in must make OpenClaw a usable provider, not just a registered one.
-
-    Before this, OPENCLAW_SMART_USE_LOCAL_CLI=1 registered the LiteLLM handler
-    but no role ever resolved to it, and `reflexio services start` refused to
-    boot for lack of an API key.
-    """
+    """The explicit binding also owns model auto-detection."""
 
     def test_opt_in_with_cli_resolves_every_generation_role(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -278,8 +290,7 @@ class TestAutoDetection:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_ENABLE, "1")
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
         for env_var in md._ENV_TO_PROVIDER:
             monkeypatch.delenv(env_var, raising=False)
         monkeypatch.delenv("REFLEXIO_NATIVE_CLI_MODEL", raising=False)
@@ -293,7 +304,7 @@ class TestAutoDetection:
     def test_not_detected_without_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from reflexio.server.llm import model_defaults as md
 
-        monkeypatch.delenv(ocp.ENV_ENABLE, raising=False)
+        monkeypatch.delenv(ocp.OPENCLAW_EXECUTABLE_ENV, raising=False)
         assert "openclaw" not in md.detect_available_providers()
 
     def test_default_model_uses_openclaws_configured_model(
@@ -315,7 +326,7 @@ class TestCliFailureReporting:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)
-        monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
+        monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(fake))
 
     def test_reports_the_json_error_not_the_generic_stderr(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path

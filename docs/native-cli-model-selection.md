@@ -81,7 +81,8 @@ changes to the model served by a host default.
 Each native request must match the operator's full reference before role or
 gateway rewriting, before admission, and again inside the provider. An explicit
 `custom_llm_provider` cannot turn a reserved `local-cli/` reference into HTTP.
-`OPENCLAW_SMART_USE_LOCAL_CLI` independently grants the separate OpenClaw route;
+`REFLEXIO_OPENCLAW_EXECUTABLE` independently authorizes the OpenClaw route and
+selects its executable;
 this target neither enables nor replaces it.
 
 ## Explicit upgrade from the previous native selectors

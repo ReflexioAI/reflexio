@@ -108,7 +108,7 @@ from reflexio.server.llm.providers.native_cli_provider import (
     register_native_provider as _register_native_cli,
 )
 from reflexio.server.llm.providers.openclaw_provider import (
-    register_if_enabled as _register_openclaw,
+    register_if_configured as _register_openclaw,
 )
 
 # Suppress LiteLLM's verbose logging

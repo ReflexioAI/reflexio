@@ -8,12 +8,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from dotenv.main import resolve_variables
+from dotenv.parser import parse_stream
 
 from reflexio.server.env_utils import env_truthy
+from reflexio.server.llm._openclaw_config import OPENCLAW_EXECUTABLE_ENV
 
 app = typer.Typer(
     help=(
@@ -564,9 +568,12 @@ _OPENCLAW_PLUGIN_ID = "reflexio-openclaw-smart"
 _OPENCLAW_PLUGIN_DIR = (
     Path(__file__).resolve().parents[2] / "integrations/openclaw/plugin"
 )
-# Keys the pre-0.2 plugin wrote; removed on uninstall so they stop
-# registering the server-side `openclaw` LLM provider by accident.
-_LEGACY_OPENCLAW_ENV_KEYS = ("OPENCLAW_BIN", "OPENCLAW_SMART_USE_LOCAL_CLI")
+_RETIRED_OPENCLAW_PATH = "OPENCLAW_BIN"
+_OPENCLAW_ENV_KEYS = (
+    OPENCLAW_EXECUTABLE_ENV,
+    _RETIRED_OPENCLAW_PATH,
+    "OPENCLAW_SMART_USE_LOCAL_CLI",
+)
 _OPENCLAW_HOOK_COUNT = 3  # before_prompt_build, agent_end, session_end
 
 
@@ -574,11 +581,12 @@ def _remove_env_keys(env_path: Path, keys: tuple[str, ...]) -> None:
     """Delete the given keys from a ``.env`` file. Silent on missing file/keys."""
     if not env_path.exists():
         return
-    lines = env_path.read_text().splitlines()
-    drop = {f"{k}=" for k in keys}
-    kept = [line for line in lines if not any(line.startswith(p) for p in drop)]
-    if len(kept) != len(lines):
-        env_path.write_text("\n".join(kept) + ("\n" if kept else ""))
+    with env_path.open(newline="") as stream:
+        bindings = list(parse_stream(stream))
+    kept = [binding.original.string for binding in bindings if binding.key not in keys]
+    if len(kept) != len(bindings):
+        with env_path.open("w", newline="") as stream:
+            stream.writelines(kept)
 
 
 def _read_env_key(env_path: Path | None, key: str) -> str | None:
@@ -595,11 +603,19 @@ def _read_env_key(env_path: Path | None, key: str) -> str | None:
 
 
 def _openclaw_run(
-    cli: str, *args: str, stdin: str | None = None
+    cli: str,
+    *args: str,
+    stdin: str | None = None,
+    environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run one ``openclaw`` subcommand by absolute path, capturing output."""
     return subprocess.run(  # noqa: S603 — argv is fully constructed.
-        [cli, *args], check=False, capture_output=True, text=True, input=stdin
+        [cli, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        input=stdin,
+        env=environment,
     )
 
 
@@ -801,7 +817,7 @@ def _uninstall_openclaw(env_path: Path | None = None, purge: bool = False) -> No
 
     Args:
         env_path (Path | None): ``~/.reflexio/.env`` to strip the legacy
-            ``OPENCLAW_BIN`` / ``OPENCLAW_SMART_USE_LOCAL_CLI`` keys from.
+            OpenClaw server bindings from, including obsolete keys.
             ``None`` skips the .env cleanup.
         purge (bool): Also delete the pre-0.2 plugin's ``~/.openclaw-smart/``
             session buffers.
@@ -810,18 +826,57 @@ def _uninstall_openclaw(env_path: Path | None = None, purge: bool = False) -> No
         "This will remove the Reflexio integration from openClaw. Continue?",
         abort=True,
     )
-    cli = _read_env_key(env_path, "OPENCLAW_BIN") or shutil.which("openclaw")
+    # This is an explicit uninstall of a saved installation. Only this
+    # operation may read the retired path, and it never loads the file as env.
+    saved: Mapping[str, str | None] = {}
+    if env_path and env_path.is_file():
+        with env_path.open() as stream:
+            saved = resolve_variables(
+                (
+                    (binding.key, binding.value)
+                    for binding in parse_stream(stream)
+                    if binding.key is not None
+                ),
+                override=False,
+            )
+    child_env = {
+        key: value
+        for key, value in saved.items()
+        if (key == "PATH" or key.startswith("OPENCLAW_")) and value is not None
+    }
+    child_env.update(os.environ)
+    for key in _OPENCLAW_ENV_KEYS:
+        child_env.pop(key, None)
+    cli = shutil.which("openclaw", path=child_env.get("PATH", os.defpath)) or saved.get(
+        _RETIRED_OPENCLAW_PATH
+    )
+    removed = False
     if cli:
-        _openclaw_run(cli, "plugins", "disable", _OPENCLAW_PLUGIN_ID)
-        _openclaw_run(cli, "plugins", "uninstall", "--force", _OPENCLAW_PLUGIN_ID)
+        try:
+            _openclaw_run(
+                cli, "plugins", "disable", _OPENCLAW_PLUGIN_ID, environment=child_env
+            )
+            result = _openclaw_run(
+                cli,
+                "plugins",
+                "uninstall",
+                "--force",
+                _OPENCLAW_PLUGIN_ID,
+                environment=child_env,
+            )
+            removed = result.returncode == 0
+        except OSError:
+            pass
+        if not removed:
+            typer.echo("Warning: could not verify removal from OpenClaw.")
     else:
         typer.echo(
-            "Warning: openclaw CLI not found in OPENCLAW_BIN or PATH, "
+            "Warning: openclaw CLI not found on PATH or at the saved legacy location, "
             "skipping plugin removal"
         )
 
     if env_path is not None:
-        _remove_env_keys(env_path, _LEGACY_OPENCLAW_ENV_KEYS)
+        _remove_env_keys(env_path, _OPENCLAW_ENV_KEYS)
 
     from reflexio.cli.paths import reflexio_home
 
@@ -881,21 +936,21 @@ def openclaw(
     ] = "auto",
 ) -> None:
     """Set up (or remove) the openclaw-smart integration for openClaw."""
-    # Resolve the user-global .env path up front; all three flows write to it.
-    from reflexio.cli.env_loader import ensure_user_env_for_setup
+    from reflexio.cli.env_loader import ensure_user_env_for_setup, user_env_file
+
+    if uninstall:
+        # Resolve the path without loading retired bindings that removal can clean.
+        _uninstall_openclaw(env_path=user_env_file(), purge=purge)
+        return
+
+    if purge:
+        typer.echo("Error: --purge requires --uninstall")
+        raise typer.Exit(1)
 
     env_path = ensure_user_env_for_setup()
     if env_path is None:
         typer.echo("Error: could not locate or create a .env file")
         raise typer.Exit(1)
-
-    if purge and not uninstall:
-        typer.echo("Error: --purge requires --uninstall")
-        raise typer.Exit(1)
-
-    if uninstall:
-        _uninstall_openclaw(env_path=env_path, purge=purge)
-        return
 
     if embedding not in _VALID_EMBEDDING_FLAGS:
         typer.echo(

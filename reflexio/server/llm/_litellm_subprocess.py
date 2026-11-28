@@ -409,7 +409,7 @@ def _register_local_cli_providers() -> None:
         register_native_provider as register_native_cli,
     )
     from reflexio.server.llm.providers.openclaw_provider import (
-        register_if_enabled as register_openclaw,
+        register_if_configured as register_openclaw,
     )
 
     register_native_cli()

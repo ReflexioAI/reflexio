@@ -166,7 +166,7 @@ def test_local_capability_never_grants_generation_or_cli_access(monkeypatch):
     for name in model_defaults.provider_env_vars():
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    monkeypatch.delenv("OPENCLAW_SMART_USE_LOCAL_CLI", raising=False)
+    monkeypatch.delenv("REFLEXIO_OPENCLAW_EXECUTABLE", raising=False)
     monkeypatch.setattr(
         local, "are_local_embedding_dependencies_available", lambda: True
     )

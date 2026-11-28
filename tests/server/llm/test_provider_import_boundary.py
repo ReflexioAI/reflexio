@@ -260,7 +260,7 @@ from reflexio.test_support.llm_credentials import ensure_provider_credential
 for name in provider_env_vars():
     os.environ.pop(name, None)
 os.environ.pop("CLAUDE_SMART_USE_LOCAL_CLI", None)
-os.environ.pop("OPENCLAW_SMART_USE_LOCAL_CLI", None)
+os.environ.pop("REFLEXIO_OPENCLAW_EXECUTABLE", None)
 ensure_provider_credential()
 assert os.environ["OPENAI_API_KEY"] == "sk-placeholder-mock"
 assert "reflexio.server.llm.providers.native_cli_provider" not in sys.modules

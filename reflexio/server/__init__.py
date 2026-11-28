@@ -527,6 +527,11 @@ def initialize_server_runtime() -> LoggingReport:
         _runtime_initializing = True
         try:
             load_local_launch_env(provision=False)
+            from reflexio.server.llm._openclaw_config import (
+                openclaw_executable,
+            )
+
+            openclaw_executable()
             validate_discovery_timing_env(os.environ)
             validate_aggregation_timing_env(os.environ)
             warn_retired_resume_timing(os.environ)
