@@ -102,3 +102,60 @@ assert selected.exists() and selected.read_text() == ''
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert not (home / ".reflexio" / ".env").exists()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_judge_settings_in_developer_dotenv_do_not_leak(tmp_path: Path, legacy: bool):
+    project = Path(__file__).resolve().parents[1]
+    developer_env = tmp_path / ".env"
+    developer_contents = (
+        ("REFLEXIO_SEARCH_JUDGE=off\n" if legacy else "")
+        + "REFLEXIO_SEARCH_JUDGE_API_KEY=fixture-judge\nOPENAI_API_KEY=fixture-credential\n"
+    )
+    developer_env.write_text(developer_contents)
+    env = os.environ.copy()
+    for key in (
+        "REFLEXIO_ENV_FILE",
+        "PYTHON_DOTENV_DISABLED",
+        "MUTANT_UNDER_TEST",
+        "OPENAI_API_KEY",
+    ):
+        env.pop(key, None)
+    env.update(LITELLM_MODE="DEV", LITELLM_LOCAL_MODEL_COST_MAP="true")
+    code = """
+import os
+from pathlib import Path
+import runpy
+import sys
+from types import SimpleNamespace
+
+project = Path(sys.argv[1])
+sys.path.insert(0, str(project))
+bootstrap = runpy.run_path(str(project / 'tests/conftest.py'))
+bootstrap["pytest_configure"](SimpleNamespace(args=["tests"]))
+assert os.environ.get("OPENAI_API_KEY") == "fixture-credential"
+assert "REFLEXIO_SEARCH_JUDGE" not in os.environ
+assert "REFLEXIO_SEARCH_JUDGE_API_KEY" not in os.environ
+from reflexio.cli.env_loader import _load_dotenv_pruned, load_reflexio_env
+load_reflexio_env()
+assert "REFLEXIO_SEARCH_JUDGE_API_KEY" not in os.environ
+fixture = Path("fixture.env")
+fixture.write_text("REFLEXIO_SEARCH_JUDGE=jev\\n")
+try:
+    _load_dotenv_pruned(fixture)
+except ValueError as error:
+    assert "REFLEXIO_SEARCH_JUDGE" in str(error)
+else:
+    raise AssertionError("A different source must retain strict validation")
+"""
+    result = subprocess.run(  # noqa: S603 — fixed code and a pytest-owned dotenv
+        [sys.executable, "-I", "-c", code, str(project)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=40,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert developer_env.read_text() == developer_contents

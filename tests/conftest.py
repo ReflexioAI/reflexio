@@ -11,9 +11,11 @@ import tempfile
 import threading
 import weakref
 from collections.abc import Iterator
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from dotenv.parser import parse_stream
 
 _THIS_DIR = Path(__file__).resolve().parent  # tests/
 PROJECT_ROOT = _THIS_DIR.parent  # repo root, or mutmut's relocated source root
@@ -25,6 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # `~/.reflexio/.env` or the enterprise worktree `.env`. CI sets none of these,
 # so the suite passes there even without the cleanup. Cleared once per session
 # before any test imports modules that read them at call time.
+_JUDGE_ENV = ("REFLEXIO_SEARCH_JUDGE", "REFLEXIO_SEARCH_JUDGE_API_KEY")
 _OSS_TEST_POLLUTING_ENV_VARS = (
     "DEPLOYMENT_MODE",
     "REFLEXIO_STORAGE",
@@ -34,7 +37,7 @@ _OSS_TEST_POLLUTING_ENV_VARS = (
     "REFLEXIO_EMBEDDING_DAEMON_HOST",
     "REFLEXIO_RERANK_SERVICE_TIMEOUT_MS",
     "REFLEXIO_RERANK_ENABLED",
-    "REFLEXIO_SEARCH_JUDGE",
+    *_JUDGE_ENV,
     "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
     "REFLEXIO_URL",
     "IS_TEST_ENV",
@@ -53,9 +56,40 @@ if "MUTANT_UNDER_TEST" in os.environ:
 # Load the developer's provider credentials without importing the server yet.
 # The server configures file handlers during import, so the temporary paths
 # below must be in place before that import occurs.
-from reflexio.cli.env_loader import load_reflexio_env  # noqa: E402
+from reflexio.cli import env_loader  # noqa: E402
 
-load_reflexio_env()
+
+def _isolate_judge_settings() -> None:
+    # Never activate a developer's judge through collection or runtime
+    # reloads. Only filter the selected startup source in pytest. Other
+    # files, including test fixtures, exercise the normal strict loader.
+    selected = env_loader._existing_env_path()
+    if selected is None or env_loader._dotenv_disabled():
+        return
+    selected = selected.resolve()
+    with selected.open(encoding="utf-8") as source:
+        if not any(row.key in _JUDGE_ENV for row in parse_stream(source)):
+            return
+    load = env_loader._load_dotenv_pruned
+
+    def load_test_source(path: Path | StringIO, *, override: bool = False) -> None:
+        if isinstance(path, Path) and path.resolve() == selected:
+            with selected.open(encoding="utf-8") as source:
+                path = StringIO(
+                    "".join(
+                        row.original.string
+                        for row in parse_stream(source)
+                        if row.key not in _JUDGE_ENV
+                    )
+                )
+        load(path, override=override)
+
+    env_loader._load_dotenv_pruned = load_test_source
+
+
+_isolate_judge_settings()
+env_loader.block_implicit_dotenv_walkup()
+env_loader.load_reflexio_env()
 
 # The loader intentionally imports provider credentials from the developer
 # environment, but it can also reintroduce local service-routing variables from

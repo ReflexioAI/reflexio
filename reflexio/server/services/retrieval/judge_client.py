@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 import httpx
 
+from reflexio.removed_env import reject_removed_env
 from reflexio.server import search_runtime
 from reflexio.server.env_utils import env_str
 from reflexio.server.llm._provider_concurrency import named_provider_slot
@@ -25,14 +26,10 @@ from reflexio.server.services.storage.error import ReadinessUnavailableError
 
 # Literal selected-image metadata consumed by deployment's source renderer.
 SEARCH_JUDGE_CONTRACT = {
-    "mode_env": "REFLEXIO_SEARCH_JUDGE",
-    "default": "off",
-    "enabled": "jev",
-    "required_env_secrets": ("TYPESAFE_API_KEY",),
+    "credential_env": "REFLEXIO_SEARCH_JUDGE_API_KEY",
+    "secret_json_key": "TYPESAFE_API_KEY",
 }
 
-_MODE_ENV = "REFLEXIO_SEARCH_JUDGE"
-_KEY_ENV = "TYPESAFE_API_KEY"
 _MODEL = MODEL
 _URL = "https://api.typesafe.ai/v1/systemone"
 _ALLOWANCE = 0.7
@@ -42,14 +39,17 @@ _client_instance: httpx.Client | None = None
 _client_pid: int | None = None
 
 
+def _judge_key() -> str:
+    try:
+        reject_removed_env(os.environ, canonical="REFLEXIO_SEARCH_JUDGE_API_KEY")
+    except ValueError as exc:
+        raise ReadinessUnavailableError(str(exc)) from None
+    return env_str("REFLEXIO_SEARCH_JUDGE_API_KEY")
+
+
 def judge_mode() -> Literal["off", "jev"]:
-    """Resolve explicit activation only; credentials never activate this method."""
-    mode = env_str(_MODE_ENV, "off")
-    if mode == "off":
-        return "off"
-    if mode == "jev":
-        return "jev"
-    raise ReadinessUnavailableError("REFLEXIO_SEARCH_JUDGE must be off or jev")
+    """An application-specific credential binding explicitly enables Jev."""
+    return "jev" if _judge_key() else "off"
 
 
 def _after_fork() -> None:
@@ -151,14 +151,12 @@ def call_jev(payload: dict) -> dict:
     releases ownership only after the physical HTTP call has finished.
     """
     deadline = monotonic() + _ALLOWANCE
-    if judge_mode() != "jev":
-        raise ReadinessUnavailableError("Search judge is disabled")
     _remaining(deadline)
+    key = _judge_key()
+    if not key:
+        raise ReadinessUnavailableError("Search judge is disabled")
     if not isinstance(payload, dict) or payload.get("model") != _MODEL:
         raise ReadinessUnavailableError("Search judge requires model jev-1.14.0")
-    key = env_str(_KEY_ENV)
-    if not key:
-        raise ReadinessUnavailableError("Search judge requires TYPESAFE_API_KEY")
     try:
         with named_provider_slot("typesafe", max_wait=_remaining(deadline)):
             _remaining(deadline)

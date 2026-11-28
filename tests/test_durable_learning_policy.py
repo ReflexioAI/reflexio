@@ -107,6 +107,7 @@ def test_server_startup_validates_policy_before_workers_start(
 ):
     env = {
         **os.environ,
+        "PYTHON_DOTENV_DISABLED": "1",
         "REFLEXIO_DURABLE_LEARNING_POLL_SECONDS": value,
         "REFLEXIO_DURABLE_LEARNING_LEASE_SECONDS": "900",
         "REFLEXIO_LOG_DIR": str(tmp_path),
@@ -197,7 +198,12 @@ def test_invalid_aggregation_policy_rejected_before_scheduler_or_admission(
 
 @pytest.mark.parametrize("key", _AGGREGATION_TIMING_KEYS)
 def test_aggregation_startup_rejects_custom_timing(tmp_path, key):
-    env = {**os.environ, key: "private-value", "LOCAL_STORAGE_PATH": str(tmp_path)}
+    env = {
+        **os.environ,
+        key: "private-value",
+        "LOCAL_STORAGE_PATH": str(tmp_path),
+        "PYTHON_DOTENV_DISABLED": "1",
+    }
     result = subprocess.run(  # noqa: S603 - literal import with the current interpreter.
         [
             sys.executable,
