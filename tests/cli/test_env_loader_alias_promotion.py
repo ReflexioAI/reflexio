@@ -85,6 +85,7 @@ def test_launch_consumes_only_the_shipped_inactive_search_judge_default(
 def test_old_process_default_is_available_to_dotenv_interpolation_only(
     monkeypatch, tmp_path, mode
 ):
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(env_loader, "_USER_ENV_DIR", tmp_path / "home")
     monkeypatch.setattr(env_loader, "_loaded_env_path", None)
@@ -118,6 +119,7 @@ def test_interpolation_cannot_create_a_shipped_judge_default(
 def test_project_interpolation_keeps_home_default_and_assignment_order(
     monkeypatch, tmp_path
 ):
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
     monkeypatch.chdir(tmp_path)
     home = tmp_path / "home"
     home.mkdir()

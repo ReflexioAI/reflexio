@@ -136,9 +136,18 @@ bootstrap["pytest_configure"](SimpleNamespace(args=["tests"]))
 assert os.environ.get("OPENAI_API_KEY") == "fixture-credential"
 assert "REFLEXIO_SEARCH_JUDGE" not in os.environ
 assert "REFLEXIO_SEARCH_JUDGE_API_KEY" not in os.environ
-from reflexio.cli.env_loader import _load_dotenv_pruned, load_reflexio_env
-load_reflexio_env()
+from reflexio.cli import env_loader
+_load_dotenv_pruned = env_loader._load_dotenv_pruned
+env_loader.load_reflexio_env()
 assert "REFLEXIO_SEARCH_JUDGE_API_KEY" not in os.environ
+mode_home = Path("mode-home")
+mode_home.mkdir()
+(mode_home / ".env.self_host").write_text("REFLEXIO_SEARCH_JUDGE=off" + chr(10))
+env_loader._USER_ENV_DIR = mode_home
+Path(".env.self_host").write_text("MODE_FIXTURE=prefix-${REFLEXIO_SEARCH_JUDGE}" + chr(10))
+env_loader.load_existing_reflexio_env_for_mode(cli_mode="self_host")
+assert os.environ["MODE_FIXTURE"] == "prefix-off"
+assert "REFLEXIO_SEARCH_JUDGE" not in os.environ
 fixture = Path("fixture.env")
 fixture.write_text("REFLEXIO_SEARCH_JUDGE=jev\\n")
 try:
