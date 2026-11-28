@@ -19,14 +19,9 @@ from reflexio.cli.env_loader import block_implicit_dotenv_walkup
 
 
 @pytest.fixture
-def restore_load_dotenv():
-    """Restore the global ``dotenv.load_dotenv`` so the guard never leaks
-    between tests."""
-    original = dotenv.load_dotenv
-    try:
-        yield
-    finally:
-        dotenv.load_dotenv = original
+def restore_load_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise installation from the underlying loader before restoring pytest's guard."""
+    monkeypatch.setattr(dotenv, "load_dotenv", dotenv.main.load_dotenv)
 
 
 def test_pathless_walkup_is_noop(

@@ -121,6 +121,7 @@ def test_judge_settings_in_developer_dotenv_do_not_leak(tmp_path: Path, legacy: 
         "OPENAI_API_KEY",
     ):
         env.pop(key, None)
+    env.update(LITELLM_MODE="DEV", LITELLM_LOCAL_MODEL_COST_MAP="true")
     code = """
 import os
 from pathlib import Path
