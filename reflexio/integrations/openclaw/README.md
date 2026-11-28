@@ -60,8 +60,9 @@ Reflexio normally extracts with its own configured LLM provider. To reuse the
 model OpenClaw is signed in to, set `REFLEXIO_OPENCLAW_EXECUTABLE` in the
 Reflexio server environment to the absolute path to the executable. This
 binding authorizes OpenClaw and selects the exact executable. An unset or blank
-binding leaves the route disabled. A configured path that cannot execute fails
-validation without searching `PATH`. The model role remains independent
+binding leaves the route disabled. The server checks executability at startup
+and each OpenClaw call without searching `PATH`. A later executable outage
+does not stop requests already routed to other providers. The model role remains independent
 (`openclaw/default` uses
 OpenClaw's configured model; `openclaw/<provider>/<model>` picks one). The
 server calls `openclaw infer model run`. Extraction is a tool loop and the CLI

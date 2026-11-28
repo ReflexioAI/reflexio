@@ -8,11 +8,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated
 
 import typer
-from dotenv import dotenv_values
+from dotenv.main import resolve_variables
 from dotenv.parser import parse_stream
 
 from reflexio.server.env_utils import env_truthy
@@ -602,11 +603,19 @@ def _read_env_key(env_path: Path | None, key: str) -> str | None:
 
 
 def _openclaw_run(
-    cli: str, *args: str, stdin: str | None = None
+    cli: str,
+    *args: str,
+    stdin: str | None = None,
+    environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run one ``openclaw`` subcommand by absolute path, capturing output."""
     return subprocess.run(  # noqa: S603 — argv is fully constructed.
-        [cli, *args], check=False, capture_output=True, text=True, input=stdin
+        [cli, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        input=stdin,
+        env=environment,
     )
 
 
@@ -819,19 +828,50 @@ def _uninstall_openclaw(env_path: Path | None = None, purge: bool = False) -> No
     )
     # This is an explicit uninstall of a saved installation. Only this
     # operation may read the retired path, and it never loads the file as env.
-    saved = (
-        dotenv_values(env_path, interpolate=False)
-        if env_path and env_path.is_file()
-        else {}
-    )
+    saved: Mapping[str, str | None] = {}
+    if env_path and env_path.is_file():
+        with env_path.open() as stream:
+            saved = resolve_variables(
+                (
+                    (binding.key, binding.value)
+                    for binding in parse_stream(stream)
+                    if binding.key is not None
+                ),
+                override=False,
+            )
+    child_env = {
+        key: value
+        for key, value in saved.items()
+        if key.startswith("OPENCLAW_") and value is not None
+    }
+    child_env.update(os.environ)
+    for key in _OPENCLAW_ENV_KEYS:
+        child_env.pop(key, None)
     cli = (
-        saved.get(OPENCLAW_EXECUTABLE_ENV)
+        os.environ.get(OPENCLAW_EXECUTABLE_ENV)
+        or saved.get(OPENCLAW_EXECUTABLE_ENV)
         or saved.get(_RETIRED_OPENCLAW_PATH)
         or shutil.which("openclaw")
     )
+    removed = False
     if cli:
-        _openclaw_run(cli, "plugins", "disable", _OPENCLAW_PLUGIN_ID)
-        _openclaw_run(cli, "plugins", "uninstall", "--force", _OPENCLAW_PLUGIN_ID)
+        try:
+            _openclaw_run(
+                cli, "plugins", "disable", _OPENCLAW_PLUGIN_ID, environment=child_env
+            )
+            result = _openclaw_run(
+                cli,
+                "plugins",
+                "uninstall",
+                "--force",
+                _OPENCLAW_PLUGIN_ID,
+                environment=child_env,
+            )
+            removed = result.returncode == 0
+        except OSError:
+            pass
+        if not removed:
+            typer.echo("Warning: could not verify removal from OpenClaw.")
     else:
         typer.echo(
             f"Warning: openclaw CLI not found in {OPENCLAW_EXECUTABLE_ENV} or PATH, "

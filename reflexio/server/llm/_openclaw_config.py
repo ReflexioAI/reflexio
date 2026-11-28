@@ -4,16 +4,21 @@ import os
 from pathlib import Path
 
 from reflexio.removed_env import reject_removed_env
-from reflexio.server.env_utils import env_str
 from reflexio.server.llm._litellm_types import ProviderRequestGuardError
 
 OPENCLAW_EXECUTABLE_ENV = "REFLEXIO_OPENCLAW_EXECUTABLE"
 
 
-def openclaw_executable() -> str | None:
-    """Return the authorized executable, or None when the route is disabled."""
+def configured_openclaw_executable() -> str | None:
+    """Read operator intent without consulting executable availability."""
     reject_removed_env(os.environ, canonical=OPENCLAW_EXECUTABLE_ENV)
-    executable = env_str(OPENCLAW_EXECUTABLE_ENV)
+    executable = os.environ.get(OPENCLAW_EXECUTABLE_ENV, "")
+    return executable if executable.strip() else None
+
+
+def openclaw_executable() -> str | None:
+    """Check filesystem availability at server initialization and dispatch."""
+    executable = configured_openclaw_executable()
     if not executable:
         return None
     if not (

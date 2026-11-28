@@ -38,6 +38,7 @@ from litellm.types.utils import (
 from reflexio.server.llm._native_cli import request_timeout_seconds, run_native_cli
 from reflexio.server.llm._openclaw_config import (
     OPENCLAW_EXECUTABLE_ENV,
+    configured_openclaw_executable,
     openclaw_executable,
 )
 from reflexio.server.llm.providers.cli_tool_protocol import (
@@ -383,7 +384,7 @@ def register_if_configured() -> bool:
         bool: True if registered; False if the route has no binding.
     """
     global _REGISTERED, _HANDLER
-    if openclaw_executable() is None:
+    if configured_openclaw_executable() is None:
         return False
     if _REGISTERED:
         return True

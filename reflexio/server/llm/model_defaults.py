@@ -24,7 +24,7 @@ from reflexio.server.llm._native_model_ref import (
 from reflexio.server.llm._native_model_ref import (
     PROVIDER_KEY as _NATIVE_PROVIDER,
 )
-from reflexio.server.llm._openclaw_config import openclaw_executable
+from reflexio.server.llm._openclaw_config import configured_openclaw_executable
 
 # Installed local embedding capability is advertised without activating it.
 # resolve_model_name owns the embedding-role default independently of provider
@@ -139,7 +139,7 @@ def detect_available_providers(
     # is unavailable. Never fall through to an unrelated API credential.
     if configured_native_model() is not None:
         available.add(_NATIVE_PROVIDER)
-    if openclaw_executable() is not None:
+    if configured_openclaw_executable() is not None:
         available.add(_OPENCLAW_PROVIDER)
     if is_local_embedder_available():
         available.add(_LOCAL_EMBEDDING_PROVIDER)

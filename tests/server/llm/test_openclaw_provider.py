@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from unittest.mock import patch
 
@@ -44,7 +45,7 @@ def test_missing_selected_executable_refuses_instead_of_searching_path(
         patch("shutil.which", return_value="/unselected/openclaw") as which,
         pytest.raises(RuntimeError, match="absolute executable file") as exc,
     ):
-        ocp.register_if_configured()
+        ocp.openclaw_executable()
     which.assert_not_called()
     assert str(tmp_path) not in str(exc.value)
 
@@ -57,6 +58,16 @@ def test_executable_validation_uses_exact_launch_path(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="absolute executable file"):
         ocp.openclaw_executable()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX supports trailing spaces in names")
+def test_nonblank_path_keeps_trailing_space(monkeypatch, tmp_path):
+    chosen = tmp_path / "openclaw "
+    chosen.write_text("#!/bin/sh")
+    chosen.chmod(0o755)
+    monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(chosen))
+
+    assert ocp.openclaw_executable() == str(chosen)
 
 
 def test_explicit_executable_is_the_only_launch_authority(monkeypatch, tmp_path):

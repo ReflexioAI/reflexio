@@ -649,6 +649,38 @@ class TestOpenclawUninstall:
         assert f"Removed plugin state: {state}" in result.output
         assert "fully removed" in result.output
 
+    def test_uninstall_forwards_only_openclaw_context_and_cleans_stale_binding(
+        self, home, cli, monkeypatch
+    ):
+        dotenv = home / ".reflexio" / ".env"
+        dotenv.write_text(
+            "REFLEXIO_OPENCLAW_EXECUTABLE=/fixture/missing\n"
+            "OPENCLAW_CONFIG_PATH=/fixture/openclaw.json\n"
+            "OPENCLAW_STATE_DIR=/fixture/state\n"
+            "OPENCLAW_SMART_USE_LOCAL_CLI=1\n"
+            "UNRELATED_FIXTURE=preserve\n"
+        )
+        monkeypatch.delenv("OPENCLAW_CONFIG_PATH", raising=False)
+        monkeypatch.delenv("OPENCLAW_STATE_DIR", raising=False)
+        monkeypatch.delenv("UNRELATED_FIXTURE", raising=False)
+        calls = []
+
+        def failed_launch(*_args, environment, **_kwargs):
+            calls.append(environment)
+            raise FileNotFoundError
+
+        monkeypatch.setattr(setup_cmd, "_openclaw_run", failed_launch)
+        result = cli("openclaw", "--uninstall", input="y\n")
+
+        assert result.exit_code == 0, result.output
+        assert "could not verify removal" in result.output
+        assert calls[0]["OPENCLAW_CONFIG_PATH"] == "/fixture/openclaw.json"
+        assert calls[0]["OPENCLAW_STATE_DIR"] == "/fixture/state"
+        assert "OPENCLAW_SMART_USE_LOCAL_CLI" not in calls[0]
+        assert "UNRELATED_FIXTURE" not in calls[0]
+        assert "REFLEXIO_OPENCLAW_EXECUTABLE" not in dotenv.read_text()
+        assert "UNRELATED_FIXTURE=preserve" in dotenv.read_text()
+
     def test_uninstall_without_cli_warns_and_keeps_state_without_purge(
         self, home, cli, monkeypatch
     ):

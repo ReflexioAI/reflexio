@@ -329,7 +329,7 @@ def test_independent_openclaw_grant_remains_usable(monkeypatch):
 
     monkeypatch.setenv(authority.ENV_NATIVE_MODEL, "local-cli/codex/owned")
     monkeypatch.setattr(
-        model_defaults, "openclaw_executable", lambda: "/fixture/openclaw"
+        model_defaults, "configured_openclaw_executable", lambda: "/fixture/openclaw"
     )
     providers = model_defaults.detect_available_providers()
     assert providers[:2] == ["local-cli", "openclaw"]

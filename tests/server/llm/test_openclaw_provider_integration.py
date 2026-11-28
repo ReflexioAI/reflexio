@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import litellm
 import pytest
@@ -92,6 +92,32 @@ def test_register_noop_when_env_disabled(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.delenv(ocp.OPENCLAW_EXECUTABLE_ENV, raising=False)
     assert ocp.register_if_configured() is False
     assert litellm.custom_provider_map == []
+
+
+def test_completion_worker_keeps_other_providers_usable_after_openclaw_loss(
+    monkeypatch, tmp_path
+):
+    from litellm import ModelResponse
+
+    from reflexio.server.llm import _litellm_subprocess
+
+    monkeypatch.setenv(ocp.OPENCLAW_EXECUTABLE_ENV, str(tmp_path / "missing"))
+    cloud_dispatch = Mock(
+        return_value=ModelResponse(
+            choices=[{"message": {"content": "synthetic-cloud", "role": "assistant"}}],
+        )
+    )
+    monkeypatch.setattr(_litellm_subprocess, "model_completion", cloud_dispatch)
+    monkeypatch.setattr(
+        _litellm_subprocess, "_reset_llm_client_state_after_fork", Mock()
+    )
+    result = Mock()
+    _litellm_subprocess._litellm_completion_worker(
+        {"model": "openai/synthetic", "messages": []}, result, time.monotonic() + 2
+    )
+
+    assert result.put.call_args.args[0][0] == "ok"
+    cloud_dispatch.assert_called_once()
 
 
 def test_spawned_completion_worker_can_reach_the_openclaw_provider(
